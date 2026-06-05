@@ -166,6 +166,10 @@ Before publishing, keep these out of the repository:
 
 If you publish from a real git repository with existing commits, scan the entire git history as well as the current tree.
 
+## License
+
+This project is released under the MIT License. See [LICENSE](LICENSE).
+
 ## Roadmap
 
 - Broaden TCAD task coverage and add stronger physical-quality checks.
