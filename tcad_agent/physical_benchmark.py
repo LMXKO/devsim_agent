@@ -1192,6 +1192,65 @@ def evidence_matrix(state: dict[str, Any], checks: list[BenchmarkCheck]) -> dict
     }
 
 
+def credibility_assessment(checks: list[BenchmarkCheck], state: dict[str, Any]) -> dict[str, Any]:
+    codes = {check.code for check in checks}
+    warning_codes = [check.code for check in checks if check.severity == BenchmarkSeverity.WARNING]
+    error_codes = [check.code for check in checks if check.severity == BenchmarkSeverity.ERROR]
+    matrix = evidence_matrix(state, checks)
+    quality = state.get("quality_report") or {}
+    risks: list[str] = []
+    gaps: list[str] = []
+    must_fix: list[str] = []
+
+    if quality.get("status") in {"failed", "suspicious"}:
+        risks.append("基础 quality_report 未完全通过。")
+    if any("unit" in code or "voltage_span" in code or "capacitance_exceeds" in code for code in codes):
+        risks.append("存在单位、量纲或解析上界相关风险。")
+        must_fix.append("复核单位、面积归一化、偏置单位和解析上界。")
+    if any("kink" in code or "monotonic" in code or "shape" in code or "negative_differential" in code for code in codes):
+        risks.append("曲线形状存在异常或需要局部细化。")
+        must_fix.append("在异常 bias 区间缩小步长并复核曲线单调性/斜率。")
+    if matrix.get("convergence_evidence") != "present":
+        gaps.append("mesh/model/bias convergence evidence")
+    if matrix.get("golden_or_measured_comparison") != "present":
+        gaps.append("golden or measured comparison")
+    if matrix.get("deck_spec") != "present":
+        gaps.append("structured TCAD deck spec")
+    if matrix.get("model_coupling_risk") == "present":
+        risks.append("物理模型可能只是 metadata 或耦合状态需要确认。")
+        must_fix.append("确认 traps、fixed charge、impact ionization 等模型是否真的耦合进方程。")
+    if any("golden_metric_" in code for code in warning_codes + error_codes):
+        risks.append("与 golden/经验指标的偏差需要解释。")
+    if error_codes:
+        level = "blocked"
+        acceptance = "不可作为工程结论依据，必须先修复错误项。"
+    elif warning_codes or risks:
+        level = "conditional"
+        acceptance = "可作为下一步规划线索，但结论必须带风险说明。"
+    elif len(checks) >= 2 and not gaps[:1]:
+        level = "ready"
+        acceptance = "可作为本轮工程证据；若用于签核仍需补 corner/实测/更完整 deck。"
+    else:
+        level = "limited"
+        acceptance = "证据偏少，只能作为初步 smoke/探索结果。"
+    score = {
+        "ready": 0.9,
+        "conditional": 0.65,
+        "limited": 0.45,
+        "blocked": 0.1,
+    }[level]
+    score -= min(len(gaps) * 0.05, 0.2)
+    return {
+        "level": level,
+        "score": round(max(score, 0.0), 3),
+        "acceptance_zh": acceptance,
+        "risk_factors_zh": risks,
+        "evidence_gaps": gaps,
+        "must_fix_before_signoff": must_fix,
+        "matrix": matrix,
+    }
+
+
 def summarize_checks(checks: list[BenchmarkCheck], state: dict[str, Any] | None = None) -> dict[str, Any]:
     counts = {"pass": 0, "warning": 0, "error": 0}
     for check in checks:
@@ -1218,11 +1277,13 @@ def summarize_checks(checks: list[BenchmarkCheck], state: dict[str, Any] | None 
         signoff_status = "unsupported"
         label = "暂无可用 benchmark"
         next_action = "补充该工具类型的物理 benchmark 规则或换用已支持的 TCAD 结果。"
+    credibility = credibility_assessment(checks, state or {}) if state is not None else {}
     return {
         "generated_at": utc_timestamp(),
         "counts": counts,
         "check_count": total,
         "confidence_score": round(score, 3),
+        "credibility": credibility,
         "signoff_status": signoff_status,
         "signoff_label_zh": label,
         "blocking_codes": [check.code for check in checks if check.severity == BenchmarkSeverity.ERROR],

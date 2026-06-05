@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tcad_agent.conclusion import generate_experiment_conclusion
+from tcad_agent.engineering_intent import parse_engineering_intent
 from tcad_agent.experiment_index import default_index_db_path, list_records, rebuild_index
 from tcad_agent.goal_decomposer import (
     ChatClient,
@@ -16,6 +17,11 @@ from tcad_agent.goal_decomposer import (
     decompose_goal_with_llm,
     deterministic_decompose_goal,
     replan_goal_after_issue,
+)
+from tcad_agent.long_horizon_agent import (
+    build_long_horizon_snapshot,
+    decide_long_horizon_action,
+    merge_risk_ledger,
 )
 from tcad_agent.physical_benchmark import run_physical_benchmark
 from tcad_agent.repair_executor import run_repair_executor
@@ -574,6 +580,8 @@ def controller_observation(state: MissionState, step: MissionStep) -> dict[str, 
 
 
 def controller_decision(state: MissionState, step: MissionStep, observation: dict[str, Any]) -> dict[str, Any]:
+    snapshot = build_long_horizon_snapshot(state.goal_text, state.checkpoint, observation)
+    policy = decide_long_horizon_action(snapshot)
     if state.status == MissionStatus.WAITING_FOR_USER:
         action = "ask_user"
         reason = "当前步骤需要用户确认或补充信息，暂停自动执行。"
@@ -603,9 +611,33 @@ def controller_decision(state: MissionState, step: MissionStep, observation: dic
     else:
         action = "continue"
         reason = "当前步骤未发现阻塞风险，继续执行下一步。"
+    if policy.action in {"replan", "repair_or_verify", "continue_with_risk", "ask_user"} and action in {"continue", "continue_with_risk"}:
+        action = policy.action
+        reason = policy.reason_zh
+    existing_ledger = [item for item in (state.checkpoint.get("risk_ledger") or []) if isinstance(item, dict)]
+    state.checkpoint["risk_ledger"] = merge_risk_ledger(existing_ledger, policy.risk_ledger_updates)
+    policy_state = dict(state.checkpoint.get("long_horizon_policy") or {})
+    policy_state.update(
+        {
+            "last_action": action,
+            "last_policy_action": policy.action,
+            "last_policy_reason_zh": policy.reason_zh,
+            "last_risk_level": policy.risk_level,
+            "missing_evidence": policy.missing_evidence,
+            "required_evidence": policy.required_evidence,
+            "budget": policy.budget,
+            "updated_at": utc_timestamp(),
+        }
+    )
+    state.checkpoint["long_horizon_policy"] = policy_state
     return {
         "action": action,
         "reason_zh": reason,
+        "policy_action": policy.action,
+        "policy_reason_zh": policy.reason_zh,
+        "risk_level": policy.risk_level,
+        "required_evidence": policy.required_evidence,
+        "missing_evidence": policy.missing_evidence,
         "next_action": state.next_action,
         "replan_budget": {
             "attempts": int(state.checkpoint.get("agent_replan_attempts") or 0),
@@ -657,6 +689,18 @@ def should_agent_replan(state: MissionState) -> bool:
     if not signature:
         return False
     return signature != state.checkpoint.get("last_replan_issue_signature")
+
+
+def should_replan_before_ready_goal_step(state: MissionState) -> bool:
+    if not should_agent_replan(state):
+        return False
+    soft_failures = state.checkpoint.get("soft_failures") or []
+    if not isinstance(soft_failures, list) or not soft_failures:
+        return False
+    latest = soft_failures[-1]
+    if not isinstance(latest, dict):
+        return False
+    return latest.get("goal_step_kind") == "run_tool_convergence"
 
 
 def replan_issue_context(state: MissionState) -> dict[str, Any]:
@@ -813,13 +857,26 @@ def create_initial_state(
     defer_decomposition: bool = False,
 ) -> MissionState:
     now = utc_timestamp()
+    intent = parse_engineering_intent(goal_text)
+    replan_budget = 4 if intent.risk_level == "high" else 3
     checkpoint: dict[str, Any] = {
         "completed_cycles": 0,
         "goal_decomposer": "llm" if use_llm_decomposer else "deterministic",
         "goal_decomposition_status": "running" if defer_decomposition else "planned",
-        "agent_replan_enabled": use_llm_decomposer,
+        "agent_replan_enabled": True,
         "agent_replan_attempts": 0,
-        "agent_replan_max_attempts": 2,
+        "agent_replan_max_attempts": replan_budget,
+        "engineering_intent": intent.model_dump(mode="json"),
+        "long_horizon_policy": {
+            "mode": "autonomous",
+            "planner": "llm_with_deterministic_fallback" if use_llm_decomposer else "deterministic_fallback",
+            "risk_level": intent.risk_level,
+            "max_replan_attempts": replan_budget,
+            "max_repair_rounds": 4 if intent.risk_level == "high" else 3,
+            "required_evidence": intent.evidence_requirements,
+            "intent_summary_zh": intent.summary_zh,
+        },
+        "risk_ledger": [],
     }
     if defer_decomposition:
         return MissionState(
@@ -928,7 +985,7 @@ def choose_next_step(state: MissionState) -> MissionStep:
             request={"root": str(PROJECT_ROOT / "runs"), "db_path": str(default_index_db_path())},
         )
 
-    if should_agent_replan(state):
+    if should_replan_before_ready_goal_step(state):
         return MissionStep(
             **common,
             kind=MissionStepKind.REPLAN,
@@ -939,6 +996,14 @@ def choose_next_step(state: MissionState) -> MissionStep:
     goal_step = next_ready_goal_step(state)
     if goal_step:
         return mission_step_for_goal_step(state, goal_step, common)
+
+    if should_agent_replan(state):
+        return MissionStep(
+            **common,
+            kind=MissionStepKind.REPLAN,
+            reason="diagnose execution issues and adapt the mission plan",
+            request={"issue_context": replan_issue_context(state)},
+        )
 
     blocking = goal_step_indexes_by_status(state, {"failed", "waiting_for_user"})
     if blocking:

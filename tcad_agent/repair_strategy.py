@@ -546,6 +546,25 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
             ),
         )
 
+    if codes & {"moscap_capacitance_exceeds_cox", "moscap_capacitance_near_cox_limit", "moscap_missing_oxide_thickness_for_cox"}:
+        add_action(
+            actions,
+            RepairAction(
+                name="analytic_cox_unit_reconciliation",
+                priority=93,
+                reason="MOS C-V benchmark disagrees with the oxide-capacitance analytic bound, usually indicating units, area normalization, or oxide thickness mismatch.",
+                target_tool=tool_name,
+                request_patch={},
+                checklist=[
+                    "Compute Cox = eps_ox / tox from the requested oxide thickness.",
+                    "Verify capacitance is normalized per cm^2 and tox is in nm.",
+                    "Rerun a narrow C-V window after unit reconciliation before interpreting flat-band shift.",
+                ],
+                expected_effect="Prevents physically impossible C-V evidence from entering optimization or signoff conclusions.",
+                user_confirmation_required=True,
+            ),
+        )
+
     if codes & {
         "idvg_not_monotonic",
         "reverse_current_not_monotonic",
@@ -589,6 +608,24 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
                     "Run x_divisions convergence on idvd_final_current_a before accepting kink as physical.",
                 ],
                 expected_effect="Separates real high-field behavior from continuation, mobility-model, and mesh artifacts.",
+            ),
+        )
+
+    if codes & {"mosfet_idvd_kink_suspected", "mosfet_idvd_negative_differential_segments", "mosfet_idvd_saturation_not_observed"}:
+        add_action(
+            actions,
+            RepairAction(
+                name="benchmark_driven_idvd_refinement",
+                priority=86,
+                reason="Physical benchmark flagged Id-Vd shape risk; refine high-drain continuation and verify mesh/model sensitivity.",
+                target_tool=tool_name,
+                request_patch={**halve_step_patch(request), "sweep_type": "idvd", "repair_focus": "idvd_shape_benchmark"},
+                checklist=[
+                    "Refine drain bias around the suspicious high-Vd segment.",
+                    "Run x_divisions convergence using idvd_final_current_a or output_conductance_last_s.",
+                    "Only call kink physical after mesh/model sensitivity is bounded.",
+                ],
+                expected_effect="Turns benchmark-level curve-shape warnings into an executable Id-Vd verification path.",
             ),
         )
 
@@ -643,6 +680,7 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
         "deck_physics_model_coupling_needs_confirmation",
         "deck_spec_contains_model_warnings",
         "subthreshold_swing_below_thermal_limit",
+        "schottky_thermionic_residual_not_coupled",
     }:
         add_action(
             actions,
@@ -679,7 +717,7 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
             ),
         )
 
-    if codes & {"deck_measured_curve_comparison_missing"}:
+    if codes & {"deck_measured_curve_comparison_missing"} or any(code.startswith("golden_metric_") for code in codes):
         add_action(
             actions,
             RepairAction(

@@ -48,6 +48,7 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         self.assertEqual(result.summary["signoff_status"], "ready")
         self.assertEqual(result.summary["signoff_label_zh"], "可作为本轮工程证据")
         self.assertGreater(result.summary["confidence_score"], 0.9)
+        self.assertIn(result.summary["credibility"]["level"], {"ready", "limited"})
         self.assertTrue(Path(result.benchmark_path).exists())
 
     def test_mos_capacitor_fails_when_capacitance_exceeds_cox(self) -> None:
@@ -75,6 +76,7 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         self.assertEqual(result.status, BenchmarkStatus.FAILED)
         self.assertIn("moscap_capacitance_exceeds_cox", codes)
         self.assertEqual(result.summary["signoff_status"], "blocked")
+        self.assertEqual(result.summary["credibility"]["level"], "blocked")
         self.assertIn("moscap_capacitance_exceeds_cox", result.summary["blocking_codes"])
 
     def test_mosfet_flags_subthermal_subthreshold_swing(self) -> None:

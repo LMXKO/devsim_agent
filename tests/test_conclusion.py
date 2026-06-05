@@ -97,6 +97,8 @@ class ConclusionTest(unittest.TestCase):
         self.assertIn("物理 benchmark 状态", text)
         self.assertIn("签核状态", text)
         self.assertIn("置信分数", text)
+        self.assertIn("可信度等级", text)
+        self.assertIn("缺失证据", text)
         self.assertIn("benchmark 建议", text)
         self.assertIn("扫描氧化层厚度", text)
 

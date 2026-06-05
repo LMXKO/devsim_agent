@@ -169,6 +169,26 @@ class RepairStrategyTest(unittest.TestCase):
         self.assertIn("moscap_bias_and_charge_window_review", actions)
         self.assertEqual(actions["moscap_bias_and_charge_window_review"].request_patch["start"], -2.0)
 
+    def test_moscap_cox_benchmark_issue_plans_unit_reconciliation(self) -> None:
+        state_path = self.write_state(
+            {
+                "tool_name": "mos_capacitor_cv_sweep",
+                "status": "completed",
+                "run_id": "moscap_cox",
+                "request": {"oxide_thickness_nm": 5.0},
+                "quality_report": {
+                    "status": "suspicious",
+                    "issues": [{"code": "moscap_capacitance_exceeds_cox", "severity": "error"}],
+                },
+            }
+        )
+
+        plan = build_repair_plan(state_path)
+        actions = {action.name: action for action in plan.actions}
+
+        self.assertIn("analytic_cox_unit_reconciliation", actions)
+        self.assertTrue(actions["analytic_cox_unit_reconciliation"].user_confirmation_required)
+
     def test_diode_breakdown_and_leakage_issues_plan_reverse_and_lifetime_repairs(self) -> None:
         state_path = self.write_state(
             {

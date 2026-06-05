@@ -39,6 +39,7 @@ class GoalDecomposerTest(unittest.TestCase):
         self.assertIn(GoalStepKind.RUN_PHYSICAL_BENCHMARK, kinds)
         self.assertIn(GoalStepKind.RUN_REPAIR_EXECUTOR, kinds)
         self.assertEqual(result.steps[-1].kind, GoalStepKind.GENERATE_CONCLUSION)
+        self.assertIn("engineering_intent", result.steps[0].request)
 
     def test_llm_plan_success(self) -> None:
         response = json.dumps(
@@ -197,6 +198,13 @@ class GoalDecomposerTest(unittest.TestCase):
 
         self.assertEqual(convergence.request["tool_name"], "diode_breakdown_leakage_sweep")
         self.assertEqual(convergence.request["axis_path"], "temperature_k")
+
+    def test_planned_industrial_template_asks_to_implement_runner_first(self) -> None:
+        result = deterministic_decompose_goal("GaN HEMT 输出特性和 current collapse 风险，帮我扫栅压和漏压")
+
+        self.assertEqual(result.steps[0].kind, GoalStepKind.ASK_USER)
+        self.assertIn("engineering_intent", result.steps[0].request)
+        self.assertIn("尚未实现", result.warnings[0])
 
     def test_deterministic_replan_classifies_schema_alias_issue(self) -> None:
         decision = replan_goal_after_issue(

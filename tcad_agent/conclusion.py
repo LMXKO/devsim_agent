@@ -328,6 +328,7 @@ def benchmark_digest(source_path: Path) -> dict[str, Any]:
             "signoff_status": (data.get("summary") or {}).get("signoff_status"),
             "signoff_label_zh": (data.get("summary") or {}).get("signoff_label_zh"),
             "confidence_score": (data.get("summary") or {}).get("confidence_score"),
+            "credibility": (data.get("summary") or {}).get("credibility") or {},
             "recommended_next_action_zh": (data.get("summary") or {}).get("recommended_next_action_zh"),
             "evidence_matrix": (data.get("summary") or {}).get("evidence_matrix") or {},
             "warning_codes": [check.get("code") for check in checks if check.get("severity") == "warning"][:5],
@@ -345,8 +346,13 @@ def engineering_decision(
     benchmark: dict[str, Any],
 ) -> str:
     benchmark_status = benchmark.get("status")
+    credibility = benchmark.get("credibility") or {}
+    if credibility.get("level") == "blocked":
+        return "暂不信任该结果：可信度评审已阻塞，需要先修复错误级证据。"
     if state.get("status") == "failed" or q_counts.get("failed") or benchmark_status == "failed":
         return "暂不信任该结果：至少有一个质量检查或物理 benchmark 失败项需要先解决。"
+    if credibility.get("level") == "limited":
+        return "只能作为探索性结果：证据偏少，不能直接支撑强工程判断。"
     if s_counts.get("failed") or q_counts.get("suspicious") or benchmark_status in {"suspicious", "unsupported"}:
         return "可作为下一步规划线索，但在作为工程证据前，需要先完成建议的验证或局部细化。"
     return "可作为当前 TCAD 迭代的基线结果。"
@@ -597,6 +603,7 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
         lines.append("没有可排序的观测点。")
 
     lines.extend(["", "## 物理可信度检查", ""])
+    credibility = benchmark.get("credibility") or {}
     if benchmark.get("failure_reason"):
         lines.append(f"- 物理 benchmark 状态：`{format_status(benchmark.get('status'))}`；失败原因：`{benchmark.get('failure_reason')}`。")
     else:
@@ -604,7 +611,11 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
             [
                 f"- 物理 benchmark 状态：`{format_status(benchmark.get('status'))}`。",
                 f"- 签核状态：`{format_value(benchmark.get('signoff_label_zh') or benchmark.get('signoff_status'))}`；置信分数：`{format_value(benchmark.get('confidence_score'))}`。",
+                f"- 可信度等级：`{format_value(credibility.get('level'))}`；可信度分数：`{format_value(credibility.get('score'))}`。",
+                f"- 接收建议：{format_value(credibility.get('acceptance_zh'))}。",
                 f"- 证据矩阵：`{format_value(benchmark.get('evidence_matrix') or {})}`。",
+                f"- 缺失证据：`{format_value(credibility.get('evidence_gaps') or [])}`。",
+                f"- 签核前必须处理：`{format_value(credibility.get('must_fix_before_signoff') or [])}`。",
                 f"- 检查计数：`{format_value(benchmark.get('counts'))}`。",
                 f"- 告警代码：`{format_value(benchmark.get('warning_codes') or [])}`。",
                 f"- 错误代码：`{format_value(benchmark.get('error_codes') or [])}`。",

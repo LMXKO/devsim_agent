@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, ValidationError
 
 from tcad_agent.device_templates import RouteStatus, TemplateSupport, route_device_goal
+from tcad_agent.engineering_intent import DeviceSupport, parse_engineering_intent
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.task_planner import parse_json_object
 from tcad_agent.tool_convergence import normalize_tool_convergence_payload
@@ -85,16 +86,52 @@ def text_has_any(text: str, keywords: list[str]) -> bool:
 
 
 def primary_goal_step(text: str) -> GoalStep:
+    intent = parse_engineering_intent(text)
     return GoalStep(
         index=1,
         kind=GoalStepKind.RUN_SUPERVISOR,
         title="Run primary TCAD task through supervisor",
-        request={"goal_text": text, "execute": True, "max_cycles": 3},
+        request={
+            "goal_text": text,
+            "execute": True,
+            "max_cycles": 3,
+            "engineering_intent": intent.model_dump(mode="json"),
+            "request_hint": intent.request_hint,
+            "suggested_tool": intent.suggested_tool,
+        },
         stop_on_failure=False,
     )
 
 
 def default_tool_convergence_request(text: str) -> dict[str, Any]:
+    intent = parse_engineering_intent(text)
+    if intent.device_family == "power_mosfet":
+        return {
+            "tool_name": "extended_device_sweep",
+            "base_request": {"device_type": "power_mosfet_bv_ron", "start": 0.0, "stop": -90.0, "step": 5.0},
+            "axis_path": "drift_region_doping_cm3",
+            "values": [5.0e15, 1.0e16, 2.0e16],
+            "metric_path": "quality_report.metrics.specific_on_resistance_ohm_cm2",
+            "relative_tolerance": 0.25,
+        }
+    if intent.device_family == "photodiode":
+        return {
+            "tool_name": "extended_device_sweep",
+            "base_request": {"device_type": "photodiode_iv", "start": -1.0, "stop": 0.8, "step": 0.1},
+            "axis_path": "optical_power_w_per_cm2",
+            "values": [1.0e-4, 1.0e-3, 1.0e-2],
+            "metric_path": "quality_report.metrics.responsivity_a_per_w",
+            "relative_tolerance": 0.2,
+        }
+    if intent.device_family in {"finfet", "sic_power_diode", "gan_hemt", "igbt"}:
+        return {
+            "tool_name": "extended_device_sweep",
+            "base_request": {"device_type": intent.device_family, "planned_template": intent.template_id},
+            "axis_path": "planned_capability",
+            "values": ["template", "runner", "benchmark"],
+            "metric_path": "quality_report.metrics.capability_gap_count",
+            "relative_tolerance": 1.0,
+        }
     if text_has_any(text, ["schottky", "肖特基"]) and text_has_any(
         text,
         ["calibrate", "calibration", "fit", "trusted curve", "measured curve", "校准", "标定", "拟合", "可信曲线", "实测曲线"],
@@ -247,8 +284,31 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
     steps: list[GoalStep] = []
     assumptions: list[str] = []
     warnings: list[str] = []
+    intent = parse_engineering_intent(goal_text)
 
     route = route_device_goal(goal_text)
+    if intent.support == DeviceSupport.PLANNED:
+        steps.append(
+            GoalStep(
+                index=1,
+                kind=GoalStepKind.ASK_USER,
+                title=f"确认尚未实现的工业 TCAD 模板：{intent.device_family}",
+                request={
+                    "engineering_intent": intent.model_dump(mode="json"),
+                    "question": "该器件/结构已进入能力目录，但还没有可执行 DEVSIM runner。请确认是否先实现模板、runner、质量检查和 benchmark。",
+                },
+                requires_user_confirmation=True,
+            )
+        )
+        warnings.append(f"目标匹配到尚未实现的工业器件模板：{intent.device_family}。")
+        return GoalDecompositionResult(
+            status=DecompositionStatus.COMPLETED,
+            goal_text=goal_text,
+            plan_id=plan_id,
+            steps=steps,
+            warnings=warnings,
+        )
+
     if route.status == RouteStatus.MATCHED and route.template and route.template.support == TemplateSupport.PLANNED:
         steps.append(
             GoalStep(
@@ -278,7 +338,7 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
                 index=len(steps) + 1,
                 kind=GoalStepKind.QUERY_HISTORY,
                 title="Inspect prior TCAD experiments",
-                request={"limit": 20},
+                request={"limit": 20, "engineering_intent": intent.model_dump(mode="json")},
                 stop_on_failure=False,
             )
         )
@@ -286,7 +346,10 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
     primary_index = len(steps) + 1
     steps.append(primary_goal_step(goal_text).model_copy(update={"index": primary_index}))
 
-    if text_has_any(
+    needs_convergence = bool(
+        {"mesh_convergence", "model_ab", "engineering_signoff", "curve_shape", "unit_check"}
+        & set(intent.evidence_requirements)
+    ) or text_has_any(
         goal_text,
         [
             "convergence",
@@ -322,7 +385,8 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
             "寿命",
             "高温",
         ],
-    ):
+    )
+    if needs_convergence:
         steps.append(
             GoalStep(
                 index=len(steps) + 1,
@@ -339,7 +403,7 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
             index=len(steps) + 1,
             kind=GoalStepKind.RUN_PHYSICAL_BENCHMARK,
             title="Run physical benchmark and sanity checks",
-            request={},
+            request={"engineering_intent": intent.model_dump(mode="json")},
             depends_on=[benchmark_dep],
             stop_on_failure=False,
         )
@@ -350,7 +414,11 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
             index=len(steps) + 1,
             kind=GoalStepKind.RUN_REPAIR_EXECUTOR,
             title="Repair suspicious or failed result if needed",
-            request={"max_rounds": 3, "allow_user_confirmation_actions": False},
+            request={
+                "max_rounds": 4 if intent.risk_level == "high" else 3,
+                "allow_user_confirmation_actions": False,
+                "engineering_intent": intent.model_dump(mode="json"),
+            },
             depends_on=[steps[-1].index],
             stop_on_failure=False,
         )
@@ -362,13 +430,14 @@ def deterministic_decompose_goal(goal_text: str, *, plan_id: str | None = None) 
                 index=len(steps) + 1,
                 kind=GoalStepKind.GENERATE_CONCLUSION,
                 title="Generate engineering conclusion",
-                request={},
+                request={"engineering_intent": intent.model_dump(mode="json")},
                 depends_on=[steps[-1].index],
                 stop_on_failure=False,
             )
         )
     if len(steps) <= 2:
         assumptions.append("Defaulted to primary supervisor execution, repair-if-needed, and final conclusion.")
+    assumptions.append(f"工程意图：{intent.summary_zh}")
     return GoalDecompositionResult(
         status=DecompositionStatus.COMPLETED,
         goal_text=goal_text,

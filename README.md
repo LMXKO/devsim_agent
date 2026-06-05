@@ -9,10 +9,13 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 ## What It Does
 
 - Accepts semiconductor simulation tasks from a lightweight web UI.
+- Parses natural-language engineering intent into device family, analyses, metrics, evidence requirements, risk level, and executable request hints.
 - Decomposes natural-language goals into durable mission steps.
+- Runs a long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Retries selected failures with TCAD-specific repair strategies such as smaller bias steps.
+- Scores physical credibility with unit, curve-shape, model-coupling, convergence, and golden/measured evidence checks.
 - Displays process logs, plots, metrics, quality checks, replanning decisions, and engineering conclusions in the page.
 - Supports queue/worker recovery so long runs can be resumed after interruption.
 
@@ -25,6 +28,8 @@ The implemented examples are intentionally practical rather than broad:
 - MOS capacitor C-V;
 - 2D MOSFET Id-Vg and Id-Vd;
 - Schottky diode compact and DEVSIM-backed calibration paths;
+- compact baseline routes for BJT, JFET, power MOSFET, and photodiode tasks;
+- planned industrial templates for FinFET/GAA, SiC power diode, GaN HEMT, and IGBT workflows;
 - parameter sweep, multi-dimensional optimization, convergence checks, benchmark checks, and report generation.
 
 This is not a sign-off TCAD replacement. Treat results as automation evidence that still needs engineering review, model calibration, and mesh/physics validation.
@@ -34,11 +39,14 @@ This is not a sign-off TCAD replacement. Treat results as automation evidence th
 ```text
 Natural-language task
   -> goal decomposer
+  -> engineering-intent parser
   -> mission agent
+  -> long-horizon control policy
   -> run queue / worker
   -> supervisor
   -> TCAD tool runner
   -> quality, metrics, convergence, repair
+  -> physical credibility assessment
   -> checkpoint / replan / resume
   -> engineering conclusion
   -> web UI
@@ -138,6 +146,8 @@ tcad_agent/
   mission_agent.py
   supervisor.py
   run_queue.py
+  engineering_intent.py
+  long_horizon_agent.py
   repair_strategy.py
   physical_quality.py
 docs/             design notes and tool documentation
