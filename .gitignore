@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.cache/
+.idea/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.db
+runs/*
+!runs/.gitkeep
