@@ -360,6 +360,31 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertTrue(Path(state.checkpoint["patched_source_deck"]).exists())
         self.assertEqual(tool_requests[0]["source_deck_path"], state.checkpoint["patched_source_deck"])
 
+    def test_user_deck_executes_directly_when_no_initial_tool(self) -> None:
+        source_deck = self.root / "direct_user_deck.py"
+        source_deck.write_text("print('{\"deck\":\"ran\"}')\n", encoding="utf-8")
+
+        request = AutonomousDevsimRequest(
+            goal_text="Run user deck directly",
+            agent_id="agent_user_deck",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=2,
+            source_deck_path=str(source_deck),
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        state = run_autonomous_devsim_agent(request)
+
+        self.assertEqual(state.status, DevsimAgentStatus.FAILED)
+        self.assertIn(DevsimAgentActionKind.RUN_USER_DECK, [step.kind for step in state.steps])
+        deck_step = next(step for step in state.steps if step.kind == DevsimAgentActionKind.RUN_USER_DECK)
+        self.assertEqual(deck_step.result["status"], "completed")
+        self.assertTrue(Path(deck_step.result["state_path"]).exists())
+        self.assertEqual(deck_step.result["reported_stdout_json"], {"deck": "ran"})
+
     def test_capability_audit_records_coverage_work_package(self) -> None:
         request = AutonomousDevsimRequest(
             goal_text="GaN HEMT current collapse transient signoff",

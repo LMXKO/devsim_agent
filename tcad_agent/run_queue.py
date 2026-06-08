@@ -653,6 +653,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
     from tcad_agent.tool_convergence import ToolConvergenceRequest, run_tool_convergence
+    from tcad_agent.user_deck_runner import UserDeckRunRequest, run_user_deck
     from tcad_agent.tools.diode_breakdown import DiodeBreakdownRequest, run_diode_breakdown_sweep
     from tcad_agent.tools.extended_device_sweep import ExtendedDeviceRequest, run_extended_device_sweep
     from tcad_agent.tools.mos_capacitor_cv import MOSCapacitorCVRequest, run_mos_capacitor_cv_sweep
@@ -833,6 +834,7 @@ def default_runner_registry() -> dict[str, Runner]:
         "experiment_report": experiment_report_runner,
         "experiment_dashboard": experiment_dashboard_runner,
         "experiment_conclusion": experiment_conclusion_runner,
+        "user_deck_execution": lambda request: run_user_deck(UserDeckRunRequest.model_validate(request)),
     }
     registry["autonomous_devsim_agent"] = lambda request: run_autonomous_devsim_agent(
         AutonomousDevsimRequest.model_validate(request),

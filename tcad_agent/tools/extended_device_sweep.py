@@ -4,7 +4,6 @@ import argparse
 import csv
 import json
 import math
-import subprocess
 import sys
 from datetime import datetime
 from enum import Enum
@@ -15,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from tcad_agent.deck_writer import write_deck_artifacts
 from tcad_agent.curve_diagnostics import curve_shape_diagnostic
+from tcad_agent.process_control import run_cancellable
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.tcad_deck import build_tcad_deck_spec
 
@@ -926,7 +926,7 @@ def run_schottky_devsim_1d(
     ]
     if request.schottky_auto_image_force_lowering:
         command.append("--auto-image-force-lowering")
-    completed = subprocess.run(
+    completed = run_cancellable(
         command,
         cwd=PROJECT_ROOT,
         capture_output=True,

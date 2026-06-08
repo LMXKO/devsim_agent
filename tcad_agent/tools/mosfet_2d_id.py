@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from tcad_agent.deck_writer import write_deck_artifacts
 from tcad_agent.metrics import extract_mosfet_metrics_from_csv, load_mosfet_points
 from tcad_agent.physical_quality import check_mosfet_physics
+from tcad_agent.process_control import run_cancellable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -429,7 +430,7 @@ def run_attempt(
     state.checkpoint = {"gate_step_v": gate_step, "drain_step_v": drain_step, "completed_attempts": attempt_index - 1}
     write_state(state, state_path)
     try:
-        completed = subprocess.run(
+        completed = run_cancellable(
             command,
             cwd=PROJECT_ROOT,
             capture_output=True,

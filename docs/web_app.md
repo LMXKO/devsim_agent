@@ -1,6 +1,6 @@
 # TCAD Mission Workbench
 
-`tcad_agent.tools.web_app` starts a local browser UI for long-running autonomous TCAD work. It is the interactive page entrypoint for:
+`tcad_agent.tools.web_app` starts a local browser UI for long-running autonomous TCAD work. The page stays intentionally minimal: one transcript, one composer, and only the queue controls needed for the current item. It is the interactive page entrypoint for:
 
 - submitting a natural-language TCAD mission;
 - choosing LLM-backed or deterministic mission decomposition;
@@ -61,20 +61,23 @@ http://127.0.0.1:8765
 
 ## Mission Flow
 
-The page posts mission requests to `/api/missions`. Those requests are queued as `mission_agent` items with:
+The page posts mission requests to `/api/missions`. By default those requests are queued as `autonomous_devsim_agent` items with:
 
 ```json
 {
   "goal_text": "做 2D MOSFET Id-Vg，提取 Vth、SS、Ion/Ioff，最后给工程结论",
   "execute": true,
-  "use_llm_decomposer": true,
+  "use_llm": true,
   "allow_llm_fallback": true,
-  "max_cycles": 12,
+  "require_capability_audit": true,
+  "max_steps": 12,
   "supervisor_max_cycles": 3
 }
 ```
 
-The in-page worker controls call the same durable queue worker used by `tcad_agent.tools.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite` and mission states remain under `runs/missions`.
+The in-page worker controls call the same durable queue worker used by `tcad_agent.tools.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite`; autonomous agent states remain under `runs/autonomous_devsim_agent`.
+
+For compatibility, callers can explicitly post `"tool_name":"mission_agent"` to `/api/missions`, but the page itself does not expose a mode picker.
 
 For autonomous DEVSIM queue items, a sensitive action can return `waiting_for_user`. The queue records the state as `paused`; `/api/items/{queue_id}/approve` patches the request with `resume=true` and `allow_user_confirmation_actions=true`, while `/api/items/{queue_id}/reject` cancels the item and writes the agent cancel token.
 

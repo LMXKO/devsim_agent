@@ -66,7 +66,7 @@ Legacy JFET and photodiode compact routes remain in code for regression coverage
 
 ## Planned Industrial Templates
 
-FinFET/GAA, SiC power diode, GaN HEMT, and IGBT are planned industrial templates. They remain blocked at goal decomposition and supervisor routing until a real runner, quality rules, and benchmark evidence are implemented.
+FinFET/GAA, SiC power diode, GaN HEMT, and IGBT now route to executable `physics_1d` workflows with explicit fidelity and signoff caveats. They are useful for autonomous planning, benchmark wiring, and first-pass engineering evidence, but they still require model calibration, mesh-resolved runner promotion, convergence evidence, and golden/measured comparison before strong signoff claims.
 
 `supervisor` now uses this catalog to avoid routing specialized devices into the wrong executable tool. For example, "power MOSFET BV" routes to `extended_device_sweep` with `device_type=power_mosfet_bv_ron` instead of being run as a simple 2D MOSFET transfer curve.
 

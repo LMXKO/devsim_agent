@@ -14,11 +14,11 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Decomposes natural-language goals into durable mission steps.
 - Runs an agent-first long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
 - Provides a long-running `autonomous_devsim_agent` runtime that repeatedly chooses tools, runs DEVSIM-backed tasks, inspects state/metrics/artifacts/logs/curves/deck diffs, repairs suspicious results, benchmarks evidence, evaluates objectives, and writes conclusions.
-- Supports cooperative long-run control with agent heartbeat files, cancel tokens, queue pause/resume, user-confirmation approval, and autonomous run timeline dashboards.
+- Supports cooperative long-run control with agent heartbeat files, cancel tokens, subprocess termination, queue pause/resume, user-confirmation approval, and autonomous run timeline dashboards.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, and deterministic fallback actions.
-- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies semantic deck patches, and emits diffs.
+- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies semantic deck patches, emits diffs, and can execute the patched/user deck directly.
 - Compares baseline and mutation curves with shape features, leakage/BV brackets, field peaks, tradeoff checks, and overlay artifacts.
 - Supports deck mutation schemas for field plates, drift doping, lifetime, guard rings, junction depth, oxide thickness, implant dose, trench corner radius, trap density, and region-specific lifetime.
 - Scores physical credibility with unit, curve-shape, model-coupling, convergence, and golden/measured evidence checks.
@@ -111,7 +111,7 @@ Open:
 http://127.0.0.1:8766/
 ```
 
-The normal workflow is: type a natural-language TCAD task at the bottom, submit it, and watch the mission steps, tool calls, logs, plots, metrics, deck patch lineage, replanning decisions, and final conclusion appear above.
+The normal workflow is intentionally minimal: type a natural-language TCAD task at the bottom, submit it, and watch the autonomous agent steps, tool calls, logs, plots, metrics, deck patch lineage, replanning decisions, and final conclusion appear above.
 
 ## Configure An LLM
 

@@ -16,6 +16,7 @@ from tcad_agent.web_app import (
     activity_has_artifacts,
     activity_has_process,
     approve_item_confirmation,
+    autonomous_request_from_payload,
     collect_execution_activity,
     collect_recent_experiment_activity,
     compact_conclusion,
@@ -51,6 +52,16 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(request["allow_llm_fallback"])
         self.assertEqual(request["max_cycles"], 12)
 
+    def test_autonomous_request_from_payload_defaults_to_agent_execution(self) -> None:
+        request = autonomous_request_from_payload({"goal_text": "做 MOSFET Id-Vg"})
+
+        self.assertEqual(request["goal_text"], "做 MOSFET Id-Vg")
+        self.assertTrue(request["execute"])
+        self.assertTrue(request["use_llm"])
+        self.assertTrue(request["allow_llm_fallback"])
+        self.assertTrue(request["require_capability_audit"])
+        self.assertEqual(request["max_steps"], 12)
+
     def test_enqueue_mission_from_payload_writes_queue_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -71,10 +82,34 @@ class WebAppTest(unittest.TestCase):
             )
             rows = list_items(config.queue_db_path)
 
-        self.assertEqual(item["tool_name"], "mission_agent")
+        self.assertEqual(item["tool_name"], "autonomous_devsim_agent")
         self.assertEqual(item["priority"], 7)
         self.assertEqual(rows[0]["request"]["goal_text"], "做 diode breakdown 并给结论")
         self.assertFalse(rows[0]["request"]["execute"])
+        self.assertTrue(rows[0]["request"]["require_capability_audit"])
+
+    def test_enqueue_mission_from_payload_can_still_force_mission_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                worker_stop_file=root / "worker.stop",
+            )
+
+            item = enqueue_mission_from_payload(
+                config,
+                {
+                    "goal_text": "做 diode breakdown 并给结论",
+                    "tool_name": "mission_agent",
+                    "execute": False,
+                    "priority": 7,
+                    "max_cycles": 2,
+                },
+            )
+
+        self.assertEqual(item["tool_name"], "mission_agent")
+        self.assertEqual(item["request"]["max_cycles"], 2)
 
     def test_render_app_html_contains_workbench_api_hooks(self) -> None:
         html = render_app_html()

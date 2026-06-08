@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -42,6 +43,20 @@ Runner = Callable[[dict[str, Any]], dict[str, Any]]
 RepairRunner = Callable[..., Any]
 
 
+@contextmanager
+def temporary_cancel_env(cancel_file: str | None):
+    previous = os.environ.get("ACTSOFT_CANCEL_FILE")
+    if cancel_file:
+        os.environ["ACTSOFT_CANCEL_FILE"] = cancel_file
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("ACTSOFT_CANCEL_FILE", None)
+        else:
+            os.environ["ACTSOFT_CANCEL_FILE"] = previous
+
+
 class DevsimAgentStatus(str, Enum):
     PLANNED = "planned"
     RUNNING = "running"
@@ -68,6 +83,7 @@ class DevsimAgentActionKind(str, Enum):
     EVALUATE_OBJECTIVES = "evaluate_objectives"
     INGEST_DECK = "ingest_deck"
     APPLY_DECK_PATCH = "apply_deck_patch"
+    RUN_USER_DECK = "run_user_deck"
     GENERATE_REPORT = "generate_report"
     GENERATE_DASHBOARD = "generate_dashboard"
     STOP_SUCCESS = "stop_success"
@@ -522,6 +538,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"source_deck_path": {"type": "string"}, "deck_patches": {"type": "array"}}, required=["source_deck_path", "deck_patches"]),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.RUN_USER_DECK.value,
+            action_kind=DevsimAgentActionKind.RUN_USER_DECK.value,
+            description="Execute a user-provided or patched DEVSIM Python deck directly.",
+            parameters=object_schema({"deck_path": {"type": "string"}, "timeout_seconds": {"type": "number"}}, required=["deck_path"]),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.GENERATE_REPORT.value,
             action_kind=DevsimAgentActionKind.GENERATE_REPORT.value,
             description="Generate an engineer-readable Markdown report or conclusion.",
@@ -683,6 +705,13 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             tool_name=request.initial_tool_name,
             request=tool_request,
             reason="Run the requested initial DEVSIM tool after any deck ingest or semantic patch setup.",
+        )
+    if request.source_deck_path and not request.initial_tool_name and not state.checkpoint.get("user_deck_done"):
+        deck_path = state.checkpoint.get("patched_source_deck") or request.source_deck_path
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_USER_DECK,
+            request={"deck_path": deck_path, "run_id": f"{state.agent_id}_user_deck"},
+            reason="No initial tool was requested; execute the user DEVSIM deck directly after ingest/patch setup.",
         )
     if not state.latest_state_path:
         return DevsimAgentAction(
@@ -1035,21 +1064,26 @@ def execute_action(
         runner = runner_registry.get(action.tool_name)
         if runner is None:
             raise ValueError(f"runner is not registered: {action.tool_name}")
-        result = runner(action.request)
+        tool_request = dict(action.request)
+        if state.cancel_file:
+            tool_request.setdefault("cancel_file", state.cancel_file)
+        with temporary_cancel_env(state.cancel_file):
+            result = runner(tool_request)
         return result, infer_result_state_path(result)
     if action.kind == DevsimAgentActionKind.RUN_REPAIR_EXECUTOR:
         source = action.source_state_path or state.latest_state_path
         if not source:
             raise ValueError("repair action requires a source state")
-        result = result_to_dict(
-            repair_runner(
-                Path(source),
-                execute=True,
-                max_rounds=request.repair_max_rounds,
-                allow_user_confirmation_actions=request.allow_user_confirmation_actions,
-                use_agent_policy=request.use_agent_policy,
+        with temporary_cancel_env(state.cancel_file):
+            result = result_to_dict(
+                repair_runner(
+                    Path(source),
+                    execute=True,
+                    max_rounds=request.repair_max_rounds,
+                    allow_user_confirmation_actions=request.allow_user_confirmation_actions,
+                    use_agent_policy=request.use_agent_policy,
+                )
             )
-        )
         return result, infer_result_state_path(result) or result.get("final_state_path") or result.get("current_state_path")
     if action.kind == DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK:
         source = action.source_state_path or state.latest_state_path
@@ -1096,6 +1130,23 @@ def execute_action(
         state.checkpoint["patched_source_deck"] = result.get("patched_source_deck")
         state.checkpoint["semantic_deck_diff"] = result.get("semantic_deck_diff")
         return result, result.get("state_path")
+    if action.kind == DevsimAgentActionKind.RUN_USER_DECK:
+        runner = runner_registry.get("user_deck_execution")
+        if runner is None:
+            raise ValueError("user_deck_execution runner is not registered")
+        deck_path = action.request.get("deck_path") or state.checkpoint.get("patched_source_deck") or request.source_deck_path
+        if not deck_path:
+            raise ValueError("user deck execution requires deck_path")
+        payload = {
+            **action.request,
+            "deck_path": deck_path,
+            "cancel_file": state.cancel_file,
+        }
+        with temporary_cancel_env(state.cancel_file):
+            result = runner(payload)
+        state.checkpoint["user_deck_done"] = True
+        state.checkpoint["user_deck_state_path"] = result.get("state_path")
+        return result, infer_result_state_path(result) or result.get("state_path")
     if action.kind == DevsimAgentActionKind.GENERATE_REPORT:
         source = action.source_state_path or state.latest_state_path
         if not source:

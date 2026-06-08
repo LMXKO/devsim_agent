@@ -27,6 +27,7 @@ Supported actions:
 - `evaluate_objectives`: evaluate objectives, constraints, best candidate, and Pareto front before continuing;
 - `ingest_deck`: parse a user DEVSIM Python deck into source IR;
 - `apply_deck_patch`: apply semantic deck patches and emit patched source plus unified diff;
+- `run_user_deck`: execute a user-provided or patched DEVSIM Python deck directly and capture stdout/stderr/state;
 - `generate_report`: create a sweep/optimization report, or fall back to an engineering conclusion for single-run states;
 - `generate_dashboard`: create a dashboard for a sweep, optimization, or autonomous timeline;
 - `stop_success`: finish when enough evidence and artifacts exist;
@@ -89,6 +90,7 @@ The runtime is agent-first, but not unrestricted:
 - unsupported tool names are rejected;
 - high-risk geometry/process/model edits pause unless confirmation is allowed;
 - queue cancel writes an agent cancel token; the agent checks it at step boundaries and writes heartbeat state;
+- DEVSIM subprocess helpers also poll the cancel token and terminate the child process when it appears;
 - queued confirmation pauses can be approved or rejected through the web API;
 - deterministic fallback remains available unless disabled;
 - compact/planned evidence is still blocked by physical benchmark and signoff evidence gates.

@@ -41,9 +41,9 @@ from tcad_agent.tcad_deck import compact_tcad_deck_spec
 
 CAPABILITIES: list[dict[str, Any]] = [
     {
-        "name": "Mission Agent",
-        "tool": "mission_agent",
-        "scope": "long-horizon goal decomposition, supervisor execution, repair, conclusion",
+        "name": "Autonomous DEVSIM Agent",
+        "tool": "autonomous_devsim_agent",
+        "scope": "long-horizon DEVSIM execution, observation, repair, objective checks, conclusion",
     },
     {
         "name": "Device Coverage",
@@ -326,14 +326,52 @@ def mission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    goal_text = str(payload.get("goal_text") or payload.get("goal") or "").strip()
+    if not goal_text:
+        raise ValueError("goal_text is required")
+    request: dict[str, Any] = {
+        "goal_text": goal_text,
+        "execute": bool_from_payload(payload, "execute", True),
+        "max_steps": int_from_payload(payload, "max_steps", int_from_payload(payload, "max_cycles", 12, minimum=1), minimum=1),
+        "supervisor_max_cycles": int_from_payload(payload, "supervisor_max_cycles", 3, minimum=1),
+        "use_llm": bool_from_payload(payload, "use_llm", bool_from_payload(payload, "use_llm_decomposer", True)),
+        "allow_llm_fallback": bool_from_payload(payload, "allow_llm_fallback", True),
+        "require_capability_audit": bool_from_payload(payload, "require_capability_audit", True),
+    }
+    for key in [
+        "initial_tool_name",
+        "source_state_path",
+        "source_deck_path",
+    ]:
+        if payload.get(key):
+            request[key] = payload[key]
+    if isinstance(payload.get("initial_request"), dict):
+        request["initial_request"] = payload["initial_request"]
+    if isinstance(payload.get("deck_patches"), list):
+        request["deck_patches"] = payload["deck_patches"]
+    if isinstance(payload.get("objectives"), list):
+        request["objectives"] = payload["objectives"]
+    if isinstance(payload.get("constraints"), list):
+        request["constraints"] = payload["constraints"]
+    return request
+
+
 def enqueue_mission_from_payload(config: WebAppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    request = mission_request_from_payload(payload)
-    tags = payload.get("tags") or ["web", "mission"]
+    if str(payload.get("tool_name") or payload.get("tool") or "").strip() == "mission_agent":
+        request = mission_request_from_payload(payload)
+        tool_name = "mission_agent"
+        default_tags = ["web", "mission"]
+    else:
+        request = autonomous_request_from_payload(payload)
+        tool_name = "autonomous_devsim_agent"
+        default_tags = ["web", "autonomous"]
+    tags = payload.get("tags") or default_tags
     if isinstance(tags, str):
         tags = [item.strip() for item in tags.split(",") if item.strip()]
     item = enqueue_run(
         config.queue_db_path,
-        tool_name="mission_agent",
+        tool_name=tool_name,
         request=request,
         queue_id=payload.get("queue_id") or None,
         priority=int_from_payload(payload, "priority", 10, minimum=-1000000),

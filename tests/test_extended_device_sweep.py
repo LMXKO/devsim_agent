@@ -102,7 +102,7 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
 
             return Completed()
 
-        with patch("tcad_agent.tools.extended_device_sweep.subprocess.run", side_effect=fake_run):
+        with patch("tcad_agent.tools.extended_device_sweep.run_cancellable", side_effect=fake_run):
             state = run_extended_device_sweep(
                 ExtendedDeviceRequest(
                     device_type=ExtendedDeviceType.SCHOTTKY_DIODE,

@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from tcad_agent.deck_writer import write_deck_artifacts
+from tcad_agent.process_control import run_cancellable
 from tcad_agent.tools.result_judge import QualityPolicy, judge_pn_junction_iv
 
 
@@ -297,7 +298,7 @@ def run_attempt(
     write_state(state, state_path)
 
     try:
-        completed = subprocess.run(
+        completed = run_cancellable(
             command,
             cwd=PROJECT_ROOT,
             capture_output=True,

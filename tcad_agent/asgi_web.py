@@ -23,6 +23,7 @@ from tcad_agent.web_app import (
     WorkerController,
     activity_has_artifacts,
     activity_has_process,
+    approve_item_confirmation,
     collect_execution_activity,
     collect_recent_experiment_activity,
     enqueue_mission_from_payload,
@@ -31,6 +32,7 @@ from tcad_agent.web_app import (
     llm_settings_response,
     recover_owner_running_items,
     render_app_html,
+    reject_item_confirmation,
     resolve_artifact_path,
     save_llm_settings_from_payload,
 )
@@ -209,6 +211,12 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
                 return
             if action == "cancel":
                 await send_json(send, cancel_item(CONFIG.queue_db_path, queue_id).model_dump(mode="json"))
+                return
+            if action == "approve":
+                await send_json(send, approve_item_confirmation(CONFIG, queue_id))
+                return
+            if action == "reject":
+                await send_json(send, reject_item_confirmation(CONFIG, queue_id))
                 return
         await send_error(send, HTTPStatus.NOT_FOUND, f"unknown route: {path}")
     except Exception as exc:
