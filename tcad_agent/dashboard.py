@@ -941,10 +941,142 @@ def render_dashboard(
 """, plot_path
 
 
+def collect_paths(value: Any, keys: set[str] | None = None) -> list[tuple[str, str]]:
+    wanted = keys or {
+        "state_path",
+        "result_state_path",
+        "final_state_path",
+        "report_path",
+        "conclusion_path",
+        "dashboard_path",
+        "benchmark_path",
+        "output_path",
+        "semantic_deck_diff",
+        "patched_source_deck",
+        "tcad_deck_ir",
+    }
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in wanted and item:
+                found.append((key, str(item)))
+            else:
+                found.extend(collect_paths(item, wanted))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(collect_paths(item, wanted))
+    return found
+
+
+def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output_path: Path) -> str:
+    base_dir = output_path.parent
+    steps = state.get("steps") or []
+    rows = []
+    for step in steps:
+        action = step.get("action") if isinstance(step.get("action"), dict) else {}
+        result = step.get("result") if isinstance(step.get("result"), dict) else {}
+        links = " ".join(
+            link(label, path, base_dir, "pill-link")
+            for label, path in collect_paths(result)[:6]
+        )
+        rows.append(
+            f"""
+            <tr>
+              <td>{h(step.get('index'))}</td>
+              <td><span class="status {h(step.get('status'))}">{h(step.get('status'))}</span></td>
+              <td>{h(step.get('kind'))}</td>
+              <td>{h(action.get('tool_name') or '')}</td>
+              <td>{h(step.get('reason'))}</td>
+              <td>{links}</td>
+            </tr>
+            """
+        )
+    checkpoint = state.get("checkpoint") if isinstance(state.get("checkpoint"), dict) else {}
+    blocked = checkpoint.get("blocked_action") or checkpoint.get("blocked_repair_agent_decision")
+    blocked_html = (
+        f"<section class=\"band\"><h2>Waiting For Confirmation</h2><pre>{h(json.dumps(blocked, ensure_ascii=False, indent=2))}</pre></section>"
+        if blocked
+        else ""
+    )
+    final_links = " ".join(
+        link(label, path, base_dir, "pill-link")
+        for label, path in collect_paths(state)[:12]
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Autonomous DEVSIM Agent Timeline</title>
+  <style>
+    body {{ margin: 0; background: #f6f8fb; color: #1d1d1f; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    .wrap {{ max-width: 1180px; margin: 0 auto; padding: 28px; }}
+    header {{ display: grid; gap: 8px; margin-bottom: 22px; }}
+    h1 {{ margin: 0; font-size: 28px; }}
+    h2 {{ margin: 0 0 12px; font-size: 17px; }}
+    .meta {{ color: #64748b; font-size: 13px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }}
+    .stat, .band {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; }}
+    .stat span {{ display: block; color: #64748b; font-size: 12px; }}
+    .stat strong {{ display: block; margin-top: 4px; font-size: 18px; }}
+    table {{ width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }}
+    th, td {{ border-bottom: 1px solid #edf2f7; padding: 9px; text-align: left; vertical-align: top; font-size: 13px; }}
+    th {{ background: #f8fafc; color: #475569; }}
+    .status {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e2e8f0; }}
+    .completed {{ background: #dcfce7; }}
+    .failed {{ background: #fee2e2; }}
+    .running {{ background: #dbeafe; }}
+    .planned {{ background: #fef3c7; }}
+    .pill-link {{ display: inline-block; margin: 0 4px 4px 0; color: #2454a6; text-decoration: none; }}
+    pre {{ white-space: pre-wrap; background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px; border-radius: 6px; overflow: auto; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Autonomous DEVSIM Agent Timeline</h1>
+      <div class="meta">{h(state.get('goal_text'))}</div>
+      <div class="meta">Source {link(source_path.name, source_path, base_dir)}</div>
+    </header>
+    <div class="stats">
+      <div class="stat"><span>Status</span><strong>{h(state.get('status'))}</strong></div>
+      <div class="stat"><span>Agent</span><strong>{h(state.get('agent_id'))}</strong></div>
+      <div class="stat"><span>Steps</span><strong>{h(len(steps))}</strong></div>
+      <div class="stat"><span>Next</span><strong>{h(state.get('next_action'))}</strong></div>
+    </div>
+    {blocked_html}
+    <section class="band">
+      <h2>Artifacts</h2>
+      <div>{final_links or 'No linked artifacts yet.'}</div>
+    </section>
+    <section class="band">
+      <h2>Step Timeline</h2>
+      <table>
+        <thead><tr><th>#</th><th>Status</th><th>Action</th><th>Tool</th><th>Reason</th><th>Artifacts</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </section>
+    <section class="band">
+      <h2>Checkpoint</h2>
+      <pre>{h(json.dumps(checkpoint, ensure_ascii=False, indent=2))}</pre>
+    </section>
+  </div>
+</body>
+</html>"""
+
+
 def generate_experiment_dashboard(source: Path, output_path: Path | None = None) -> DashboardResult:
     try:
         state_path = resolve_state_path(source).resolve()
         state = read_json(state_path)
+        if state.get("tool_name") == "autonomous_devsim_agent":
+            dashboard_path = (output_path or state_path.with_name("autonomous_devsim_dashboard.html")).resolve()
+            write_text(dashboard_path, render_autonomous_dashboard(state, state_path, dashboard_path))
+            return DashboardResult(
+                status=DashboardStatus.COMPLETED,
+                kind=None,
+                source_state_path=str(state_path),
+                dashboard_path=str(dashboard_path),
+            )
         kind = detect_report_kind(state)
         dashboard_path = (output_path or state_path.with_name("dashboard.html")).resolve()
         content, plot_path = render_dashboard(

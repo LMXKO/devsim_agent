@@ -22,6 +22,43 @@ class DashboardTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def test_generates_autonomous_agent_timeline_dashboard(self) -> None:
+        agent_dir = self.root / "agents" / "agent_dash"
+        state_path = agent_dir / "autonomous_devsim_agent_state.json"
+        report = agent_dir / "conclusion.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# Conclusion\n", encoding="utf-8")
+        write_json(
+            state_path,
+            {
+                "tool_name": "autonomous_devsim_agent",
+                "status": "completed",
+                "agent_id": "agent_dash",
+                "agent_dir": str(agent_dir),
+                "goal_text": "自主跑 PN IV",
+                "next_action": "done",
+                "checkpoint": {"report_done": True},
+                "steps": [
+                    {
+                        "index": 1,
+                        "kind": "run_tool",
+                        "status": "completed",
+                        "reason": "run baseline",
+                        "action": {"tool_name": "pn_junction_iv_sweep"},
+                        "result": {"conclusion_path": str(report)},
+                    }
+                ],
+            },
+        )
+
+        result = generate_experiment_dashboard(state_path)
+        html = Path(result.dashboard_path).read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, DashboardStatus.COMPLETED)
+        self.assertIn("Autonomous DEVSIM Agent Timeline", html)
+        self.assertIn("run baseline", html)
+        self.assertIn("conclusion.md", html)
+
     def write_final_state(self, name: str, current: float, *, lineage: bool = False) -> Path:
         run_dir = self.root / "runs" / name
         plot = run_dir / "iv_curve.png"

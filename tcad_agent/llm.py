@@ -126,3 +126,37 @@ class LLMClient:
         )
         content = response.choices[0].message.content
         return content or ""
+
+    def tool_call(
+        self,
+        system: str,
+        user: str,
+        tools: list[dict[str, Any]],
+        temperature: float = 0.1,
+    ) -> dict[str, Any]:
+        if self.client is None or not self.config.model:
+            raise ValueError("LLM base_url or model is not configured.")
+        response = self.client.chat.completions.create(
+            model=self.config.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=tools,
+            tool_choice="auto",
+            temperature=temperature,
+        )
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if tool_calls:
+            first = tool_calls[0]
+            function = getattr(first, "function", None)
+            return {
+                "tool_call": {
+                    "id": getattr(first, "id", None),
+                    "name": getattr(function, "name", None),
+                    "arguments": getattr(function, "arguments", "{}"),
+                },
+                "content": message.content or "",
+            }
+        return {"content": message.content or ""}

@@ -334,8 +334,68 @@ def resume_item(db_path: Path, queue_id: str) -> QueueItem:
     return set_item_status(db_path, queue_id, QueueStatus.QUEUED)
 
 
+def autonomous_agent_control_dir(item: QueueItem) -> Path | None:
+    if item.tool_name != "autonomous_devsim_agent":
+        return None
+    raw_root = item.request.get("agent_root")
+    agent_root = Path(str(raw_root)) if raw_root else PROJECT_ROOT / "runs" / "autonomous_devsim_agent"
+    agent_id = str(item.request.get("agent_id") or item.queue_id)
+    return agent_root / agent_id
+
+
+def request_autonomous_agent_cancel(item: QueueItem) -> str | None:
+    control_dir = autonomous_agent_control_dir(item)
+    if control_dir is None:
+        return None
+    control_dir.mkdir(parents=True, exist_ok=True)
+    cancel_file = control_dir / "cancel.requested"
+    cancel_file.write_text(json.dumps({"queue_id": item.queue_id, "cancelled_at": utc_timestamp()}, ensure_ascii=False), encoding="utf-8")
+    return str(cancel_file)
+
+
 def cancel_item(db_path: Path, queue_id: str) -> QueueItem:
+    item = get_item(db_path, queue_id)
+    if item:
+        request_autonomous_agent_cancel(item)
     return set_item_status(db_path, queue_id, QueueStatus.CANCELLED)
+
+
+def update_item_request(
+    db_path: Path,
+    queue_id: str,
+    patch: dict[str, Any],
+    *,
+    checkpoint_patch: dict[str, Any] | None = None,
+) -> QueueItem:
+    now = utc_timestamp()
+    connection = connect(db_path)
+    initialize_db(connection)
+    try:
+        item = fetch_item(connection, queue_id)
+        if item is None:
+            raise FileNotFoundError(f"queue item does not exist: {queue_id}")
+        request = {**item.request, **patch}
+        checkpoint = {**item.checkpoint, **(checkpoint_patch or {}), "request_updated_at": now}
+        connection.execute(
+            """
+            UPDATE run_queue
+            SET request_json = ?, checkpoint_json = ?, updated_at = ?
+            WHERE queue_id = ?
+            """,
+            (
+                json.dumps(request, ensure_ascii=False),
+                json.dumps(checkpoint, ensure_ascii=False),
+                now,
+                queue_id,
+            ),
+        )
+        connection.commit()
+        updated = fetch_item(connection, queue_id)
+        if updated is None:
+            raise RuntimeError(f"failed to update queue item {queue_id}")
+        return updated
+    finally:
+        connection.close()
 
 
 def recover_stale_items(db_path: Path, *, now: str | None = None) -> dict[str, Any]:
@@ -804,6 +864,9 @@ def complete_item(
     connection = connect(db_path)
     initialize_db(connection)
     try:
+        current = fetch_item(connection, item.queue_id)
+        if current and current.status == QueueStatus.CANCELLED:
+            return current
         connection.execute(
             """
             UPDATE run_queue
@@ -831,6 +894,47 @@ def complete_item(
         connection.close()
 
 
+def pause_item_with_result(
+    db_path: Path,
+    item: QueueItem,
+    *,
+    result: dict[str, Any],
+    result_state_path: str | None = None,
+    checkpoint: dict[str, Any] | None = None,
+) -> QueueItem:
+    now = utc_timestamp()
+    merged_checkpoint = {**item.checkpoint, **(checkpoint or {}), "paused_at": now}
+    connection = connect(db_path)
+    initialize_db(connection)
+    try:
+        current = fetch_item(connection, item.queue_id)
+        if current and current.status == QueueStatus.CANCELLED:
+            return current
+        connection.execute(
+            """
+            UPDATE run_queue
+            SET status = ?, updated_at = ?, lease_owner = NULL, lease_expires_at = NULL,
+                checkpoint_json = ?, result_json = ?, result_state_path = ?, failure_reason = NULL
+            WHERE queue_id = ?
+            """,
+            (
+                QueueStatus.PAUSED.value,
+                now,
+                json.dumps(merged_checkpoint, ensure_ascii=False),
+                json.dumps(result, ensure_ascii=False),
+                result_state_path,
+                item.queue_id,
+            ),
+        )
+        connection.commit()
+        updated = fetch_item(connection, item.queue_id)
+        if updated is None:
+            raise RuntimeError(f"failed to pause queue item {item.queue_id}")
+        return updated
+    finally:
+        connection.close()
+
+
 def fail_item(
     db_path: Path,
     item: QueueItem,
@@ -844,6 +948,9 @@ def fail_item(
     connection = connect(db_path)
     initialize_db(connection)
     try:
+        current = fetch_item(connection, item.queue_id)
+        if current and current.status == QueueStatus.CANCELLED:
+            return current
         connection.execute(
             """
             UPDATE run_queue
@@ -884,9 +991,19 @@ def execute_item(
     if item.budget_seconds is not None and item.budget_seconds <= 0:
         return fail_item(db_path, item, failure_reason="budget_seconds exhausted before execution")
 
+    tool_request = dict(item.request)
+    tool_request.setdefault("queue_id", item.queue_id)
+    if item.tool_name == "autonomous_devsim_agent":
+        tool_request.setdefault("agent_id", item.queue_id)
+        control_dir = autonomous_agent_control_dir(item)
+        if control_dir:
+            tool_request.setdefault("agent_root", str(control_dir.parent))
+            tool_request.setdefault("cancel_file", str(control_dir / "cancel.requested"))
+            tool_request.setdefault("heartbeat_path", str(control_dir / "heartbeat.json"))
+
     started = time.monotonic()
     try:
-        raw_result = runner(item.request)
+        raw_result = runner(tool_request)
         result = result_to_dict(raw_result)
     except Exception as exc:
         elapsed = time.monotonic() - started
@@ -905,6 +1022,22 @@ def execute_item(
             db_path,
             item,
             failure_reason=f"budget_seconds exceeded: elapsed={elapsed:.3f}, budget={item.budget_seconds:.3f}",
+            result=result,
+            checkpoint=checkpoint,
+        )
+    if str(result.get("status") or "") == "waiting_for_user":
+        return pause_item_with_result(
+            db_path,
+            item,
+            result=result,
+            result_state_path=result_state_path,
+            checkpoint={**checkpoint, "paused_reason": "waiting_for_user"},
+        )
+    if str(result.get("status") or "") == "cancelled":
+        return fail_item(
+            db_path,
+            item,
+            failure_reason="cancelled",
             result=result,
             checkpoint=checkpoint,
         )

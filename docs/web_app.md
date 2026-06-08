@@ -6,7 +6,7 @@
 - choosing LLM-backed or deterministic mission decomposition;
 - watching the execution timeline;
 - starting the local queue worker automatically when a mission is sent;
-- pausing, resuming, and cancelling queued items;
+- pausing, resuming, cancelling, approving, and rejecting queued items;
 - checking the configured OpenAI-compatible LLM endpoint;
 - reviewing indexed experiments, physical benchmarks, and quality status.
 
@@ -30,6 +30,7 @@ The transcript shows:
 - quality-aware status pills such as `质量失败` or `需复核` when a completed step contains failed/suspicious quality reports;
 - folded JSON details for raw structured output, so verbose state does not dominate the transcript;
 - conclusion/report paths when generated.
+- autonomous-agent waiting-for-user states, including approval or rejection of sensitive geometry/process/model actions.
 
 The transcript follows the latest visible event only while the user is already near the bottom. Scrolling upward pauses auto-follow so earlier TCAD output can be inspected without being pulled back down; mission submission and the compact `最新` button force the view back to the newest event.
 
@@ -74,6 +75,8 @@ The page posts mission requests to `/api/missions`. Those requests are queued as
 ```
 
 The in-page worker controls call the same durable queue worker used by `tcad_agent.tools.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite` and mission states remain under `runs/missions`.
+
+For autonomous DEVSIM queue items, a sensitive action can return `waiting_for_user`. The queue records the state as `paused`; `/api/items/{queue_id}/approve` patches the request with `resume=true` and `allow_user_confirmation_actions=true`, while `/api/items/{queue_id}/reject` cancels the item and writes the agent cancel token.
 
 ## Covered TCAD Paths
 

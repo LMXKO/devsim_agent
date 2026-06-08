@@ -51,7 +51,7 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
   --budget-seconds 21600
 ```
 
-This is the closest queue-level entry point for the product goal: an AI agent that can keep operating DEVSIM for a long task instead of only launching one fixed runner.
+This is the closest queue-level entry point for the product goal: an AI agent that can keep operating DEVSIM for a long task instead of only launching one fixed runner. The worker injects `queue_id`, a stable `agent_id`, a cancel token path, and a heartbeat path into queued autonomous-agent requests.
 
 ## Enqueue A Long-Horizon Mission
 
@@ -131,7 +131,9 @@ python3.11 -m tcad_agent.tools.run_queue resume q_mosfet_goal
 python3.11 -m tcad_agent.tools.run_queue cancel q_mosfet_goal
 ```
 
-Pause and cancel clear the worker lease. A running simulation process is not force-killed by this command yet; the current implementation gives the durable control state needed for cooperative workers.
+Pause clears the worker lease. Cancel clears the lease and, for `autonomous_devsim_agent` items, writes `cancel.requested` under the agent directory. The autonomous agent checks that token at step boundaries and writes `heartbeat.json` with the active step, action, and process metadata. A simulator already inside a single blocking tool call is still expected to cooperate at the next step boundary.
+
+If an autonomous item returns `waiting_for_user`, the queue stores its result and moves the item to `paused`. Approval can patch the request with `resume=true` and `allow_user_confirmation_actions=true`; rejection cancels the item and writes the cancel token.
 
 ## Recover Interrupted Work
 

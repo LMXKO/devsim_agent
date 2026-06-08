@@ -8,13 +8,14 @@ from unittest.mock import patch
 
 from tcad_agent.llm import LLMConfig, load_persisted_llm_settings
 from tcad_agent.task_spec import PROJECT_ROOT
-from tcad_agent.run_queue import QueueDaemonResult, QueueStatus, claim_next_items, get_item, list_items
+from tcad_agent.run_queue import QueueDaemonResult, QueueStatus, claim_next_items, enqueue_run, get_item, list_items, pause_item
 from tcad_agent.web_app import (
     SEMICONDUCTOR_TEST_CASES,
     WebAppConfig,
     WorkerController,
     activity_has_artifacts,
     activity_has_process,
+    approve_item_confirmation,
     collect_execution_activity,
     collect_recent_experiment_activity,
     compact_conclusion,
@@ -23,6 +24,7 @@ from tcad_agent.web_app import (
     llm_settings_response,
     mission_request_from_payload,
     preview_artifact,
+    reject_item_confirmation,
     render_app_html,
     save_llm_settings_from_payload,
 )
@@ -227,6 +229,58 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(final_status["last_recovery"], {"recovered": 1, "failed": 0})
         self.assertEqual(item.status, QueueStatus.QUEUED)
         self.assertIsNone(item.lease_owner)
+
+    def test_approve_confirmation_patches_request_and_resumes_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                worker_stop_file=root / "worker.stop",
+            )
+            cancel_file = root / "agents" / "agent_wait" / "cancel.requested"
+            cancel_file.parent.mkdir(parents=True, exist_ok=True)
+            cancel_file.write_text("cancel", encoding="utf-8")
+            enqueue_run(
+                config.queue_db_path,
+                queue_id="q_wait",
+                tool_name="autonomous_devsim_agent",
+                request={"goal_text": "需要确认", "agent_id": "agent_wait", "cancel_file": str(cancel_file)},
+            )
+            pause_item(config.queue_db_path, "q_wait")
+
+            approved = approve_item_confirmation(config, "q_wait")
+            item = get_item(config.queue_db_path, "q_wait")
+            cancel_removed = not cancel_file.exists()
+
+        self.assertEqual(approved["status"], QueueStatus.QUEUED.value)
+        self.assertTrue(item.request["resume"])
+        self.assertTrue(item.request["allow_user_confirmation_actions"])
+        self.assertTrue(cancel_removed)
+
+    def test_reject_confirmation_cancels_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                worker_stop_file=root / "worker.stop",
+            )
+            enqueue_run(
+                config.queue_db_path,
+                queue_id="q_reject",
+                tool_name="autonomous_devsim_agent",
+                request={"goal_text": "需要确认", "agent_root": str(root / "agents"), "agent_id": "agent_reject"},
+            )
+            pause_item(config.queue_db_path, "q_reject")
+
+            rejected = reject_item_confirmation(config, "q_reject")
+            item = get_item(config.queue_db_path, "q_reject")
+            cancel_written = (root / "agents" / "agent_reject" / "cancel.requested").exists()
+
+        self.assertEqual(rejected["status"], QueueStatus.CANCELLED.value)
+        self.assertEqual(item.status, QueueStatus.CANCELLED)
+        self.assertTrue(cancel_written)
 
     def test_compact_result_keeps_artifacts_attempts_cases_and_preview(self) -> None:
         with tempfile.TemporaryDirectory(dir=PROJECT_ROOT / "runs") as tmp:

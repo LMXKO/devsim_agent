@@ -13,7 +13,8 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Converts natural language into a structured `TCADSpec` containing geometry, materials, models, bias hints, constraints, evidence policy, missing inputs, and signoff workflow.
 - Decomposes natural-language goals into durable mission steps.
 - Runs an agent-first long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
-- Provides a long-running `autonomous_devsim_agent` runtime that repeatedly chooses tools, runs DEVSIM-backed tasks, inspects state/metrics/artifacts, repairs suspicious results, benchmarks evidence, and writes conclusions.
+- Provides a long-running `autonomous_devsim_agent` runtime that repeatedly chooses tools, runs DEVSIM-backed tasks, inspects state/metrics/artifacts/logs/curves/deck diffs, repairs suspicious results, benchmarks evidence, evaluates objectives, and writes conclusions.
+- Supports cooperative long-run control with agent heartbeat files, cancel tokens, queue pause/resume, user-confirmation approval, and autonomous run timeline dashboards.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, and deterministic fallback actions.
@@ -46,7 +47,7 @@ The capability catalog is deliberately split into three levels:
 - `compact_baseline`: a deterministic compact/planning route exists, but it is not final TCAD signoff evidence;
 - `planned`: the device template is known, but the runner, quality rules, and benchmark evidence must be implemented before execution.
 
-Executable templates also expose `tcad_fidelity` and `signoff_workflow`. Current executable evidence paths are PN 1D drift-diffusion, MOS C-V, diode reverse IV/BV, 2D MOSFET Id sweeps, Schottky 1D thermionic-contact IV, BJT Gummel/output `physics_1d`, and power MOSFET/LDMOS BV/Ron `physics_1d`. Remaining advanced industrial devices stay planned until promoted with runner, quality rules, and benchmark evidence.
+Executable templates also expose `tcad_fidelity` and `signoff_workflow`. Current executable evidence paths are PN 1D drift-diffusion, MOS C-V, diode reverse IV/BV, 2D MOSFET Id sweeps, Schottky 1D thermionic-contact IV, BJT Gummel/output `physics_1d`, and power MOSFET/LDMOS/GaN/FinFET/SOI/SiC/IGBT-style routes where the public implementation has an executable or physics-backed workflow. Advanced workflow claims remain gated by runner fidelity, quality rules, benchmark evidence, and capability audit records.
 
 ## Architecture
 
@@ -75,6 +76,8 @@ The default control path is agent-first where an LLM is configured, with determi
 The long-running DEVSIM agent and repair loop are designed around structured agent decisions rather than only fixed rules:
 
 - `autonomous_devsim_agent` is the direct long-horizon runtime for “run DEVSIM, observe, decide, repair, benchmark, report, continue”.
+- It exposes dynamic tool schemas to configured OpenAI-compatible models, while still accepting structured JSON actions as a fallback.
+- It can ingest user DEVSIM Python decks, apply semantic deck patches, emit diffs, run objective/Pareto checks, write heartbeat/cancel state, and render an autonomous timeline dashboard.
 - `mission_agent` decomposes the goal and routes work through the supervisor, convergence checks, golden-curve comparison, physical benchmark, repair planning, and repair execution.
 - `supervisor` can let an agent override the deterministic next action, while rejecting unsupported tool kinds or shell commands.
 - `repair_agent` observes the run state, quality issues, metrics, curve diagnostics, deck mutations, physical benchmark context, and recent repair case memory before choosing one next action.

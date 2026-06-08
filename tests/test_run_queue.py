@@ -198,6 +198,60 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(runner.call_args.args[0].goal_text, "自主跑 PN IV，失败时修复并给结论")
         self.assertIn("runner_registry", runner.call_args.kwargs)
 
+    def test_worker_pauses_autonomous_agent_waiting_for_user(self) -> None:
+        enqueue_run(
+            self.db,
+            queue_id="q_waiting_agent",
+            tool_name="autonomous_devsim_agent",
+            request={"goal_text": "需要确认的 deck patch", "execute": True},
+        )
+
+        result = run_queue_worker(
+            self.db,
+            owner="worker_a",
+            registry={"autonomous_devsim_agent": lambda request: {"status": "waiting_for_user", "agent_dir": str(self.root / "agent")}},
+        )
+        item = get_item(self.db, "q_waiting_agent")
+
+        self.assertEqual(result.claimed, 1)
+        self.assertEqual(item.status, QueueStatus.PAUSED)
+        self.assertEqual(item.checkpoint["paused_reason"], "waiting_for_user")
+        self.assertEqual(item.result["status"], "waiting_for_user")
+
+    def test_autonomous_agent_queue_request_gets_control_paths(self) -> None:
+        seen: dict[str, object] = {}
+        enqueue_run(
+            self.db,
+            queue_id="q_control_agent",
+            tool_name="autonomous_devsim_agent",
+            request={"goal_text": "自主执行", "execute": False},
+        )
+
+        def fake_agent(request: dict[str, object]) -> dict[str, object]:
+            seen.update(request)
+            return {"status": "planned", "agent_dir": str(self.root / "runs" / "autonomous_devsim_agent" / "q_control_agent")}
+
+        run_queue_worker(self.db, owner="worker_a", registry={"autonomous_devsim_agent": fake_agent})
+
+        self.assertEqual(seen["queue_id"], "q_control_agent")
+        self.assertEqual(seen["agent_id"], "q_control_agent")
+        self.assertTrue(str(seen["cancel_file"]).endswith("q_control_agent/cancel.requested"))
+        self.assertTrue(str(seen["heartbeat_path"]).endswith("q_control_agent/heartbeat.json"))
+
+    def test_cancel_autonomous_agent_writes_cancel_file(self) -> None:
+        enqueue_run(
+            self.db,
+            queue_id="q_cancel_agent",
+            tool_name="autonomous_devsim_agent",
+            request={"goal_text": "自主执行", "agent_root": str(self.root / "agents"), "agent_id": "agent_cancel"},
+        )
+
+        cancelled = cancel_item(self.db, "q_cancel_agent")
+        cancel_file = self.root / "agents" / "agent_cancel" / "cancel.requested"
+
+        self.assertEqual(cancelled.status, QueueStatus.CANCELLED)
+        self.assertTrue(cancel_file.exists())
+
     def test_worker_marks_unknown_tool_failed(self) -> None:
         enqueue_run(self.db, queue_id="q_unknown", tool_name="missing", request={})
 

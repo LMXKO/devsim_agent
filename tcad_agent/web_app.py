@@ -25,6 +25,7 @@ from tcad_agent.run_queue import (
     cancel_item,
     default_queue_db_path,
     enqueue_run,
+    get_item,
     list_items,
     recover_owner_running_items,
     pause_item,
@@ -32,6 +33,7 @@ from tcad_agent.run_queue import (
     resume_item,
     run_queue_daemon,
     run_queue_worker,
+    update_item_request,
 )
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.tcad_deck import compact_tcad_deck_spec
@@ -341,6 +343,39 @@ def enqueue_mission_from_payload(config: WebAppConfig, payload: dict[str, Any]) 
         budget_cases=int(payload["budget_cases"]) if payload.get("budget_cases") not in {None, ""} else None,
     )
     return item.model_dump(mode="json")
+
+
+def approve_item_confirmation(config: WebAppConfig, queue_id: str) -> dict[str, Any]:
+    item = get_item(config.queue_db_path, queue_id)
+    if item is None:
+        raise FileNotFoundError(f"queue item does not exist: {queue_id}")
+    updated = update_item_request(
+        config.queue_db_path,
+        queue_id,
+        {
+            "resume": True,
+            "execute": True,
+            "allow_user_confirmation_actions": True,
+        },
+        checkpoint_patch={"user_confirmation": "approved"},
+    )
+    cancel_file = updated.request.get("cancel_file")
+    if cancel_file:
+        path = Path(str(cancel_file))
+        if path.exists():
+            path.unlink()
+    resumed = resume_item(config.queue_db_path, queue_id)
+    return resumed.model_dump(mode="json")
+
+
+def reject_item_confirmation(config: WebAppConfig, queue_id: str) -> dict[str, Any]:
+    update_item_request(
+        config.queue_db_path,
+        queue_id,
+        {"resume": False, "allow_user_confirmation_actions": False},
+        checkpoint_patch={"user_confirmation": "rejected"},
+    )
+    return cancel_item(config.queue_db_path, queue_id).model_dump(mode="json")
 
 
 class WorkerController:
@@ -1904,7 +1939,9 @@ def render_legacy_app_html() -> str:
 
     function actionButtons(item) {{
       const id = esc(item.queue_id);
+      const waiting = item.status === 'paused' && item.result && item.result.status === 'waiting_for_user';
       return `<div class="row-actions">
+        ${{waiting ? `<button class="btn mini primary" data-action="approve" data-id="${{id}}">Approve</button><button class="btn mini danger" data-action="reject" data-id="${{id}}">Reject</button>` : ''}}
         <button class="btn mini" data-action="pause" data-id="${{id}}">Pause</button>
         <button class="btn mini" data-action="resume" data-id="${{id}}">Resume</button>
         <button class="btn mini danger" data-action="cancel" data-id="${{id}}">Cancel</button>
@@ -3504,6 +3541,12 @@ class TCADRequestHandler(BaseHTTPRequestHandler):
                     return
                 if action == "cancel":
                     self.send_json(cancel_item(self.server.config.queue_db_path, queue_id).model_dump(mode="json"))
+                    return
+                if action == "approve":
+                    self.send_json(approve_item_confirmation(self.server.config, queue_id))
+                    return
+                if action == "reject":
+                    self.send_json(reject_item_confirmation(self.server.config, queue_id))
                     return
             self.send_error_json(HTTPStatus.NOT_FOUND, f"unknown route: {parsed.path}")
         except Exception as exc:
