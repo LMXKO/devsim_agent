@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,7 @@ from tcad_agent.conclusion import generate_experiment_conclusion
 from tcad_agent.dashboard import generate_experiment_dashboard
 from tcad_agent.device_templates import RouteStatus, TemplateSupport, route_device_goal
 from tcad_agent.experiment_index import default_index_db_path, list_records, rebuild_index
+from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.repair_strategy import build_repair_plan
 from tcad_agent.reporting import generate_experiment_report
 from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
@@ -24,6 +25,7 @@ from tcad_agent.tools.extended_device_sweep import ExtendedDeviceRequest, run_ex
 from tcad_agent.tools.mos_capacitor_cv import MOSCapacitorCVRequest, run_mos_capacitor_cv_sweep
 from tcad_agent.tools.mosfet_2d_id import MOSFET2DIDRequest, run_mosfet_2d_id_sweep
 from tcad_agent.tools.task_runner import run_task
+from tcad_agent.task_planner import parse_json_object
 
 
 NUMBER_RE = r"[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?"
@@ -93,6 +95,13 @@ class SupervisorState(BaseModel):
     next_action: str | None = None
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     failure_reason: str | None = None
+
+
+class ChatClient(Protocol):
+    config: LLMConfig
+
+    def chat(self, system: str, user: str, temperature: float = 0.1) -> str:
+        ...
 
 
 def utc_timestamp() -> str:
@@ -615,10 +624,20 @@ def choose_next_action(state: SupervisorState) -> SupervisorAction:
         run_id = f"{state.supervisor_id}_{request.get('device_type', 'extended')}_{index:03d}"
         request["run_id"] = run_id
         request["run_root"] = str(Path(state.supervisor_dir) / "agent_tools")
+        if route.template and route.template.support == TemplateSupport.COMPACT_BASELINE:
+            request["evidence_level"] = "compact_baseline"
+            request["capability_warnings"] = route.capability_warnings
+            request["requires_higher_fidelity_runner_for_signoff"] = True
+        elif route.template and route.template.support == TemplateSupport.EXECUTABLE:
+            request["evidence_level"] = "tcad_executable"
         return SupervisorAction(
             **common,
             kind=SupervisorActionKind.RUN_EXTENDED_DEVICE,
-            reason="goal matched an executable extended device compact-sweep template",
+            reason=(
+                "goal matched a compact baseline extended-device template; run only as planning evidence"
+                if route.template and route.template.support == TemplateSupport.COMPACT_BASELINE
+                else "goal matched an executable extended-device TCAD template"
+            ),
             request=attach_tcad_deck_spec(text, "extended_device_sweep", request),
         )
 
@@ -742,8 +761,113 @@ def choose_next_action(state: SupervisorState) -> SupervisorAction:
         **common,
         kind=SupervisorActionKind.ASK_USER,
         reason="goal is ambiguous for current deterministic routing",
-        request={"question": "请明确要运行 PN IV、MOS C-V、参数扫参/优化、报告还是 dashboard。"},
+        request={
+            "question": "请明确要运行 PN IV、MOS C-V、2D MOSFET、Schottky、击穿/漏电、参数扫参/优化、报告还是 dashboard。",
+            "questions": [
+                "器件/结构是什么？",
+                "要做哪类分析或扫参？",
+                "关键指标和规格是什么？",
+            ],
+        },
     )
+
+
+def build_supervisor_agent_messages(state: SupervisorState, deterministic_action: SupervisorAction) -> tuple[str, str]:
+    system = (
+        "你是 TCAD supervisor agent，负责在已有工具能力内选择下一步。只返回 JSON。"
+        "你可以覆盖 deterministic_candidate，但只能使用 supported_action_kinds 里的 kind。"
+        "不要返回 shell command。不要编造工具。"
+        "优先基于目标、最近实验、已有 deck/spec、质量状态和 artifact 判断下一步。"
+        "若没有足够上下文，选择最小信息增益动作，比如 rebuild/query/repair/benchmark，而不是泛泛询问用户。"
+    )
+    user = {
+        "task": "choose next supervisor action",
+        "supported_action_kinds": [kind.value for kind in SupervisorActionKind],
+        "response_schema": {
+            "action": {
+                "kind": "one supported action kind",
+                "reason": "中文，说明为什么比 deterministic candidate 更好，或为什么接受它",
+                "request": "object",
+            },
+            "observation_summary": "中文证据摘要",
+            "hypothesis_zh": "当前工程假设",
+            "evidence_used": ["goal_text", "recent_records", "deterministic_candidate"],
+        },
+        "guardrails": [
+            "如果 action.kind 是 run_*，request 必须是该工具可验证字段。",
+            "不要直接给强签核结论；需要 conclusion/report/dashboard 时必须引用已有 state。",
+            "对于高风险几何/工艺变更，优先走 repair/deck mutation lineage，不要直接改未知字段。",
+        ],
+        "context": {
+            "goal_text": state.goal_text,
+            "completed_cycles": state.completed_cycles,
+            "recent_records": state.recent_records[:10],
+            "last_index_summary": state.last_index_summary,
+            "deterministic_candidate": deterministic_action.model_dump(mode="json"),
+        },
+    }
+    return system, json.dumps(user, ensure_ascii=False, indent=2)
+
+
+def supervisor_action_from_agent(
+    state: SupervisorState,
+    deterministic_action: SupervisorAction,
+    *,
+    client: ChatClient | None = None,
+    allow_fallback: bool = True,
+) -> tuple[SupervisorAction, dict[str, Any]]:
+    chat_client = client or LLMClient()
+    system, user = build_supervisor_agent_messages(state, deterministic_action)
+    decision: dict[str, Any] = {
+        "schema_version": "actsoft.tcad.supervisor_agent_decision.v1",
+        "status": "fallback",
+        "fallback_used": True,
+        "deterministic_action": deterministic_action.model_dump(mode="json"),
+    }
+    try:
+        raw = chat_client.chat(system=system, user=user, temperature=0.2)
+    except Exception as exc:
+        decision["failure_reason"] = str(exc)
+        return deterministic_action, decision
+    decision["raw_response"] = raw
+    parsed = parse_json_object(raw)
+    if parsed is None:
+        decision["failure_reason"] = "agent did not return a JSON object"
+        return deterministic_action, decision
+    decision["parsed_response"] = parsed
+    raw_action = parsed.get("action") if isinstance(parsed.get("action"), dict) else parsed
+    kind_value = raw_action.get("kind") if isinstance(raw_action, dict) else None
+    try:
+        kind = SupervisorActionKind(str(kind_value))
+    except Exception:
+        decision["failure_reason"] = f"unsupported action kind: {kind_value}"
+        return deterministic_action, decision
+    request = raw_action.get("request") if isinstance(raw_action.get("request"), dict) else {}
+    if raw_action.get("command") or raw_action.get("next_tool_command"):
+        decision["failure_reason"] = "agent returned shell command; ignored"
+        return deterministic_action, decision
+    now = utc_timestamp()
+    action = SupervisorAction(
+        index=len(state.actions) + 1,
+        kind=kind,
+        status=SupervisorActionStatus.PLANNED,
+        reason=str(raw_action.get("reason") or parsed.get("hypothesis_zh") or deterministic_action.reason),
+        request=request,
+        created_at=now,
+        updated_at=now,
+    )
+    decision.update(
+        {
+            "status": "completed",
+            "fallback_used": False,
+            "model": getattr(chat_client.config, "model", None),
+            "observation_summary": parsed.get("observation_summary"),
+            "hypothesis_zh": parsed.get("hypothesis_zh"),
+            "evidence_used": parsed.get("evidence_used") or [],
+            "action": action.model_dump(mode="json"),
+        }
+    )
+    return action, decision
 
 
 def create_initial_state(
@@ -882,6 +1006,8 @@ def run_supervisor(
     execute: bool = False,
     resume: bool = False,
     max_cycles: int = 3,
+    use_agent_policy: bool = True,
+    llm_client: ChatClient | None = None,
 ) -> SupervisorState:
     actual_supervisor_id = supervisor_id or default_supervisor_id()
     actual_root = supervisor_root or PROJECT_ROOT / "runs" / "supervisor"
@@ -896,20 +1022,41 @@ def run_supervisor(
     else:
         supervisor_dir.mkdir(parents=True, exist_ok=True)
         state = create_initial_state(actual_supervisor_id, goal_text, supervisor_dir, execute, max_cycles)
+        state.checkpoint["agent_first_policy"] = {
+            "enabled": use_agent_policy,
+            "layer": "supervisor",
+            "fallback": "deterministic_route",
+        }
     write_supervisor_state(state, actual_state_path)
 
     while state.completed_cycles < state.max_cycles and state.status in {SupervisorStatus.RUNNING, SupervisorStatus.PLANNED}:
-        action = choose_next_action(state)
+        deterministic_action = choose_next_action(state)
+        agent_decision: dict[str, Any] | None = None
+        action = deterministic_action
+        if use_agent_policy:
+            action, agent_decision = supervisor_action_from_agent(
+                state,
+                deterministic_action,
+                client=llm_client,
+                allow_fallback=True,
+            )
         state.actions.append(action)
         state.next_action = action.kind.value
+        if agent_decision:
+            state.checkpoint["last_supervisor_agent_decision"] = agent_decision
         write_supervisor_state(state, actual_state_path)
 
         if not state.execute:
             state.status = SupervisorStatus.PLANNED
+            agent_first_policy = state.checkpoint.get("agent_first_policy")
             state.checkpoint = {
                 "completed_cycles": state.completed_cycles,
                 "planned_action": action.model_dump(mode="json"),
             }
+            if agent_first_policy:
+                state.checkpoint["agent_first_policy"] = agent_first_policy
+            if agent_decision:
+                state.checkpoint["last_supervisor_agent_decision"] = agent_decision
             write_supervisor_state(state, actual_state_path)
             return state
 
@@ -917,10 +1064,15 @@ def run_supervisor(
         state.actions[-1] = action
         if action.status == SupervisorActionStatus.COMPLETED and action.kind != SupervisorActionKind.ASK_USER:
             state.completed_cycles += 1
+        agent_first_policy = state.checkpoint.get("agent_first_policy")
         state.checkpoint = {
             "completed_cycles": state.completed_cycles,
             "last_action": action.model_dump(mode="json"),
         }
+        if agent_first_policy:
+            state.checkpoint["agent_first_policy"] = agent_first_policy
+        if agent_decision:
+            state.checkpoint["last_supervisor_agent_decision"] = agent_decision
         if (
             action.kind
             in {

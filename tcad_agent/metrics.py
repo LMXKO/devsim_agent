@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tcad_agent.curve_diagnostics import curve_shape_diagnostic
+
 
 class IVPoint(BaseModel):
     voltage_v: float
@@ -160,6 +162,19 @@ def extract_diode_reverse_metrics(
     if min_positive_reverse_current and max_reverse_abs_current is not None:
         reverse_gain = max_reverse_abs_current / min_positive_reverse_current
     breakdown_voltage = estimate_breakdown_voltage(points, breakdown_current_a)
+    shape_rows = [
+        {
+            "voltage_v": point.voltage_v,
+            "total_current_a": point.total_current_a,
+        }
+        for point in points
+    ]
+    shape = curve_shape_diagnostic(
+        shape_rows,
+        x_key="voltage_v",
+        y_key="total_current_a",
+        threshold_y=breakdown_current_a,
+    )
     return {
         "reverse_points": len(reverse_points),
         "leakage_voltage_target_v": leakage_voltage_v,
@@ -170,9 +185,14 @@ def extract_diode_reverse_metrics(
         "min_reverse_voltage_v": min((point.voltage_v for point in reverse_points), default=None),
         "breakdown_current_threshold_a": breakdown_current_a,
         "breakdown_voltage_at_threshold_v": breakdown_voltage,
+        "breakdown_bracket_v": shape.threshold_bracket_x,
         "breakdown_detected": breakdown_voltage is not None,
         "reverse_abs_current_gain": reverse_gain,
         "reverse_current_shape_violations": reverse_current_shape_violations(points),
+        "reverse_curve_knee_voltage_v": shape.knee_x,
+        "reverse_log_slope_peak_per_v": shape.log_slope_peak_per_x,
+        "leakage_interval_a": shape.leakage_interval_y_abs,
+        "curve_shape_summary": shape.summary,
     }
 
 
@@ -346,6 +366,7 @@ def idvd_shape_metrics(points: list[MOSFETPoint]) -> dict[str, Any]:
     last_slope: float | None = None
     max_drain_span = 0.0
     total_segments = 0
+    kink_peak_voltage: float | None = None
     for group in groups.values():
         if len(group) < 2:
             continue
@@ -370,6 +391,9 @@ def idvd_shape_metrics(points: list[MOSFETPoint]) -> dict[str, Any]:
         for previous, current in zip(positive_slopes[:-1], positive_slopes[1:]):
             if previous > 0 and current / previous > 3.0:
                 kink_slope_jumps += 1
+                kink_index = positive_slopes.index(current) + 1
+                if kink_index < len(group):
+                    kink_peak_voltage = group[kink_index].drain_voltage_v
     saturation_ratio = None
     if max_slope and max_slope > 0 and last_slope is not None:
         saturation_ratio = last_slope / max_slope
@@ -378,6 +402,7 @@ def idvd_shape_metrics(points: list[MOSFETPoint]) -> dict[str, Any]:
         "idvd_total_segments": total_segments,
         "idvd_negative_differential_segments": negative_segments,
         "idvd_kink_slope_jumps": kink_slope_jumps,
+        "idvd_kink_peak_voltage_v": kink_peak_voltage,
         "idvd_max_slope_s": max_slope,
         "idvd_last_slope_s": last_slope,
         "idvd_saturation_ratio": saturation_ratio,

@@ -49,6 +49,9 @@ class MetricsTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["leakage_abs_current_at_target_a"], 1e-7)
         self.assertTrue(metrics["breakdown_detected"])
         self.assertAlmostEqual(metrics["breakdown_voltage_at_threshold_v"], -1.0909090909090908)
+        self.assertEqual(metrics["breakdown_bracket_v"], [-1.0, -2.0])
+        self.assertIsNotNone(metrics["reverse_curve_knee_voltage_v"])
+        self.assertIn("threshold bracket", metrics["curve_shape_summary"])
         self.assertEqual(metrics["reverse_current_shape_violations"], 0)
 
     def test_extracts_mosfet_id_metrics(self) -> None:
@@ -105,6 +108,7 @@ class MetricsTest(unittest.TestCase):
         self.assertIsNotNone(metrics["subthreshold_swing_mv_dec"])
         self.assertIsNotNone(metrics["max_transconductance_s"])
         self.assertIsNotNone(metrics["output_conductance_last_s"])
+        self.assertIn("idvd_kink_peak_voltage_v", metrics)
 
 
 if __name__ == "__main__":

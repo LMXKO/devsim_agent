@@ -4,12 +4,12 @@
 
 It uses `parameter_sweep` to evaluate the same base task at multiple mesh settings, then compares the objective value between the two finest completed meshes. This is the first automated guard against results that are numerically completed but mesh-dependent.
 
-## Run A PN Mesh Check
+## Run A Diode/SBD Mesh Check
 
 ```bash
 python3.11 -m tcad_agent.tools.mesh_convergence \
-  --convergence-id pn_mesh_check \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V max_attempts 3 max_cycles 2" \
+  --convergence-id diode_leakage_mesh_check \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V max_attempts 3 max_cycles 2" \
   --axis-path mesh.junction_spacing_um \
   --value 2e-5 \
   --value 1e-5 \

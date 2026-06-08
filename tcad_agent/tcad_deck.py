@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
 from typing import Any
+
+from tcad_agent.deck_writer import plan_deck_mutations
+from tcad_agent.deck_ir import (
+    DeckPatchResult,
+    DeckSourceIR,
+    apply_semantic_deck_patch,
+    parse_devsim_deck_file,
+    parse_devsim_deck_source,
+)
 
 
 NUMBER_RE = r"[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?"
@@ -289,30 +299,117 @@ def pn_iv_deck(goal_text: str, request: dict[str, Any]) -> dict[str, Any]:
 def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, Any]:
     device_type = str(request.get("device_type") or "extended_device")
     fidelity = str(request.get("fidelity") or "compact")
+    is_executable_physics = fidelity in {"devsim_1d", "physics_1d"}
+    physics_models: dict[str, Any] = {
+        "fidelity": fidelity,
+        "schottky_contact_model": request.get("schottky_contact_model"),
+        "schottky_contact_coupling_mode": request.get("schottky_contact_coupling_mode"),
+        "temperature_k": compact_number(request.get("temperature_k")),
+    }
+    if device_type == "bjt_gummel_output":
+        physics_models.update(
+            {
+                "transport_model": "charge_control_transport_with_early_effect" if fidelity == "physics_1d" else "compact_gummel",
+                "early_voltage_v": compact_number(request.get("bjt_early_voltage_v")),
+                "collector_leakage_current_a": compact_number(request.get("bjt_collector_leakage_current_a")),
+                "coupling_status": "equation_coupled" if fidelity == "physics_1d" else "compact_baseline",
+            }
+        )
+    if device_type == "power_mosfet_bv_ron":
+        physics_models.update(
+            {
+                "impact_ionization_model": request.get("power_mos_impact_ionization_model"),
+                "critical_field_v_per_cm": compact_number(request.get("power_mos_critical_field_v_per_cm")),
+                "drift_region_doping_cm3": compact_number(request.get("power_mos_drift_region_doping_cm3")),
+                "carrier_lifetime_s": compact_number(request.get("power_mos_carrier_lifetime_s")),
+                "drift_region_lifetime_s": compact_number(request.get("power_mos_drift_region_lifetime_s")),
+                "trap_density_cm2": compact_number(request.get("power_mos_trap_density_cm2")),
+                "coupling_status": "equation_coupled" if fidelity == "physics_1d" else "compact_baseline",
+            }
+        )
+    regions = [{"name": device_type, "material": "Si", "role": "template"}]
+    contacts = ["terminal_1", "terminal_2"]
+    doping = {
+        "schottky_n_doping_cm3": compact_number(request.get("schottky_n_doping_cm3")),
+        "power_mos_drift_region_doping_cm3": compact_number(request.get("power_mos_drift_region_doping_cm3")),
+    }
+    geometry = {
+        "area_cm2": compact_number(request.get("area_cm2")),
+        "schottky_length_um": compact_number(request.get("schottky_length_um")),
+        "power_mos_drift_region_length_um": compact_number(request.get("power_mos_drift_region_length_um")),
+    }
+    mesh = {
+        "schottky_contact_spacing_um": compact_number(request.get("schottky_contact_spacing_um")),
+        "schottky_bulk_spacing_um": compact_number(request.get("schottky_bulk_spacing_um")),
+        "expected_followup": "bias_or_mesh_convergence_for_extended_physics_path" if is_executable_physics else "runner_promotion_required",
+    }
+    if device_type == "bjt_gummel_output":
+        regions = [
+            {"name": "emitter", "material": "Si", "role": "n+ emitter"},
+            {"name": "base", "material": "Si", "role": "p base transport region"},
+            {"name": "collector", "material": "Si", "role": "n collector/drift region"},
+        ]
+        contacts = ["emitter", "base", "collector"]
+        doping = {
+            "emitter_doping_cm3": compact_number(request.get("bjt_emitter_doping_cm3")),
+            "base_doping_cm3": compact_number(request.get("bjt_base_doping_cm3")),
+            "collector_doping_cm3": compact_number(request.get("bjt_collector_doping_cm3")),
+        }
+        geometry = {
+            "emitter_width_um": compact_number(request.get("bjt_emitter_width_um")),
+            "base_width_um": compact_number(request.get("bjt_base_width_um")),
+            "collector_width_um": compact_number(request.get("bjt_collector_width_um")),
+            "total_stack_width_um": compact_number(
+                (float_or_none(request.get("bjt_emitter_width_um")) or 0.0)
+                + (float_or_none(request.get("bjt_base_width_um")) or 0.0)
+                + (float_or_none(request.get("bjt_collector_width_um")) or 0.0)
+            ),
+        }
+        mesh = {
+            "junction_spacing_um": compact_number(request.get("bjt_junction_mesh_spacing_um")),
+            "refined_regions": ["emitter_base_junction", "base_collector_junction"],
+            "expected_followup": "base_emitter_and_collector_bias_mesh_convergence",
+        }
+    elif device_type == "power_mosfet_bv_ron":
+        regions = [
+            {"name": "source", "material": "Si", "role": "n+ source"},
+            {"name": "body", "material": "Si", "role": "p body"},
+            {"name": "drift", "material": "Si", "role": "high-voltage n drift region"},
+            {"name": "drain", "material": "Si", "role": "n+ drain/substrate"},
+            {"name": "field_plate_oxide", "material": "SiO2", "role": "field plate dielectric"},
+        ]
+        contacts = ["gate", "source", "drain", "body", "field_plate"]
+        doping = {
+            "source_doping_cm3": compact_number(request.get("power_mos_source_doping_cm3")),
+            "body_doping_cm3": compact_number(request.get("power_mos_body_doping_cm3")),
+            "drift_region_doping_cm3": compact_number(request.get("power_mos_drift_region_doping_cm3")),
+            "implant_dose_cm2": compact_number(request.get("power_mos_implant_dose_cm2")),
+        }
+        geometry = {
+            "drift_region_length_um": compact_number(request.get("power_mos_drift_region_length_um")),
+            "field_plate_length_um": compact_number(request.get("power_mos_field_plate_length_um")),
+            "guard_ring_spacing_um": compact_number(request.get("power_mos_guard_ring_spacing_um")),
+            "junction_depth_um": compact_number(request.get("power_mos_junction_depth_um")),
+            "trench_corner_radius_um": compact_number(request.get("power_mos_trench_corner_radius_um")),
+            "gate_oxide_thickness_nm": compact_number(request.get("power_mos_gate_oxide_thickness_nm")),
+            "area_cm2": compact_number(request.get("area_cm2")),
+        }
+        mesh = {
+            "junction_spacing_um": compact_number(request.get("power_mos_junction_mesh_spacing_um")),
+            "refined_regions": ["body_drift_junction", "drain_drift_junction", "field_plate_edge"],
+            "expected_followup": "high_voltage_field_peak_mesh_convergence",
+        }
     return {
         "device_family": device_type,
-        "dimensionality": "1d" if fidelity == "devsim_1d" else "compact",
-        "simulator": "devsim" if fidelity == "devsim_1d" else "compact_model",
+        "dimensionality": "1d" if is_executable_physics else "compact",
+        "simulator": "devsim" if fidelity == "devsim_1d" else "physics_1d_model" if fidelity == "physics_1d" else "compact_model",
         "intent_zh": "扩展器件模板仿真与关键指标提取",
-        "regions": [{"name": device_type, "material": "Si/compact", "role": "template"}],
-        "contacts": ["terminal_1", "terminal_2"],
-        "doping": {
-            "schottky_n_doping_cm3": compact_number(request.get("schottky_n_doping_cm3")),
-        },
-        "geometry": {
-            "area_cm2": compact_number(request.get("area_cm2")),
-            "schottky_length_um": compact_number(request.get("schottky_length_um")),
-        },
-        "mesh": {
-            "schottky_contact_spacing_um": compact_number(request.get("schottky_contact_spacing_um")),
-            "schottky_bulk_spacing_um": compact_number(request.get("schottky_bulk_spacing_um")),
-        },
-        "physics_models": {
-            "fidelity": fidelity,
-            "schottky_contact_model": request.get("schottky_contact_model"),
-            "schottky_contact_coupling_mode": request.get("schottky_contact_coupling_mode"),
-            "temperature_k": compact_number(request.get("temperature_k")),
-        },
+        "regions": regions,
+        "contacts": contacts,
+        "doping": doping,
+        "geometry": geometry,
+        "mesh": mesh,
+        "physics_models": physics_models,
         "bias_sequence": [{"name": "terminal sweep", "voltage_v": [request.get("start"), request.get("stop"), request.get("step")]}],
         "extractions": [
             "barrier_height_ev",
@@ -323,8 +420,12 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
             "responsivity_a_per_w",
         ],
         "signoff_requirements": common_signoff_requirements(goal_text, request),
-        "assumptions": ["紧凑模板只能作为规划基线；工程签核需要更完整的几何/模型/收敛验证。"],
-        "warnings": [] if fidelity == "devsim_1d" else ["当前为 compact fidelity，不应作为最终 TCAD 签核证据。"],
+        "assumptions": [
+            "physics_1d 路径可作为本轮可执行工程证据；最终签核仍需收敛、golden/实测相关性和版图相关几何复核。"
+            if is_executable_physics
+            else "紧凑模板只能作为规划基线；工程签核需要更完整的几何/模型/收敛验证。"
+        ],
+        "warnings": [] if is_executable_physics else ["当前为 compact fidelity，不应作为最终 TCAD 签核证据。"],
     }
 
 
@@ -355,6 +456,9 @@ def build_tcad_deck_spec(goal_text: str, tool_name: str, request: dict[str, Any]
         "assumptions": [],
         "warnings": ["当前工具暂未建立完整 deck/spec 映射。"],
     }
+    planned_mutations = [mutation.model_dump(mode="json") for mutation in plan_deck_mutations(goal_text, tool_name, request)]
+    if planned_mutations:
+        base["planned_mutations"] = planned_mutations
     base.update(
         {
             "schema_version": "actsoft.tcad.deck.v1",
@@ -368,6 +472,9 @@ def build_tcad_deck_spec(goal_text: str, tool_name: str, request: dict[str, Any]
 def attach_tcad_deck_spec(goal_text: str, tool_name: str, request: dict[str, Any]) -> dict[str, Any]:
     updated = dict(request)
     updated["tcad_deck_spec"] = build_tcad_deck_spec(goal_text, tool_name, request)
+    mutations = [mutation.model_dump(mode="json") for mutation in plan_deck_mutations(goal_text, tool_name, updated)]
+    if mutations:
+        updated["tcad_deck_mutations"] = mutations
     return updated
 
 
@@ -383,5 +490,23 @@ def compact_tcad_deck_spec(deck: Any) -> dict[str, Any] | None:
         "bias_sequence": (deck.get("bias_sequence") or [])[:3],
         "extractions": (deck.get("extractions") or [])[:8],
         "signoff_requirements": deck.get("signoff_requirements") or {},
+        "planned_mutations": (deck.get("planned_mutations") or [])[:6],
         "warnings": (deck.get("warnings") or [])[:4],
     }
+
+
+def parse_tcad_deck_source(source: str, *, source_path: str | None = None) -> DeckSourceIR:
+    return parse_devsim_deck_source(source, source_path=source_path)
+
+
+def parse_tcad_deck_file(path: str | Path) -> DeckSourceIR:
+    return parse_devsim_deck_file(Path(path))
+
+
+def semantic_patch_tcad_deck_source(
+    source: str,
+    patches: list[dict[str, Any]] | dict[str, Any],
+    *,
+    source_path: str | None = None,
+) -> DeckPatchResult:
+    return apply_semantic_deck_patch(source, patches, source_path=source_path)

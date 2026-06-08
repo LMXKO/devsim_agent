@@ -573,6 +573,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.physical_benchmark import run_physical_benchmark
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
+    from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
     from tcad_agent.tool_convergence import ToolConvergenceRequest, run_tool_convergence
@@ -592,8 +593,10 @@ def default_runner_registry() -> dict[str, Runner]:
 
     def mission_use_llm_decomposer(request: dict[str, Any]) -> bool:
         if "use_llm_decomposer" in request:
-            return request_bool(request, "use_llm_decomposer", False)
-        return request_bool(request, "use_llm", False)
+            return request_bool(request, "use_llm_decomposer", True)
+        if "use_llm" in request:
+            return request_bool(request, "use_llm", True)
+        return True
 
     def mission_allow_llm_fallback(request: dict[str, Any]) -> bool:
         if "allow_llm_fallback" in request:
@@ -621,6 +624,7 @@ def default_runner_registry() -> dict[str, Runner]:
             execute=bool(request.get("execute", True)),
             resume=bool(request.get("resume", False)),
             max_cycles=int(request.get("max_cycles", 3)),
+            use_agent_policy=request_bool(request, "use_agent_policy", True),
         )
         return state.model_dump(mode="json")
 
@@ -647,6 +651,9 @@ def default_runner_registry() -> dict[str, Runner]:
 
     def schottky_calibration_runner(request: dict[str, Any]) -> dict[str, Any]:
         return run_schottky_calibration(SchottkyCalibrationRequest.model_validate(request)).model_dump(mode="json")
+
+    def golden_curve_runner(request: dict[str, Any]) -> dict[str, Any]:
+        return run_golden_curve_comparison(GoldenCurveComparisonRequest.model_validate(request)).model_dump(mode="json")
 
     def parameter_sweep_runner(request: dict[str, Any]) -> dict[str, Any]:
         return run_parameter_sweep(
@@ -723,6 +730,7 @@ def default_runner_registry() -> dict[str, Runner]:
         ),
         "extended_device_sweep": extended_device_runner,
         "schottky_iv_calibration": schottky_calibration_runner,
+        "golden_curve_comparison": golden_curve_runner,
         "tool_convergence": lambda request: result_to_dict(
             run_tool_convergence(ToolConvergenceRequest.model_validate(request))
         ),

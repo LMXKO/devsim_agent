@@ -131,6 +131,31 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         self.assertIn("mosfet_idvd_kink_suspected", codes)
         self.assertIn("mosfet_idvd_saturation_not_observed", codes)
 
+    def test_mosfet_flags_threshold_not_crossed(self) -> None:
+        state_path = self.root / "mosfet_no_vth" / "state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "mosfet_2d_id_sweep",
+                "status": "completed",
+                "request": {"gate_start": 0.0, "gate_stop": 0.5},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {
+                        "idvg_points": 3,
+                        "threshold_current_a": 1e-6,
+                        "vth_at_threshold_current_v": None,
+                        "ion_ioff_ratio": 1e3,
+                    },
+                },
+            },
+        )
+
+        result = run_physical_benchmark(state_path)
+
+        self.assertEqual(result.status, BenchmarkStatus.SUSPICIOUS)
+        self.assertIn("mosfet_threshold_not_crossed", {check.code for check in result.checks})
+
     def test_deck_signoff_requires_convergence_and_records_evidence_matrix(self) -> None:
         state_path = self.root / "mosfet_signoff" / "state.json"
         write_json(
@@ -172,6 +197,70 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         self.assertEqual(result.summary["signoff_status"], "conditional")
         self.assertEqual(result.summary["evidence_matrix"]["deck_spec"], "present")
         self.assertEqual(result.summary["evidence_matrix"]["convergence_evidence"], "missing")
+
+    def test_top_level_deck_spec_counts_as_structured_signoff_evidence(self) -> None:
+        state_path = self.root / "moscap_with_deck" / "state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "mos_capacitor_cv_sweep",
+                "status": "completed",
+                "tcad_deck_spec": {
+                    "device_family": "mos_capacitor",
+                    "signoff_requirements": {"required_level": "iteration_baseline"},
+                },
+                "request": {"oxide_thickness_nm": 5.0},
+                "final_summary": {"artifacts": {"csv": "cv.csv", "plot": "cv.png"}},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {
+                        "min_capacitance_f_per_cm2": 2.0e-8,
+                        "max_capacitance_f_per_cm2": 5.0e-7,
+                        "final_capacitance_f_per_cm2": 3.0e-7,
+                    },
+                },
+            },
+        )
+
+        result = run_physical_benchmark(state_path)
+        pack = result.summary["signoff_evidence_pack"]
+
+        self.assertEqual(result.summary["evidence_matrix"]["deck_spec"], "present")
+        self.assertNotIn("structured_tcad_spec", pack["missing_evidence"])
+
+    def test_compact_equivalent_model_coupling_is_conditional(self) -> None:
+        state_path = self.root / "mosfet_compact_coupling" / "state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "mosfet_2d_id_sweep",
+                "status": "completed",
+                "tcad_deck_spec": {
+                    "device_family": "2d_mosfet",
+                    "physics_models": {
+                        "coupling_status": "compact_equivalent_bias_and_avalanche",
+                        "impact_ionization_model": "selberherr",
+                    },
+                    "signoff_requirements": {"required_level": "engineering_signoff"},
+                },
+                "request": {"gate_start": 0.0, "gate_stop": 1.0},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {
+                        "idvg_points": 3,
+                        "subthreshold_swing_mv_dec": 80.0,
+                        "ion_ioff_ratio": 1.0e5,
+                        "vth_at_threshold_current_v": 0.45,
+                    },
+                },
+            },
+        )
+
+        result = run_physical_benchmark(state_path)
+        codes = {check.code for check in result.checks}
+
+        self.assertIn("deck_physics_model_compact_equivalent_needs_correlation", codes)
+        self.assertEqual(result.summary["evidence_matrix"]["model_coupling_risk"], "present")
 
     def test_aggregate_benchmarks_best_child_state(self) -> None:
         child_path = self.root / "child" / "state.json"
@@ -246,8 +335,11 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         result = run_physical_benchmark(state_path)
         codes = {check.code for check in result.checks}
 
-        self.assertEqual(result.status, BenchmarkStatus.PASSED)
+        self.assertEqual(result.status, BenchmarkStatus.SUSPICIOUS)
         self.assertIn("golden_metric_barrier_height_ev_within_tolerance", codes)
+        self.assertIn("compact_baseline_not_signoff_evidence", codes)
+        self.assertEqual(result.summary["signoff_status"], "conditional")
+        self.assertEqual(result.summary["evidence_matrix"]["capability_boundary"], "compact_baseline")
 
     def test_schottky_calibration_has_physical_benchmark(self) -> None:
         state_path = self.root / "schottky_cal" / "state.json"
@@ -302,6 +394,33 @@ class PhysicalBenchmarkTest(unittest.TestCase):
 
         self.assertEqual(result.status, BenchmarkStatus.FAILED)
         self.assertIn("golden_metric_responsivity_a_per_w_far_outside_tolerance", {check.code for check in result.checks})
+
+    def test_planned_industrial_surrogate_blocks_signoff(self) -> None:
+        state_path = self.root / "gan" / "state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "request": {"device_type": "gan_hemt_id_bv", "fidelity": "compact"},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {
+                        "device_type": "gan_hemt_id_bv",
+                        "fidelity": "compact",
+                        "on_current_a": 0.01,
+                    },
+                },
+            },
+        )
+
+        result = run_physical_benchmark(state_path)
+        codes = {check.code for check in result.checks}
+
+        self.assertEqual(result.status, BenchmarkStatus.FAILED)
+        self.assertIn("planned_industrial_template_runner_missing", codes)
+        self.assertEqual(result.summary["signoff_status"], "blocked")
+        self.assertEqual(result.summary["evidence_matrix"]["capability_boundary"], "planned_runner_missing")
 
 
 if __name__ == "__main__":

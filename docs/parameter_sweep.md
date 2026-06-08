@@ -10,8 +10,8 @@ Generate cases without executing DEVSIM:
 
 ```bash
 python3.11 -m tcad_agent.tools.parameter_sweep \
-  --sweep-id p_doping_plan \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V 器件长度 0.2um 结位置 0.08um n区掺杂 2e17 温度 325K" \
+  --sweep-id diode_leakage_plan \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，目标是 -5V 漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3=1e16,1e17,1e18 \
   --no-llm
 ```
@@ -22,8 +22,8 @@ Run the sweep:
 
 ```bash
 python3.11 -m tcad_agent.tools.parameter_sweep \
-  --sweep-id p_doping_sweep \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V 器件长度 0.2um 结位置 0.08um n区掺杂 2e17 温度 325K max_attempts 3 max_cycles 2" \
+  --sweep-id diode_leakage_sweep \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，目标是 -5V 漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3=1e17,2e17,5e17 \
   --execute \
   --no-llm
@@ -86,8 +86,8 @@ Let the deterministic parser infer one common axis:
 ```bash
 python3.11 -m tcad_agent.tools.parameter_sweep \
   --sweep-planner deterministic \
-  --sweep-id p_doping_auto \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V，扫描 P 区掺杂 1e16 到 1e18，找电流最小" \
+  --sweep-id diode_p_doping_auto \
+  --text "扫描 P 区掺杂从 1e16 到 1e18，做 diode/SBD reverse leakage 到 -5V，目标是漏电最小" \
   --execute \
   --no-llm
 ```
@@ -97,8 +97,8 @@ Use the LLM sweep planner for freer language:
 ```bash
 python3.11 -m tcad_agent.tools.parameter_sweep \
   --sweep-planner llm \
-  --sweep-id p_doping_llm \
-  --text "扫描 P 区掺杂从 1e16 到 1e18，做 3 个点，PN 结 0 到 0.2V IV，目标是 0.2V 电流最小" \
+  --sweep-id diode_lifetime_llm \
+  --text "请围绕 lifetime 和掺杂做 3 个点的 diode/SBD leakage sweep，反偏到 -5V，目标是漏电最小且曲线可信" \
   --execute \
   --no-llm
 ```

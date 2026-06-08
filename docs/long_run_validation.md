@@ -18,6 +18,6 @@ python3.11 -m tcad_agent.tools.long_run_validation \
   --validation-id smoke_longrun
 ```
 
-By default it queues compact Schottky and photodiode extended-device runs. Custom queue items can be supplied with `--queue-goals-json`.
+By default it queues Schottky/SBD, BJT Gummel/output, and power MOSFET/LDMOS extended-device runs aligned to the seven public TCAD source categories. BJT and power MOSFET/LDMOS use `fidelity=physics_1d`, so the unattended regression checks the upgraded executable coverage rather than only compact baselines. Custom queue items can be supplied with `--queue-goals-json`.
 
 This is not a substitute for multi-day production soak testing, but it is the fast regression harness that proves the long-running control path is wired end to end.

@@ -21,6 +21,8 @@ class RepairAction(BaseModel):
     reason: str
     target_tool: str | None = None
     request_patch: dict[str, Any] = Field(default_factory=dict)
+    deck_patch: dict[str, Any] = Field(default_factory=dict)
+    deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
     checklist: list[str] = Field(default_factory=list)
     expected_effect: str
     user_confirmation_required: bool = False
@@ -76,6 +78,24 @@ def issue_codes(state: dict[str, Any]) -> set[str]:
             codes.add("tool_convergence_case_failures")
             if any(case.get("failure_reason") for case in failed_cases):
                 codes.add("runner_exception")
+    diagnostic_text = " ".join(
+        str(value or "")
+        for value in [
+            state.get("failure_reason"),
+            state.get("stderr_tail"),
+            state.get("stdout_tail"),
+            state.get("log_tail"),
+            *[
+                attempt.get("failure_reason")
+                for attempt in state.get("attempts") or []
+                if isinstance(attempt, dict)
+            ],
+        ]
+    ).lower()
+    if any(term in diagnostic_text for term in ["singular matrix", "nan", "nonfinite", "not a number"]):
+        codes.add("solver_singular_or_nonfinite")
+    if any(term in diagnostic_text for term in ["maximum iterations", "max iterations", "iteration limit"]):
+        codes.add("solver_iteration_limit_reached")
     return codes
 
 
@@ -179,6 +199,19 @@ def solver_adjustment_patch(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def solver_initialization_backoff_patch(request: dict[str, Any]) -> dict[str, Any]:
+    patch = continuation_patch(request)
+    patch.update(
+        {
+            "solver_strategy": "poisson_initialization_bias_backoff",
+            "model_strategy": "poisson_then_dd",
+            "initial_condition_strategy": "zero_bias_poisson_then_ramp",
+            "resume": False,
+        }
+    )
+    return patch
+
+
 def model_staging_patch(request: dict[str, Any]) -> dict[str, Any]:
     patch: dict[str, Any] = {
         "model_strategy": "poisson_then_dd",
@@ -269,6 +302,56 @@ def unit_bias_patch(request: dict[str, Any]) -> dict[str, Any]:
     return {"stop": new_stop, "step": min(float_or_none(request.get("step")) or step, step), "min_step": step / 4.0}
 
 
+def schema_alias_patch(tool_name: str | None, request: dict[str, Any]) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    if tool_name == "mosfet_2d_id_sweep":
+        sweep_type = str(request.get("sweep_type") or "").lower().replace("-", "_").replace(" ", "_")
+        if sweep_type in {"output", "output_curve", "output_characteristic", "id_vd", "ivd"}:
+            patch["sweep_type"] = "idvd"
+        elif sweep_type in {"transfer", "transfer_curve", "transfer_characteristic", "id_vg", "ivg"}:
+            patch["sweep_type"] = "idvg"
+        elif sweep_type in {"both_curves", "transfer_and_output"}:
+            patch["sweep_type"] = "both"
+        gate_values = request.get("gate_values") or request.get("vg_values") or request.get("idvd_gate_values")
+        if isinstance(gate_values, list) and gate_values:
+            numeric_values = [float_or_none(value) for value in gate_values]
+            numeric_values = [value for value in numeric_values if value is not None]
+            if numeric_values and "idvd_gate_voltage" not in request:
+                patch["idvd_gate_voltage"] = max(numeric_values)
+        for alias, canonical in [
+            ("vg_start", "gate_start"),
+            ("vg_stop", "gate_stop"),
+            ("vg_step", "gate_step"),
+            ("vgs_start", "gate_start"),
+            ("vgs_stop", "gate_stop"),
+            ("vgs_step", "gate_step"),
+            ("vd_start", "drain_start"),
+            ("vd_stop", "drain_stop"),
+            ("vd_step", "drain_step"),
+            ("vds_start", "drain_start"),
+            ("vds_stop", "drain_stop"),
+            ("vds_step", "drain_step"),
+        ]:
+            if alias in request and canonical not in request:
+                patch[canonical] = request[alias]
+    elif tool_name in {"pn_junction_iv_sweep", "mos_capacitor_cv_sweep", "diode_breakdown_leakage_sweep"}:
+        for alias, canonical in [
+            ("voltage_start", "start"),
+            ("bias_start", "start"),
+            ("voltage_stop", "stop"),
+            ("bias_stop", "stop"),
+            ("voltage_step", "step"),
+            ("bias_step", "step"),
+        ]:
+            if alias in request and canonical not in request:
+                patch[canonical] = request[alias]
+    if "mesh_refinement_level" in request:
+        level = int(float_or_none(request.get("mesh_refinement_level")) or 2)
+        patch.setdefault("x_divisions", max(8, level * 4))
+        patch.setdefault("silicon_y_divisions", max(3, level + 2))
+    return patch
+
+
 def add_action(actions: list[RepairAction], action: RepairAction) -> None:
     if any(existing.name == action.name for existing in actions):
         return
@@ -285,7 +368,15 @@ def repair_target_tool(state: dict[str, Any]) -> str | None:
 
 def repair_request(state: dict[str, Any]) -> dict[str, Any]:
     if state.get("tool_name") != "tool_convergence":
-        return dict(state.get("request") or {})
+        request = dict(state.get("request") or {})
+        if isinstance(state.get("tcad_deck_spec"), dict) and "tcad_deck_spec" not in request:
+            request["tcad_deck_spec"] = state["tcad_deck_spec"]
+        if isinstance(state.get("tcad_deck_mutations"), list) and "tcad_deck_mutations" not in request:
+            request["tcad_deck_mutations"] = state["tcad_deck_mutations"]
+        deck = request.get("tcad_deck_spec")
+        if isinstance(deck, dict) and isinstance(deck.get("planned_mutations"), list) and "tcad_deck_mutations" not in request:
+            request["tcad_deck_mutations"] = deck["planned_mutations"]
+        return request
     cases = [case for case in state.get("cases") or [] if isinstance(case, dict)]
     failed = [case for case in cases if case.get("status") == "failed" and isinstance(case.get("request"), dict)]
     if failed:
@@ -296,7 +387,152 @@ def repair_request(state: dict[str, Any]) -> dict[str, Any]:
     return dict(state.get("base_request") or {})
 
 
+def mutation_repair_is_relevant(codes: set[str]) -> bool:
+    if not codes:
+        return False
+    markers = ["leakage", "breakdown", "field", "ron", "drift", "deck", "benchmark", "quality"]
+    return any(any(marker in code for marker in markers) for code in codes)
+
+
+def next_mutation_value(request: dict[str, Any], mutation: dict[str, Any]) -> Any:
+    values = mutation.get("values")
+    if not isinstance(values, list) or not values:
+        return None
+    path = str(mutation.get("request_path") or "")
+    current = float_or_none(request.get(path))
+    if current is None:
+        return values[0]
+    for value in values:
+        numeric = float_or_none(value)
+        if numeric is None or abs(numeric - current) / max(abs(current), abs(numeric), 1.0e-30) > 1.0e-9:
+            return value
+    return values[-1]
+
+
+def mutation_target(mutation: dict[str, Any]) -> str:
+    return str(mutation.get("target") or mutation.get("name") or "").replace(" ", "_")
+
+
+def history_values_for_path(request: dict[str, Any], path: str) -> list[float]:
+    values: list[float] = []
+    for item in request.get("deck_patch_history") or []:
+        if not isinstance(item, dict) or item.get("request_path") != path:
+            continue
+        numeric = float_or_none(item.get("value"))
+        if numeric is not None:
+            values.append(numeric)
+    return values
+
+
+def curve_guided_mutation_value(
+    request: dict[str, Any],
+    mutation: dict[str, Any],
+    analysis: dict[str, Any] | None,
+) -> Any:
+    if not analysis:
+        return next_mutation_value(request, mutation)
+    target = mutation_target(mutation)
+    recommended = str(analysis.get("recommended_next_target") or "")
+    if recommended and target != recommended:
+        return None
+    path = str(mutation.get("request_path") or "")
+    current = float_or_none(request.get(path))
+    baseline = float_or_none(analysis.get("baseline_value"))
+    previous = float_or_none(analysis.get("mutation_value"))
+    values = mutation.get("values") if isinstance(mutation.get("values"), list) else []
+    if not bool(analysis.get("worth_continuing")) or current is None or baseline is None or previous is None:
+        tried = set(history_values_for_path(request, path))
+        for value in values:
+            numeric = float_or_none(value)
+            if numeric is not None and numeric in tried:
+                continue
+            if numeric is None or current is None or abs(numeric - current) / max(abs(current), abs(numeric), 1.0e-30) > 1.0e-9:
+                return value
+        return next_mutation_value(request, mutation)
+    step = previous - baseline
+    if step == 0:
+        return next_mutation_value(request, mutation)
+    refined = previous + 0.5 * step
+    if path.endswith(("_cm3", "_cm2", "_s", "_um", "_nm")):
+        refined = max(refined, 1.0e-30)
+    return float(f"{refined:.6g}")
+
+
+def ordered_mutations_for_analysis(mutations: list[dict[str, Any]], analysis: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not analysis:
+        return mutations
+    recommended = str(analysis.get("recommended_next_target") or "")
+    if not recommended:
+        return mutations
+    return sorted(mutations, key=lambda mutation: 0 if mutation_target(mutation) == recommended else 1)
+
+
+def deck_mutation_repair_actions(
+    tool_name: str | None,
+    request: dict[str, Any],
+    codes: set[str],
+    actions: list[RepairAction],
+    state: dict[str, Any] | None = None,
+) -> None:
+    mutations = request.get("tcad_deck_mutations") or []
+    if not isinstance(mutations, list) or not mutation_repair_is_relevant(codes):
+        return
+    analysis = (state or {}).get("mutation_effect_analysis")
+    analysis = analysis if isinstance(analysis, dict) else None
+    for mutation in ordered_mutations_for_analysis([item for item in mutations if isinstance(item, dict)], analysis):
+        if not isinstance(mutation, dict) or not mutation.get("executable", True):
+            continue
+        path = str(mutation.get("request_path") or "")
+        if not path:
+            continue
+        value = curve_guided_mutation_value(request, mutation, analysis)
+        if value is None:
+            continue
+        target = mutation_target(mutation)
+        patch: dict[str, Any] = {
+            path: value,
+            "active_deck_mutation": mutation,
+            "deck_repair_hint": f"apply {mutation.get('name') or mutation.get('target')} before rerun",
+        }
+        if path == "electron_lifetime_s" and "hole_lifetime_s" in request:
+            patch["hole_lifetime_s"] = value
+        add_action(
+            actions,
+            RepairAction(
+                name=f"deck_mutation_{mutation.get('target') or path}".replace(" ", "_"),
+                priority=89,
+                reason=str(mutation.get("reason") or "Apply planned deck mutation to repair a physical-quality issue."),
+                target_tool=tool_name,
+                request_patch=patch,
+                deck_patch={
+                    "operation": mutation.get("operation") or "set",
+                    "request_path": path,
+                    "deck_path": mutation.get("deck_path"),
+                    "value": value,
+                    "baseline_value": request.get(path),
+                    "target": target,
+                    "source_mutation": mutation.get("name"),
+                    "curve_guided_decision": (analysis or {}).get("decision"),
+                    "curve_guided_rationale": (analysis or {}).get("rationale"),
+                },
+                deck_mutations=[mutation],
+                checklist=[
+                    "Apply the mutation to the generated deck/request, not only to the report metadata.",
+                    "Rerun the same metric window and compare against the baseline curve.",
+                    "Keep the mutation recorded in deck_patch_history for repair-loop traceability.",
+                    "Use mutation_effect_analysis to decide whether the next round should refine this target or switch targets.",
+                ],
+                expected_effect=(
+                    "Continues the curve-improving mutation direction with a finer patch."
+                    if analysis and analysis.get("worth_continuing")
+                    else "Turns a natural-language structure/model edit into an executable deck mutation retry."
+                ),
+            ),
+        )
+
+
 def schema_normalization_actions(tool_name: str | None, request: dict[str, Any], actions: list[RepairAction]) -> None:
+    patch = schema_alias_patch(tool_name, request)
     add_action(
         actions,
         RepairAction(
@@ -304,7 +540,7 @@ def schema_normalization_actions(tool_name: str | None, request: dict[str, Any],
             priority=98,
             reason="Tool validation failed or the plan used human/LLM field aliases instead of executable request fields.",
             target_tool=tool_name,
-            request_patch={},
+            request_patch=patch,
             checklist=[
                 "Normalize sweep aliases such as output_characteristic -> idvd and transfer_characteristic -> idvg.",
                 "Map informal mesh_refinement_level to executable mesh fields such as x_divisions.",
@@ -398,12 +634,60 @@ def convergence_actions(tool_name: str | None, request: dict[str, Any], actions:
     )
 
 
-def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes: set[str], actions: list[RepairAction]) -> None:
+def quality_issue_actions(
+    tool_name: str | None,
+    request: dict[str, Any],
+    codes: set[str],
+    actions: list[RepairAction],
+    state: dict[str, Any] | None = None,
+) -> None:
+    deck_mutation_repair_actions(tool_name, request, codes, actions, state=state)
+
+    analysis = (state or {}).get("mutation_effect_analysis") if isinstance(state, dict) else None
+    if isinstance(analysis, dict) and analysis.get("tradeoff_violations"):
+        add_action(
+            actions,
+            RepairAction(
+                name="mutation_pareto_constraint_review",
+                priority=91,
+                reason="上一轮 deck mutation 虽然改变了曲线，但 BV/Ron/field/leakage 中至少一个约束级指标出现不可忽略退化。",
+                target_tool=tool_name,
+                request_patch={},
+                deck_patch={},
+                checklist=[
+                    "Compare mutation_effect_analysis.metric_deltas against the original baseline.",
+                    "Reject or switch mutation target if BV magnitude, Ron, or field peak crosses the configured tolerance.",
+                    "Only continue a degrading mutation when the user explicitly prioritizes that objective.",
+                ],
+                expected_effect="Adds a Pareto/constraint gate before continuing a superficially helpful deck patch.",
+                user_confirmation_required=True,
+            ),
+        )
+
     if codes & {"string_pattern_mismatch", "invalid_tool_schema", "field_alias_mismatch", "schema_validation_failed"}:
         schema_normalization_actions(tool_name, request, actions)
 
     if codes & {"too_many_convergence_failures"}:
         convergence_actions(tool_name, request, actions)
+
+    if codes & {"solver_singular_or_nonfinite", "solver_iteration_limit_reached"}:
+        add_action(
+            actions,
+            RepairAction(
+                name="solver_initialization_bias_backoff",
+                priority=108,
+                reason="Solver log suggests singular/nonfinite values or iteration-limit failure; restart from safer electrostatic initialization and smaller bias increments.",
+                target_tool=tool_name,
+                request_patch=solver_initialization_backoff_patch(request),
+                checklist=[
+                    "Restart from zero-bias Poisson initialization.",
+                    "Ramp drift-diffusion bias in smaller steps.",
+                    "Keep advanced models staged off until the base solution is finite.",
+                    "Re-run physical benchmark after the repaired run.",
+                ],
+                expected_effect="Turns hard nonlinear solver failures into a safer staged initialization path.",
+            ),
+        )
 
     if codes & {"too_few_completed_convergence_cases", "tool_convergence_case_failures", "runner_exception"}:
         add_action(
@@ -629,7 +913,13 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
             ),
         )
 
-    if codes & {"threshold_not_crossed", "low_ion_ioff_ratio", "mosfet_ion_ioff_ratio_low", "mosfet_vth_outside_gate_sweep"}:
+    if codes & {
+        "threshold_not_crossed",
+        "mosfet_threshold_not_crossed",
+        "low_ion_ioff_ratio",
+        "mosfet_ion_ioff_ratio_low",
+        "mosfet_vth_outside_gate_sweep",
+    }:
         add_action(
             actions,
             RepairAction(
@@ -717,6 +1007,44 @@ def quality_issue_actions(tool_name: str | None, request: dict[str, Any], codes:
             ),
         )
 
+    if codes & {"compact_baseline_not_signoff_evidence"}:
+        add_action(
+            actions,
+            RepairAction(
+                name="promote_compact_baseline_to_tcad_runner",
+                priority=38,
+                reason="当前结果只是 compact baseline，不能自动修成签核证据；需要升级到真实 TCAD runner 或建立 compact-to-TCAD/golden 相关性。",
+                target_tool=tool_name,
+                request_patch={},
+                checklist=[
+                    "确认该器件是否已有 DEVSIM/Sentaurus/Silvaco runner 可用。",
+                    "若没有 runner，先实现参数化几何、物理模型、日志解析和质量规则。",
+                    "用 golden/measured 曲线或高保真 TCAD 结果校准 compact baseline 后再写强结论。",
+                ],
+                expected_effect="防止把规划基线误当作完成的 TCAD 签核证据。",
+                user_confirmation_required=True,
+            ),
+        )
+
+    if codes & {"planned_industrial_template_runner_missing"}:
+        add_action(
+            actions,
+            RepairAction(
+                name="implement_planned_industrial_runner_first",
+                priority=110,
+                reason="目标工业器件只有 planned 模板，缺少真实 runner、质量规则和 benchmark；应先完成实现工作，而不是执行 surrogate。",
+                target_tool=None,
+                request_patch={},
+                checklist=[
+                    "定义器件几何/材料/接触/物理模型最小可运行模板。",
+                    "实现 runner 的 checkpoint、日志解析、曲线/指标产物和失败分类。",
+                    "补物理 benchmark、mesh/model convergence 和 golden/measured 对比。",
+                ],
+                expected_effect="把能力缺口转化成实现任务，避免输出误导性仿真结论。",
+                user_confirmation_required=True,
+            ),
+        )
+
     if codes & {"deck_measured_curve_comparison_missing"} or any(code.startswith("golden_metric_") for code in codes):
         add_action(
             actions,
@@ -765,7 +1093,7 @@ def build_repair_actions(state: dict[str, Any]) -> list[RepairAction]:
                 expected_effect="Separates transient runner/continuation failures from persistent deck or model defects.",
             ),
         )
-    quality_issue_actions(tool_name, request, codes, actions)
+    quality_issue_actions(tool_name, request, codes, actions, state=state)
 
     if state.get("status") == "failed" and not actions:
         add_action(

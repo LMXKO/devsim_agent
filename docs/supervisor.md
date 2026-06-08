@@ -27,12 +27,13 @@ The state records:
 Currently supported routed actions:
 
 - rebuild/query experiment index;
-- run PN junction IV through the task runner;
 - run MOS capacitor C-V through `mos_capacitor_cv`;
 - run diode reverse leakage / breakdown through `diode_breakdown`;
 - run 2D MOSFET Id-Vg / Id-Vd through `mosfet_2d_id`;
+- run Schottky IV through `extended_device_sweep` with `fidelity=devsim_1d`;
+- run BJT and power MOSFET/LDMOS `physics_1d` executable evidence paths through `extended_device_sweep`;
+- route planned GaN HEMT, FinFET/GAA, SiC diode, and IGBT templates to explicit implementation/capability-boundary steps;
 - run Schottky IV calibration through `schottky_iv_calibration` when the goal asks for calibration, fitting, or a trusted/measured curve;
-- run PN mesh convergence checks through `mesh_convergence`;
 - generate Markdown reports;
 - generate static HTML dashboards;
 - generate engineering conclusions;
@@ -65,31 +66,57 @@ Example routed goals:
 
 ```bash
 python3.11 -m tcad_agent.tools.supervisor \
-  --supervisor-id sup_mosfet2d \
-  --goal "做 2D MOSFET Id-Vg gate_start 0V gate_stop 1V gate_step 0.25V drain_voltage 0.05V" \
+  --supervisor-id sup_moscap \
+  --goal "MOSCAP C-V 从 -2V 到 2V，tox 5nm，P-sub 1e17，判断 Cox 和平带偏移" \
+  --execute \
+  --max-cycles 3
+
+python3.11 -m tcad_agent.tools.supervisor \
+  --supervisor-id sup_mosfet_dibl \
+  --goal "做 2D MOSFET 低/高 Vd 的 Id-Vg split，提取 Vth、SS、Ion/Ioff 和 DIBL" \
   --execute \
   --max-cycles 3
 
 python3.11 -m tcad_agent.tools.supervisor \
   --supervisor-id sup_breakdown \
-  --goal "做 PN 二极管 breakdown 从 0V 到 -5V step 0.5V breakdown_current 1e-6" \
-  --execute \
-  --max-cycles 3
-
-python3.11 -m tcad_agent.tools.supervisor \
-  --supervisor-id sup_mesh \
-  --goal "对 PN IV 做 mesh convergence relative_tolerance 0.05" \
+  --goal "做 diode/SBD reverse leakage 和 breakdown，从 0V 到 -5V step 0.5V breakdown_current 1e-6" \
   --execute \
   --max-cycles 3
 
 python3.11 -m tcad_agent.tools.supervisor \
   --supervisor-id sup_schottky_cal \
-  --goal "校准 Schottky diode 到可信曲线 trusted_schottky_iv.csv，并用 DEVSIM 复核" \
+  --goal "校准 Schottky/SBD 到可信曲线 trusted_schottky_iv.csv，并用 DEVSIM 复核" \
+  --execute \
+  --max-cycles 3
+
+python3.11 -m tcad_agent.tools.supervisor \
+  --supervisor-id sup_ldmos \
+  --goal "LDMOS BV 和 Ron tradeoff，检查 impact ionization、场峰值和 Ron 分解" \
+  --execute \
+  --max-cycles 3
+
+python3.11 -m tcad_agent.tools.supervisor \
+  --supervisor-id sup_gan_hemt \
+  --goal "GaN HEMT 输出特性、BV 和 current collapse 风险，列出 polarization/trap/self-heating 缺口" \
+  --execute \
+  --max-cycles 3
+
+python3.11 -m tcad_agent.tools.supervisor \
+  --supervisor-id sup_bjt \
+  --goal "BJT Gummel plot、beta、Early voltage 和 collector leakage 评估" \
+  --execute \
+  --max-cycles 3
+
+python3.11 -m tcad_agent.tools.supervisor \
+  --supervisor-id sup_finfet \
+  --goal "FinFET/GAA DIBL、Cgg/Cgd 和 variability campaign 签核计划" \
   --execute \
   --max-cycles 3
 ```
 
 Schottky calibration goals are routed before generic Schottky IV templates, so "calibrate", "fit", "校准", "拟合", "可信曲线", "目标曲线", and "实测曲线" invoke the calibration tool rather than a one-off IV sweep.
+
+Specialized device routing uses `device_templates` as a capability boundary. `executable` templates can produce TCAD evidence, `compact_baseline` templates run only as planning evidence with explicit warnings, and `planned` industrial templates produce a user-confirmation/implementation action instead of a surrogate simulation.
 
 ## Resume
 

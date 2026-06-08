@@ -188,6 +188,7 @@ def tool_objective_value(state: dict[str, Any]) -> float | None:
         "final_abs_drain_current_a",
         "barrier_height_ev",
         "best_rmse_log_current_dec",
+        "golden_curve_rmse_log_dec",
         "current_gain_beta",
         "pinch_off_voltage_v",
         "breakdown_voltage_v",
@@ -210,6 +211,7 @@ def record_from_tool_state(path: Path, state: dict[str, Any]) -> ExperimentRecor
         experiment_id=str(
             state.get("run_id")
             or state.get("convergence_id")
+            or state.get("comparison_id")
             or state.get("optimize_id")
             or state.get("sweep_id")
             or path.parent.name
@@ -280,6 +282,7 @@ def record_from_state(path: Path) -> ExperimentRecord | None:
         "mosfet_2d_id_sweep",
         "extended_device_sweep",
         "schottky_iv_calibration",
+        "golden_curve_comparison",
     }:
         return record_from_tool_state(path, state)
     return None

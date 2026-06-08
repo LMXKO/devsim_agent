@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tcad_agent.physical_quality import oxide_capacitance_f_per_cm2
+from tcad_agent.signoff_evidence import build_signoff_evidence_pack
 
 
 Q_OVER_K_BOLTZMANN = 11604.518121550082
@@ -34,6 +35,36 @@ DEFAULT_GOLDEN_PROFILES: dict[str, dict[str, dict[str, float]]] = {
         "responsivity_a_per_w": {"expected": 0.5, "relative_tolerance": 0.25},
         "photocurrent_a": {"expected": 5.0e-7, "relative_tolerance": 0.35},
     },
+    "extended_device_sweep:finfet_id_cv": {
+        "vth_at_threshold_current_v": {"expected": 0.35, "relative_tolerance": 0.35},
+        "subthreshold_swing_mv_dec": {"expected": 75.0, "relative_tolerance": 0.35},
+        "dibl_mv_per_v": {"expected": 80.0, "relative_tolerance": 0.5},
+    },
+    "extended_device_sweep:sic_power_diode_bv_leakage": {
+        "breakdown_voltage_v": {"expected": -1200.0, "relative_tolerance": 0.35},
+        "max_electric_field_v_per_cm": {"expected": 2.5e6, "relative_tolerance": 0.45},
+    },
+    "extended_device_sweep:gan_hemt_id_bv": {
+        "threshold_voltage_v": {"expected": -2.5, "relative_tolerance": 0.35},
+        "two_deg_density_cm2": {"expected": 1.0e13, "relative_tolerance": 0.35},
+    },
+    "extended_device_sweep:igbt_output_turnoff": {
+        "on_state_voltage_v": {"expected": 1.8, "relative_tolerance": 0.35},
+        "blocking_voltage_v": {"expected": -650.0, "relative_tolerance": 0.35},
+    },
+}
+COMPACT_BASELINE_DEVICE_TYPES = {
+    "schottky_diode",
+    "bjt_gummel_output",
+    "jfet_transfer_output",
+    "power_mosfet_bv_ron",
+    "photodiode_iv",
+}
+PLANNED_INDUSTRIAL_DEVICE_TYPES = {
+    "finfet_id_cv",
+    "sic_power_diode_bv_leakage",
+    "gan_hemt_id_bv",
+    "igbt_output_turnoff",
 }
 
 
@@ -577,7 +608,16 @@ def benchmark_mosfet(metrics: dict[str, Any], params: dict[str, Any]) -> list[Be
     vth = float_or_none(metrics.get("vth_at_threshold_current_v"))
     gate_start = float_or_none(params.get("gate_start"))
     gate_stop = float_or_none(params.get("gate_stop"))
-    if vth is not None and gate_start is not None and gate_stop is not None:
+    idvg_points = int(float_or_none(metrics.get("idvg_points")) or 0)
+    if vth is None and idvg_points >= 2:
+        checks.append(
+            warn_check(
+                "mosfet_threshold_not_crossed",
+                "Id-Vg did not cross the configured threshold current; extend or shift the gate sweep before trusting Vth/DIBL.",
+                {"threshold_current_a": metrics.get("threshold_current_a"), "idvg_points": idvg_points},
+            )
+        )
+    elif vth is not None and gate_start is not None and gate_stop is not None:
         low, high = sorted([gate_start, gate_stop])
         if low <= vth <= high:
             checks.append(
@@ -649,6 +689,30 @@ def benchmark_mosfet(metrics: dict[str, Any], params: dict[str, Any]) -> list[Be
 def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -> list[BenchmarkCheck]:
     device_type = str(metrics.get("device_type") or params.get("device_type") or "")
     checks: list[BenchmarkCheck] = []
+    fidelity = str(metrics.get("fidelity") or params.get("fidelity") or "compact")
+    evidence_level = str(metrics.get("evidence_level") or params.get("evidence_level") or "")
+    if device_type in PLANNED_INDUSTRIAL_DEVICE_TYPES and fidelity == "compact":
+        checks.append(
+            error_check(
+                "planned_industrial_template_runner_missing",
+                "This industrial device is only represented by a compact surrogate; a real TCAD runner, quality rules, and benchmark evidence are required before execution can be trusted.",
+                {"device_type": device_type, "fidelity": fidelity, "evidence_level": evidence_level},
+            )
+        )
+    elif evidence_level == "compact_baseline" or (device_type in COMPACT_BASELINE_DEVICE_TYPES and fidelity == "compact"):
+        checks.append(
+            warn_check(
+                "compact_baseline_not_signoff_evidence",
+                "This extended-device result is a compact planning baseline, not final TCAD signoff evidence.",
+                {
+                    "device_type": device_type,
+                    "fidelity": fidelity,
+                    "requires_higher_fidelity_runner_for_signoff": metrics.get("requires_higher_fidelity_runner_for_signoff")
+                    or params.get("requires_higher_fidelity_runner_for_signoff"),
+                },
+                {"required_for_signoff": ["higher_fidelity_tcad_runner", "convergence_evidence", "golden_or_measured_comparison"]},
+            )
+        )
     if device_type == "schottky_diode":
         barrier = range_check(
             "schottky_barrier_height",
@@ -743,12 +807,75 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
             low=1.0,
             high=1000.0,
             units="",
-            pass_message="BJT current gain is inside a broad compact-model sanity range.",
-            warning_message="BJT current gain is outside a broad compact-model sanity range.",
+            pass_message="BJT current gain is inside a broad transport-model sanity range.",
+            warning_message="BJT current gain is outside a broad transport-model sanity range.",
             missing_message="BJT current gain was not extracted.",
         )
         if beta:
             checks.append(beta)
+        if fidelity == "physics_1d":
+            if metrics.get("equation_coupled_transport"):
+                checks.append(
+                    pass_check(
+                        "bjt_physics_transport_coupled",
+                        "BJT physics_1d run records coupled charge-control transport rather than a compact-only placeholder.",
+                        {
+                            "transport_model": metrics.get("transport_model"),
+                            "equation_coupled_transport": metrics.get("equation_coupled_transport"),
+                        },
+                    )
+                )
+            else:
+                checks.append(
+                    error_check(
+                        "bjt_physics_transport_missing",
+                        "BJT physics_1d run did not record coupled transport metadata.",
+                        {"transport_model": metrics.get("transport_model")},
+                    )
+                )
+            if metrics.get("three_terminal_output_family") and float_or_none(metrics.get("output_points")):
+                checks.append(
+                    pass_check(
+                        "bjt_three_terminal_output_family_present",
+                        "BJT run includes an Ic-Vce output family in addition to the Gummel sweep.",
+                        {
+                            "output_points": metrics.get("output_points"),
+                            "early_voltage_v": metrics.get("early_voltage_v"),
+                        },
+                    )
+                )
+            else:
+                checks.append(
+                    warn_check(
+                        "bjt_output_family_missing",
+                        "BJT run does not expose enough collector-bias output-family evidence for Early-voltage review.",
+                        {"output_points": metrics.get("output_points")},
+                    )
+                )
+            leakage = float_or_none(metrics.get("collector_leakage_current_a"))
+            max_collector = float_or_none(metrics.get("max_collector_current_a"))
+            if leakage is not None and max_collector is not None and 0 <= leakage < max_collector:
+                checks.append(
+                    pass_check(
+                        "bjt_collector_leakage_below_drive_current",
+                        "Collector leakage is below the maximum driven collector current.",
+                        {"collector_leakage_current_a": leakage, "max_collector_current_a": max_collector},
+                    )
+                )
+            if metrics.get("mesh_resolved_geometry") and metrics.get("doping_profile_defined"):
+                checks.append(
+                    pass_check(
+                        "bjt_mesh_resolved_deck_present",
+                        "BJT physics_1d result records emitter/base/collector geometry, doping, and junction mesh evidence.",
+                        {
+                            "geometry_model": metrics.get("geometry_model"),
+                            "mesh_nodes_estimate": metrics.get("mesh_nodes_estimate"),
+                            "bjt_junction_mesh_spacing_um": metrics.get("bjt_junction_mesh_spacing_um"),
+                        },
+                    )
+                )
+            else:
+                checks.append(error_check("bjt_mesh_resolved_deck_missing", "BJT physics_1d result lacks mesh-resolved geometry/doping evidence."))
     elif device_type == "jfet_transfer_output":
         pinch = float_or_none(metrics.get("pinch_off_voltage_v"))
         if pinch is None:
@@ -769,6 +896,28 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                     {"pinch_off_voltage_v": pinch},
                 )
             )
+        if fidelity == "physics_1d":
+            if metrics.get("equation_coupled_depletion"):
+                checks.append(
+                    pass_check(
+                        "jfet_depletion_model_coupled",
+                        "JFET physics_1d run records gate-junction depletion coupling.",
+                        {
+                            "depletion_model": metrics.get("depletion_model"),
+                            "depletion_width_peak_um": metrics.get("depletion_width_peak_um"),
+                        },
+                    )
+                )
+            else:
+                checks.append(error_check("jfet_depletion_model_missing", "JFET physics_1d run lacks depletion-model coupling evidence."))
+            if metrics.get("output_family") and float_or_none(metrics.get("output_points")):
+                checks.append(
+                    pass_check(
+                        "jfet_output_family_present",
+                        "JFET run includes an Id-Vd output family in addition to transfer data.",
+                        {"output_points": metrics.get("output_points")},
+                    )
+                )
     elif device_type == "power_mosfet_bv_ron":
         bv = float_or_none(metrics.get("breakdown_voltage_v"))
         ron = float_or_none(metrics.get("specific_on_resistance_ohm_cm2"))
@@ -798,6 +947,75 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                     {"specific_on_resistance_ohm_cm2": ron},
                 )
             )
+        if fidelity == "physics_1d":
+            if metrics.get("impact_ionization_coupled"):
+                checks.append(
+                    pass_check(
+                        "power_mos_impact_ionization_coupled",
+                        "Power MOSFET physics_1d run records local-field impact-ionization coupling for BV extraction.",
+                        {
+                            "impact_ionization_model": metrics.get("impact_ionization_model"),
+                            "avalanche_integral_max": metrics.get("avalanche_integral_max"),
+                        },
+                    )
+                )
+            else:
+                checks.append(
+                    error_check(
+                        "power_mos_impact_ionization_missing",
+                        "Power MOSFET physics_1d run did not record impact-ionization coupling.",
+                        {"impact_ionization_model": metrics.get("impact_ionization_model")},
+                    )
+                )
+            max_field = float_or_none(metrics.get("max_electric_field_v_per_cm"))
+            critical_field = float_or_none(metrics.get("critical_field_v_per_cm"))
+            if max_field is not None and critical_field is not None:
+                if max_field <= critical_field * 1.35:
+                    checks.append(
+                        pass_check(
+                            "power_mos_field_peak_within_critical_margin",
+                            "Peak electric field is within the configured critical-field margin.",
+                            {"max_electric_field_v_per_cm": max_field},
+                            {"critical_field_v_per_cm": critical_field, "margin": 1.35},
+                        )
+                    )
+                else:
+                    checks.append(
+                        warn_check(
+                            "power_mos_field_peak_above_critical_margin",
+                            "Peak electric field exceeds the configured critical-field margin; inspect drift length and mesh strategy.",
+                            {"max_electric_field_v_per_cm": max_field},
+                            {"critical_field_v_per_cm": critical_field, "margin": 1.35},
+                        )
+                    )
+            if float_or_none(metrics.get("drift_specific_on_resistance_ohm_cm2")) is not None:
+                checks.append(
+                    pass_check(
+                        "power_mos_ron_components_present",
+                        "Specific Ron is decomposed into drift and channel contributions.",
+                        {
+                            "drift_specific_on_resistance_ohm_cm2": metrics.get("drift_specific_on_resistance_ohm_cm2"),
+                            "channel_specific_on_resistance_ohm_cm2": metrics.get(
+                                "channel_specific_on_resistance_ohm_cm2"
+                            ),
+                        },
+                    )
+                )
+            if metrics.get("mesh_resolved_drift_region") and metrics.get("doping_profile_defined") and metrics.get("field_plate_geometry_defined"):
+                checks.append(
+                    pass_check(
+                        "power_mos_mesh_resolved_deck_present",
+                        "Power MOSFET physics_1d result records source/body/drift/drain geometry, field plate, doping, and junction mesh evidence.",
+                        {
+                            "geometry_model": metrics.get("geometry_model"),
+                            "mesh_nodes_estimate": metrics.get("mesh_nodes_estimate"),
+                            "junction_mesh_spacing_um": metrics.get("junction_mesh_spacing_um"),
+                            "field_plate_length_um": metrics.get("field_plate_length_um"),
+                        },
+                    )
+                )
+            else:
+                checks.append(error_check("power_mos_mesh_resolved_deck_missing", "Power MOSFET physics_1d result lacks mesh-resolved drift/field-plate evidence."))
     elif device_type == "photodiode_iv":
         photocurrent = float_or_none(metrics.get("photocurrent_a"))
         responsivity = float_or_none(metrics.get("responsivity_a_per_w"))
@@ -814,6 +1032,112 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                     {"range_a_per_w": [0.0, 1.5]},
                 )
             )
+        if fidelity == "physics_1d":
+            if metrics.get("optical_generation_coupled"):
+                checks.append(
+                    pass_check(
+                        "photodiode_optical_generation_coupled",
+                        "Photodiode physics_1d run records optical generation as coupled evidence.",
+                        {
+                            "optical_generation_rate_cm3_s": metrics.get("optical_generation_rate_cm3_s"),
+                            "quantum_efficiency": metrics.get("quantum_efficiency"),
+                        },
+                    )
+                )
+            else:
+                checks.append(error_check("photodiode_optical_generation_missing", "Photodiode physics_1d run lacks optical-generation coupling evidence."))
+            if metrics.get("dark_light_pair_present"):
+                checks.append(pass_check("photodiode_dark_light_pair_present", "Photodiode run includes dark and illuminated IV evidence."))
+    elif device_type == "finfet_id_cv":
+        ss = range_check(
+            "finfet_subthreshold_swing_range",
+            metrics.get("subthreshold_swing_mv_dec"),
+            low=55.0,
+            high=120.0,
+            units="mV/dec",
+            pass_message="FinFET subthreshold swing is inside a broad short-channel sanity range.",
+            warning_message="FinFET subthreshold swing is outside a broad short-channel sanity range.",
+            missing_message="FinFET subthreshold swing was not extracted.",
+        )
+        if ss:
+            checks.append(ss)
+        if float_or_none(metrics.get("ion_ioff_ratio")) and float(metrics["ion_ioff_ratio"]) > 10.0:
+            checks.append(pass_check("finfet_ion_ioff_positive_margin", "FinFET Ion/Ioff ratio is positive and usable for screening.", {"ion_ioff_ratio": metrics.get("ion_ioff_ratio")}))
+        if fidelity == "physics_1d":
+            if metrics.get("fin_geometry_resolved"):
+                checks.append(pass_check("finfet_geometry_surrogate_resolved", "FinFET physics_1d run records a parameterized fin/nanosheet geometry surrogate."))
+            else:
+                checks.append(error_check("finfet_geometry_surrogate_missing", "FinFET physics_1d run lacks geometry surrogate evidence."))
+            if metrics.get("quantum_correction_coupled"):
+                checks.append(
+                    pass_check(
+                        "finfet_density_gradient_coupled",
+                        "FinFET physics_1d run records density-gradient quantum correction coupling.",
+                        {"quantum_correction_model": metrics.get("quantum_correction_model")},
+                    )
+                )
+            else:
+                checks.append(error_check("finfet_quantum_correction_missing", "FinFET physics_1d run lacks quantum-correction evidence."))
+            if metrics.get("capacitance_extracted"):
+                checks.append(pass_check("finfet_capacitance_extracted", "FinFET run includes gate capacitance extraction evidence."))
+    elif device_type == "sic_power_diode_bv_leakage":
+        bv = float_or_none(metrics.get("breakdown_voltage_v"))
+        if bv is not None and bv < 0:
+            checks.append(pass_check("sic_breakdown_voltage_sign_ok", "SiC power diode breakdown voltage has reverse-bias polarity.", {"breakdown_voltage_v": bv}))
+        else:
+            checks.append(error_check("sic_breakdown_voltage_wrong_sign", "SiC power diode breakdown voltage should be negative.", {"breakdown_voltage_v": bv}))
+        if fidelity == "physics_1d":
+            if metrics.get("impact_ionization_coupled"):
+                checks.append(
+                    pass_check(
+                        "sic_impact_ionization_coupled",
+                        "SiC physics_1d run records wide-bandgap impact-ionization coupling.",
+                        {
+                            "impact_ionization_model": metrics.get("impact_ionization_model"),
+                            "avalanche_integral_max": metrics.get("avalanche_integral_max"),
+                        },
+                    )
+                )
+            else:
+                checks.append(error_check("sic_impact_ionization_missing", "SiC physics_1d run lacks impact-ionization coupling evidence."))
+            max_field = float_or_none(metrics.get("max_electric_field_v_per_cm"))
+            critical = float_or_none(metrics.get("critical_field_v_per_cm"))
+            if max_field is not None and critical is not None and max_field <= critical * 1.35:
+                checks.append(pass_check("sic_field_peak_within_critical_margin", "SiC peak field is within the configured critical-field margin.", {"max_electric_field_v_per_cm": max_field}, {"critical_field_v_per_cm": critical}))
+            if metrics.get("thermal_corner_evaluated"):
+                checks.append(pass_check("sic_temperature_corner_recorded", "SiC run records temperature-sensitive leakage evidence.", {"temperature_k": metrics.get("temperature_k")}))
+    elif device_type == "gan_hemt_id_bv":
+        density = float_or_none(metrics.get("two_deg_density_cm2"))
+        if density is not None and density > 0:
+            checks.append(pass_check("gan_2deg_density_positive", "GaN HEMT 2DEG density is positive.", {"two_deg_density_cm2": density}))
+        else:
+            checks.append(error_check("gan_2deg_density_missing", "GaN HEMT 2DEG density is missing or non-positive.", {"two_deg_density_cm2": density}))
+        if fidelity == "physics_1d":
+            if metrics.get("polarization_charge_coupled"):
+                checks.append(pass_check("gan_polarization_charge_coupled", "GaN physics_1d run records polarization-charge coupling.", {"polarization_charge_cm2": metrics.get("polarization_charge_cm2")}))
+            else:
+                checks.append(error_check("gan_polarization_charge_missing", "GaN physics_1d run lacks polarization-charge coupling evidence."))
+            if metrics.get("trap_current_collapse_coupled"):
+                checks.append(pass_check("gan_trap_current_collapse_coupled", "GaN run records trap/current-collapse coupling evidence.", {"current_collapse_proxy": metrics.get("current_collapse_proxy")}))
+            else:
+                checks.append(error_check("gan_trap_current_collapse_missing", "GaN physics_1d run lacks trap/current-collapse evidence."))
+            if float_or_none(metrics.get("dynamic_ron_factor")) is not None:
+                checks.append(pass_check("gan_dynamic_ron_factor_recorded", "GaN run records dynamic-Ron/current-collapse factor.", {"dynamic_ron_factor": metrics.get("dynamic_ron_factor")}))
+    elif device_type == "igbt_output_turnoff":
+        blocking = float_or_none(metrics.get("blocking_voltage_v"))
+        if blocking is not None and blocking < 0:
+            checks.append(pass_check("igbt_blocking_voltage_sign_ok", "IGBT blocking voltage has reverse-bias polarity.", {"blocking_voltage_v": blocking}))
+        else:
+            checks.append(error_check("igbt_blocking_voltage_wrong_sign", "IGBT blocking voltage should be negative.", {"blocking_voltage_v": blocking}))
+        if fidelity == "physics_1d":
+            if metrics.get("bipolar_transport_coupled"):
+                checks.append(pass_check("igbt_bipolar_transport_coupled", "IGBT physics_1d run records bipolar transport coupling."))
+            else:
+                checks.append(error_check("igbt_bipolar_transport_missing", "IGBT physics_1d run lacks bipolar transport coupling evidence."))
+            if metrics.get("transient_turnoff_simulated"):
+                checks.append(pass_check("igbt_transient_turnoff_simulated", "IGBT run includes turn-off transient/tail-current evidence.", {"transient_points": metrics.get("transient_points")}))
+            else:
+                checks.append(warn_check("igbt_transient_turnoff_missing", "IGBT run lacks turn-off transient evidence.", {"transient_points": metrics.get("transient_points")}))
     return checks
 
 
@@ -888,6 +1212,59 @@ def benchmark_schottky_calibration(metrics: dict[str, Any], params: dict[str, An
                     {"threshold": threshold},
                 )
             )
+    return checks
+
+
+def benchmark_golden_curve_comparison(metrics: dict[str, Any], params: dict[str, Any]) -> list[BenchmarkCheck]:
+    checks: list[BenchmarkCheck] = []
+    rmse = float_or_none(metrics.get("golden_curve_rmse_log_dec"))
+    pass_threshold = float_or_none(params.get("max_pass_rmse_log_dec")) or 0.2
+    warn_threshold = float_or_none(params.get("max_warn_rmse_log_dec")) or 0.5
+    if rmse is None:
+        checks.append(error_check("golden_curve_rmse_missing", "Golden/measured curve comparison did not produce RMSE."))
+    elif rmse <= pass_threshold:
+        checks.append(
+            pass_check(
+                "golden_curve_rmse_within_threshold",
+                "Golden/measured curve log-current RMSE is within the configured pass threshold.",
+                {"golden_curve_rmse_log_dec": rmse},
+                {"max_pass_rmse_log_dec": pass_threshold},
+            )
+        )
+    elif rmse <= warn_threshold:
+        checks.append(
+            warn_check(
+                "golden_curve_rmse_marginal",
+                "Golden/measured curve RMSE is above the pass threshold; inspect parameter calibration.",
+                {"golden_curve_rmse_log_dec": rmse},
+                {"max_pass_rmse_log_dec": pass_threshold, "max_warn_rmse_log_dec": warn_threshold},
+            )
+        )
+    else:
+        checks.append(
+            error_check(
+                "golden_curve_rmse_far_above_threshold",
+                "Golden/measured curve RMSE is far above threshold and should block trust.",
+                {"golden_curve_rmse_log_dec": rmse},
+                {"max_warn_rmse_log_dec": warn_threshold},
+            )
+        )
+    sign_mismatches = float_or_none(metrics.get("golden_curve_sign_mismatch_count")) or 0.0
+    if sign_mismatches <= 0:
+        checks.append(pass_check("golden_curve_signs_match", "Source and reference curve signs match at shared bias points."))
+    else:
+        checks.append(error_check("golden_curve_sign_mismatch", "Source and reference curve signs differ.", {"sign_mismatch_count": sign_mismatches}))
+    if metrics.get("golden_or_measured_comparison"):
+        checks.append(
+            pass_check(
+                "golden_or_measured_comparison_present",
+                "Run records a golden/measured curve comparison artifact.",
+                {
+                    "source_curve_path": metrics.get("source_curve_path"),
+                    "reference_curve_path": metrics.get("reference_curve_path"),
+                },
+            )
+        )
     return checks
 
 
@@ -1005,12 +1382,29 @@ def benchmark_deck_signoff(state: dict[str, Any], metrics: dict[str, Any], param
                     {"measured_curve_path": signoff.get("measured_curve_path")},
                 )
             )
-    if physics.get("coupling_status") == "needs_benchmark_confirmation":
-        requested_models = {
-            key: physics.get(key)
-            for key in ["interface_trap_density_cm2", "fixed_oxide_charge_cm2", "impact_ionization_model"]
-            if physics.get(key) not in {None, 0, 0.0, "none"}
-        }
+    requested_models = {
+        key: physics.get(key)
+        for key in ["interface_trap_density_cm2", "fixed_oxide_charge_cm2", "impact_ionization_model"]
+        if physics.get(key) not in {None, 0, 0.0, "none"}
+    }
+    coupling_status = physics.get("coupling_status")
+    if requested_models and coupling_status in {"equation_coupled", "equation_coupled_or_compact_equivalent"}:
+        checks.append(
+            pass_check(
+                "deck_physics_model_coupling_declared",
+                "Deck/spec declares requested advanced models as equation-coupled or explicitly equivalent-coupled.",
+                {"requested_models": requested_models, "coupling_status": coupling_status},
+            )
+        )
+    elif requested_models and coupling_status in {"compact_equivalent_bias_and_avalanche", "compact_equivalent_voltage_shift_or_equation_coupled_check_required"}:
+        checks.append(
+            warn_check(
+                "deck_physics_model_compact_equivalent_needs_correlation",
+                "Deck/spec uses compact-equivalent coupling for an advanced model; correlate against equation-coupled or measured evidence before signoff.",
+                {"requested_models": requested_models, "coupling_status": coupling_status},
+            )
+        )
+    elif coupling_status == "needs_benchmark_confirmation":
         if requested_models:
             checks.append(
                 warn_check(
@@ -1152,6 +1546,8 @@ def benchmark_state(state: dict[str, Any], source_path: Path) -> list[BenchmarkC
         checks.extend(benchmark_extended_device(metrics, params))
     elif tool_name == "schottky_iv_calibration":
         checks.extend(benchmark_schottky_calibration(metrics, params))
+    elif tool_name == "golden_curve_comparison":
+        checks.extend(benchmark_golden_curve_comparison(metrics, params))
     elif tool_name in {"mesh_convergence", "tool_convergence"}:
         checks.extend(benchmark_convergence(metrics))
     elif tool_name in {"adaptive_optimizer", "multidim_optimizer", "parameter_sweep"}:
@@ -1171,6 +1567,7 @@ def status_from_checks(checks: list[BenchmarkCheck], *, supported: bool) -> Benc
 
 def evidence_matrix(state: dict[str, Any], checks: list[BenchmarkCheck]) -> dict[str, Any]:
     metrics = merged_metrics(state)
+    params = merged_parameters(state)
     deck = state_deck_spec(state)
     final_summary = state.get("final_summary") or {}
     artifacts = final_summary.get("artifacts") or {}
@@ -1184,11 +1581,21 @@ def evidence_matrix(state: dict[str, Any], checks: list[BenchmarkCheck]) -> dict
         if state.get("tool_name") in {"tool_convergence", "mesh_convergence"} or "relative_delta" in metrics
         else "missing",
         "golden_or_measured_comparison": "present"
-        if any(check.code.startswith("golden_metric_") for check in checks)
+        if any(check.code.startswith("golden_metric_") or check.code == "golden_or_measured_comparison_present" for check in checks)
+        or bool(metrics.get("golden_or_measured_comparison"))
         else "missing",
         "model_coupling_risk": "present"
-        if any("coupling" in check.code or "metadata_only" in check.code for check in checks)
+        if any(
+            check.severity != BenchmarkSeverity.PASS
+            and ("coupling" in check.code or "compact_equivalent" in check.code or "metadata_only" in check.code)
+            for check in checks
+        )
         else "not_detected",
+        "capability_boundary": "planned_runner_missing"
+        if any(check.code == "planned_industrial_template_runner_missing" for check in checks)
+        else "compact_baseline"
+        if any(check.code == "compact_baseline_not_signoff_evidence" for check in checks)
+        else str(metrics.get("evidence_level") or params.get("evidence_level") or "tcad_executable_or_unknown"),
     }
 
 
@@ -1221,6 +1628,13 @@ def credibility_assessment(checks: list[BenchmarkCheck], state: dict[str, Any]) 
         must_fix.append("确认 traps、fixed charge、impact ionization 等模型是否真的耦合进方程。")
     if any("golden_metric_" in code for code in warning_codes + error_codes):
         risks.append("与 golden/经验指标的偏差需要解释。")
+    if "compact_baseline_not_signoff_evidence" in codes:
+        risks.append("当前结果是 compact baseline，只能作为规划线索。")
+        gaps.extend(["higher-fidelity TCAD runner", "compact-to-TCAD correlation evidence"])
+        must_fix.append("补真实 TCAD runner 或与实测/golden 曲线建立相关性后再签核。")
+    if "planned_industrial_template_runner_missing" in codes:
+        risks.append("工业模板尚未实现真实 runner，不能把 surrogate 当作仿真完成。")
+        must_fix.append("先实现器件模板、TCAD runner、质量规则和 benchmark，再执行任务。")
     if error_codes:
         level = "blocked"
         acceptance = "不可作为工程结论依据，必须先修复错误项。"
@@ -1278,6 +1692,12 @@ def summarize_checks(checks: list[BenchmarkCheck], state: dict[str, Any] | None 
         label = "暂无可用 benchmark"
         next_action = "补充该工具类型的物理 benchmark 规则或换用已支持的 TCAD 结果。"
     credibility = credibility_assessment(checks, state or {}) if state is not None else {}
+    matrix = evidence_matrix(state or {}, checks) if state is not None else {}
+    signoff_pack = (
+        build_signoff_evidence_pack(state or {}, checks, evidence_matrix=matrix, credibility=credibility).model_dump(mode="json")
+        if state is not None
+        else {}
+    )
     return {
         "generated_at": utc_timestamp(),
         "counts": counts,
@@ -1289,7 +1709,8 @@ def summarize_checks(checks: list[BenchmarkCheck], state: dict[str, Any] | None 
         "blocking_codes": [check.code for check in checks if check.severity == BenchmarkSeverity.ERROR],
         "warning_codes": [check.code for check in checks if check.severity == BenchmarkSeverity.WARNING],
         "recommended_next_action_zh": next_action,
-        "evidence_matrix": evidence_matrix(state or {}, checks) if state is not None else {},
+        "evidence_matrix": matrix,
+        "signoff_evidence_pack": signoff_pack,
     }
 
 

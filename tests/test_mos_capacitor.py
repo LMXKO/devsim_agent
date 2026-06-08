@@ -15,6 +15,7 @@ from tcad_agent.tools.mos_capacitor_cv import (
     MOSCapacitorCVRequest,
     build_runner_command,
     classify_failure,
+    create_initial_state,
     judge_summary_quality,
 )
 
@@ -103,6 +104,17 @@ class MOSCapacitorRunnerTest(unittest.TestCase):
 
         self.assertIn("--fixed-oxide-charge-cm2", command)
         self.assertIn("500000000000.0", command)
+
+    def test_initial_state_preserves_tcad_deck_spec(self) -> None:
+        deck = {"device_family": "mos_capacitor", "signoff_requirements": {"required_level": "engineering_signoff"}}
+        state = create_initial_state(
+            MOSCapacitorCVRequest(tcad_deck_spec=deck),
+            run_id="moscap_deck",
+            run_dir=Path("/tmp/moscap_deck"),
+        )
+
+        self.assertEqual(state.tcad_deck_spec, deck)
+        self.assertEqual(state.request["tcad_deck_spec"], deck)
 
     def test_classifies_convergence_failure(self) -> None:
         failure_class, _ = classify_failure(1, "maximum_iterations exceeded", "")

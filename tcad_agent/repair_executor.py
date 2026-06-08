@@ -10,7 +10,11 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from tcad_agent.repair_strategy import RepairAction, RepairPlan, build_repair_plan, repair_request
+from tcad_agent.curve_diagnostics import compare_state_mutation_effect
+from tcad_agent.physical_benchmark import BenchmarkStatus, run_physical_benchmark
+from tcad_agent.repair_memory import append_repair_case_memory
+from tcad_agent.repair_agent import ChatClient, RepairAgentDecision, decide_repair_action_with_agent
+from tcad_agent.repair_strategy import RepairAction, RepairPlan, build_repair_plan, issue_codes, repair_request
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.tools.diode_breakdown import DiodeBreakdownRequest, run_diode_breakdown_sweep
 from tcad_agent.tools.extended_device_sweep import ExtendedDeviceRequest, run_extended_device_sweep
@@ -36,12 +40,19 @@ class RepairExecutionAttempt(BaseModel):
     target_tool: str
     source_state_path: str
     request_patch: dict[str, Any]
+    deck_patch: dict[str, Any] = Field(default_factory=dict)
+    deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
+    agent_policy: dict[str, Any] | None = None
     next_request: dict[str, Any]
     status: RepairExecutionStatus
     started_at: str
     completed_at: str | None = None
     result_state_path: str | None = None
     quality_status: str | None = None
+    benchmark_status: str | None = None
+    benchmark_path: str | None = None
+    benchmark_summary: dict[str, Any] | None = None
+    mutation_effect_analysis: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     failure_reason: str | None = None
 
@@ -118,7 +129,61 @@ def quality_status_from_state(state: dict[str, Any]) -> str | None:
 
 
 def is_accepted_state(state: dict[str, Any]) -> bool:
+    benchmark_context = state.get("benchmark_context") or {}
+    benchmark_status = benchmark_context.get("status")
+    if benchmark_status in {"failed", "suspicious"}:
+        return False
     return state.get("status") == "completed" and quality_status_from_state(state) == "passed"
+
+
+def benchmark_issue_dicts(benchmark_data: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for check in benchmark_data.get("checks") or []:
+        if not isinstance(check, dict) or check.get("severity") not in {"warning", "error"}:
+            continue
+        issues.append(
+            {
+                "code": check.get("code"),
+                "severity": check.get("severity"),
+                "message": check.get("message"),
+                "evidence": check.get("observed") or {},
+            }
+        )
+    return issues
+
+
+def severity_rank(value: str | None) -> int:
+    return {"passed": 0, "completed": 0, "suspicious": 1, "failed": 2}.get(str(value or ""), 0)
+
+
+def write_benchmark_augmented_state(
+    state: RepairExecutionState,
+    repaired_state_path: Path,
+    benchmark_data: dict[str, Any],
+) -> str:
+    repaired = read_json(repaired_state_path)
+    quality = dict(repaired.get("quality_report") or {})
+    existing = [issue for issue in quality.get("issues") or [] if isinstance(issue, dict)]
+    existing_codes = {str(issue.get("code")) for issue in existing if issue.get("code")}
+    for issue in benchmark_issue_dicts(benchmark_data):
+        code = str(issue.get("code") or "")
+        if not code or code in existing_codes:
+            continue
+        existing.append(issue)
+        existing_codes.add(code)
+    benchmark_status = str(benchmark_data.get("status") or "")
+    if severity_rank(benchmark_status) > severity_rank(str(quality.get("status") or "passed")):
+        quality["status"] = benchmark_status
+    quality["issues"] = existing
+    repaired["quality_report"] = quality
+    repaired["benchmark_context"] = {
+        "status": benchmark_data.get("status"),
+        "summary": benchmark_data.get("summary") or {},
+        "benchmark_path": benchmark_data.get("benchmark_path"),
+    }
+    output = Path(state.execution_dir) / "benchmark_augmented" / f"{repaired_state_path.parent.name}_{repaired_state_path.stem}.json"
+    write_json(output, repaired)
+    return str(output)
 
 
 def infer_result_state_path(result: dict[str, Any]) -> str | None:
@@ -146,8 +211,28 @@ def apply_patch_to_request(
     round_index: int,
 ) -> dict[str, Any]:
     request = repair_request(source_state)
+    baseline_path = (
+        (source_state.get("repair_context") or {}).get("baseline_state_path")
+        or source_state.get("repair_baseline_state_path")
+        or source_state.get("state_path")
+    )
     request.update(action.request_patch)
+    if action.deck_mutations:
+        existing = request.get("tcad_deck_mutations")
+        request["tcad_deck_mutations"] = existing if isinstance(existing, list) and existing else action.deck_mutations
+    if action.deck_patch:
+        history = request.get("deck_patch_history")
+        if not isinstance(history, list):
+            history = []
+        patch_record = dict(action.deck_patch)
+        patch_record.setdefault("action_name", action.name)
+        patch_record.setdefault("source_state_path", source_state.get("state_path"))
+        patch_record.setdefault("baseline_state_path", baseline_path)
+        request["deck_patch_history"] = [*history, patch_record]
     request.setdefault("resume", False)
+    request["repair_source_state_path"] = source_state.get("state_path")
+    if baseline_path:
+        request["repair_baseline_state_path"] = baseline_path
     request["run_id"] = allocate_repair_run_id(source_state, action, round_index)
     if "run_root" not in request and source_state.get("run_dir"):
         run_dir = Path(str(source_state["run_dir"]))
@@ -156,6 +241,75 @@ def apply_patch_to_request(
     elif "run_root" not in request:
         request["run_root"] = str(PROJECT_ROOT / "runs" / "agent_tools")
     return request
+
+
+def annotate_source_state_path(state: dict[str, Any], source_path: Path) -> dict[str, Any]:
+    if "state_path" in state:
+        return state
+    updated = dict(state)
+    updated["state_path"] = str(source_path)
+    return updated
+
+
+def write_repair_lineage_augmented_state(
+    *,
+    source_path: Path,
+    source_state: dict[str, Any],
+    repaired_state_path: Path,
+    action: RepairAction,
+    next_request: dict[str, Any],
+    attempt: RepairExecutionAttempt,
+) -> None:
+    repaired = read_json(repaired_state_path)
+    baseline_path = Path(str(next_request.get("repair_baseline_state_path") or source_path))
+    context = dict(repaired.get("repair_context") or {})
+    context.update(
+        {
+            "schema_version": "actsoft.tcad.repair_context.v1",
+            "baseline_state_path": str(baseline_path),
+            "parent_state_path": str(source_path),
+            "action_name": action.name,
+            "deck_patch": action.deck_patch,
+            "deck_mutations": action.deck_mutations,
+            "attempt_index": attempt.index,
+        }
+    )
+    if attempt.agent_policy:
+        context["agent_policy"] = attempt.agent_policy
+        context["agent_observation_summary"] = attempt.agent_policy.get("observation_summary")
+        context["agent_hypothesis_zh"] = attempt.agent_policy.get("hypothesis_zh")
+        context["agent_tool_plan"] = attempt.agent_policy.get("tool_plan") or []
+        context["agent_safety_review"] = attempt.agent_policy.get("safety_review") or {}
+    repaired["repair_context"] = context
+    if action.deck_patch and baseline_path.exists():
+        diagnostic = compare_state_mutation_effect(
+            baseline_path,
+            repaired_state_path,
+            deck_patch=action.deck_patch,
+            issue_codes=sorted(issue_codes(source_state)),
+            overlay_output_path=repaired_state_path.parent / "baseline_mutation_overlay.svg",
+        )
+        diagnostic_data = diagnostic.model_dump(mode="json")
+        repaired["mutation_effect_analysis"] = diagnostic_data
+        attempt.mutation_effect_analysis = diagnostic_data
+        if diagnostic.overlay_svg_path:
+            summary = repaired.get("final_summary") or {}
+            artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+            artifacts["baseline_mutation_overlay"] = diagnostic.overlay_svg_path
+            summary["artifacts"] = artifacts
+            repaired["final_summary"] = summary
+        memory_path = append_repair_case_memory(
+            baseline_state_path=str(baseline_path),
+            mutation_state_path=str(repaired_state_path),
+            action_name=action.name,
+            issue_codes=sorted(issue_codes(source_state)),
+            mutation_effect_analysis=diagnostic_data,
+        )
+        context["repair_case_memory_path"] = memory_path
+        context["mutation_effect_decision"] = diagnostic.decision
+        context["recommended_next_target"] = diagnostic.recommended_next_target
+        context["worth_continuing_mutation"] = diagnostic.worth_continuing
+    write_json(repaired_state_path, repaired)
 
 
 def default_runner_registry() -> dict[str, Runner]:
@@ -242,9 +396,11 @@ def execute_repair_round(
     state_path: Path,
     *,
     registry: dict[str, Runner] | None = None,
+    use_agent_policy: bool = False,
+    llm_client: ChatClient | None = None,
 ) -> RepairExecutionAttempt | None:
     source_path = Path(state.current_state_path)
-    source_state = read_json(source_path)
+    source_state = annotate_source_state_path(read_json(source_path), source_path)
     if is_accepted_state(source_state):
         state.status = RepairExecutionStatus.COMPLETED
         state.final_state_path = str(source_path)
@@ -256,11 +412,34 @@ def execute_repair_round(
     state.repair_plan_path = plan.output_path
     tried_action_names = {attempt.action_name for attempt in state.attempts}
     state.checkpoint["tried_repair_actions"] = sorted(tried_action_names)
-    action = choose_action(
-        plan,
-        allow_user_confirmation_actions=state.allow_user_confirmation_actions,
-        tried_action_names=tried_action_names,
-    )
+    agent_decision: RepairAgentDecision | None = None
+    action: RepairAction | None = None
+    if use_agent_policy:
+        agent_decision = decide_repair_action_with_agent(
+            source_path,
+            deterministic_plan=plan,
+            client=llm_client,
+            allow_fallback=True,
+        )
+        state.checkpoint["last_repair_agent_decision"] = agent_decision.model_dump(mode="json")
+        if agent_decision.action and agent_decision.action.name in tried_action_names:
+            state.checkpoint["last_repair_agent_duplicate_action"] = agent_decision.action.name
+        elif agent_decision.action:
+            if agent_decision.action.user_confirmation_required and not state.allow_user_confirmation_actions:
+                state.status = RepairExecutionStatus.WAITING_FOR_USER
+                state.next_action = "wait for user confirmation before applying agent-selected repair action"
+                state.checkpoint["blocked_repair_agent_decision"] = agent_decision.model_dump(mode="json")
+                return None
+            if is_executable_action(agent_decision.action, allow_user_confirmation_actions=state.allow_user_confirmation_actions):
+                action = agent_decision.action
+            else:
+                state.checkpoint["last_repair_agent_inexecutable_action"] = agent_decision.action.model_dump(mode="json")
+    if action is None:
+        action = choose_action(
+            plan,
+            allow_user_confirmation_actions=state.allow_user_confirmation_actions,
+            tried_action_names=tried_action_names,
+        )
     if action is None:
         if any(candidate.user_confirmation_required for candidate in plan.actions):
             state.status = RepairExecutionStatus.WAITING_FOR_USER
@@ -287,6 +466,9 @@ def execute_repair_round(
         target_tool=target_tool,
         source_state_path=str(source_path),
         request_patch=action.request_patch,
+        deck_patch=action.deck_patch,
+        deck_mutations=action.deck_mutations,
+        agent_policy=agent_decision.model_dump(mode="json") if agent_decision else None,
         next_request=next_request,
         status=RepairExecutionStatus.PLANNED if not state.execute else RepairExecutionStatus.RUNNING,
         started_at=utc_timestamp(),
@@ -313,18 +495,40 @@ def execute_repair_round(
         result_state_path = infer_result_state_path(result)
         attempt.result_state_path = result_state_path
         if result_state_path:
+            write_repair_lineage_augmented_state(
+                source_path=source_path,
+                source_state=source_state,
+                repaired_state_path=Path(result_state_path),
+                action=action,
+                next_request=next_request,
+                attempt=attempt,
+            )
             state.current_state_path = result_state_path
             repaired_state = read_json(Path(result_state_path))
             attempt.quality_status = quality_status_from_state(repaired_state)
-            if is_accepted_state(repaired_state):
+            benchmark = run_physical_benchmark(Path(result_state_path))
+            benchmark_data = benchmark.model_dump(mode="json")
+            attempt.benchmark_status = str(benchmark.status.value if isinstance(benchmark.status, BenchmarkStatus) else benchmark.status)
+            attempt.benchmark_path = benchmark.benchmark_path
+            attempt.benchmark_summary = benchmark_data.get("summary") or {}
+            state.checkpoint["last_repair_benchmark"] = {
+                "status": attempt.benchmark_status,
+                "benchmark_path": attempt.benchmark_path,
+                "signoff_status": (attempt.benchmark_summary or {}).get("signoff_status"),
+                "blocking_codes": (attempt.benchmark_summary or {}).get("blocking_codes") or [],
+                "warning_codes": (attempt.benchmark_summary or {}).get("warning_codes") or [],
+            }
+            if is_accepted_state(repaired_state) and attempt.benchmark_status == "passed":
                 state.status = RepairExecutionStatus.COMPLETED
                 state.final_state_path = result_state_path
                 state.final_quality_status = attempt.quality_status
-                state.next_action = "accept repaired TCAD result"
+                state.next_action = "accept repaired TCAD result with passed physical benchmark"
             else:
+                if attempt.benchmark_status in {"failed", "suspicious"}:
+                    state.current_state_path = write_benchmark_augmented_state(state, Path(result_state_path), benchmark_data)
                 state.status = RepairExecutionStatus.RUNNING
-                state.final_quality_status = attempt.quality_status
-                state.next_action = "build next repair plan from repaired run"
+                state.final_quality_status = attempt.benchmark_status if attempt.benchmark_status in {"failed", "suspicious"} else attempt.quality_status
+                state.next_action = "build next repair plan from repaired run and benchmark issues"
         else:
             attempt.quality_status = (result.get("quality_report") or {}).get("status")
             state.status = RepairExecutionStatus.FAILED
@@ -338,10 +542,12 @@ def execute_repair_round(
         state.failure_reason = str(exc)
         state.next_action = "classify failed repair attempt and try next repair action"
     attempt.completed_at = utc_timestamp()
-    state.checkpoint = {
-        "completed_rounds": len(state.attempts),
-        "last_attempt": attempt.model_dump(mode="json"),
-    }
+    state.checkpoint.update(
+        {
+            "completed_rounds": len(state.attempts),
+            "last_attempt": attempt.model_dump(mode="json"),
+        }
+    )
     return attempt
 
 
@@ -355,6 +561,8 @@ def run_repair_executor(
     max_rounds: int = 3,
     allow_user_confirmation_actions: bool = False,
     registry: dict[str, Runner] | None = None,
+    use_agent_policy: bool = False,
+    llm_client: ChatClient | None = None,
 ) -> RepairExecutionState:
     actual_execution_id = execution_id or default_execution_id()
     actual_root = execution_root or default_execution_root(source_state_path)
@@ -383,7 +591,13 @@ def run_repair_executor(
         RepairExecutionStatus.RUNNING,
         RepairExecutionStatus.PLANNED,
     }:
-        execute_repair_round(state, actual_state_path, registry=registry)
+        execute_repair_round(
+            state,
+            actual_state_path,
+            registry=registry,
+            use_agent_policy=use_agent_policy,
+            llm_client=llm_client,
+        )
         write_state(state, actual_state_path)
         if not state.execute:
             state.status = RepairExecutionStatus.PLANNED

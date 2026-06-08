@@ -10,8 +10,8 @@ Plan the first round without executing DEVSIM:
 
 ```bash
 python3.11 -m tcad_agent.tools.adaptive_optimizer \
-  --optimize-id p_doping_opt_plan \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V n区掺杂 2e17 max_attempts 3 max_cycles 2" \
+  --optimize-id diode_p_doping_opt_plan \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化 p 区掺杂让漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3 \
   --min-value 1e16 \
   --max-value 1e18 \
@@ -27,8 +27,8 @@ Run an adaptive optimization:
 
 ```bash
 python3.11 -m tcad_agent.tools.adaptive_optimizer \
-  --optimize-id p_doping_opt \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V n区掺杂 2e17 max_attempts 3 max_cycles 2" \
+  --optimize-id diode_p_doping_opt \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化 p 区掺杂让漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3 \
   --min-value 1e16 \
   --max-value 1e18 \

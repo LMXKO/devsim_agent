@@ -8,8 +8,8 @@ It reuses `parameter_sweep` as the execution layer. Each candidate point is laun
 
 ```bash
 python3.11 -m tcad_agent.tools.multidim_optimizer \
-  --optimize-id pn_2d_opt \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V n区掺杂 2e17 max_attempts 3 max_cycles 2" \
+  --optimize-id diode_bv_2d_opt \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化掺杂和结位置，让漏电最小且 BV 风险可解释，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3:log:1e16:1e18:3 \
   --axis parameters.junction_um:linear:0.04:0.06:3 \
   --max-rounds 2 \
@@ -83,13 +83,13 @@ The multi-dimensional optimizer works with the normal report tools:
 
 ```bash
 python3.11 -m tcad_agent.tools.experiment_report \
-  --state runs/optimizations/pn_2d_opt
+  --state runs/optimizations/diode_bv_2d_opt
 
 python3.11 -m tcad_agent.tools.experiment_dashboard \
-  --state runs/optimizations/pn_2d_opt
+  --state runs/optimizations/diode_bv_2d_opt
 
 python3.11 -m tcad_agent.tools.experiment_conclusion \
-  --state runs/optimizations/pn_2d_opt
+  --state runs/optimizations/diode_bv_2d_opt
 ```
 
 For exactly two axes, the dashboard renders an objective heatmap. For three or more axes, use the ranked observations table and continue refinement around the best parameter combination.

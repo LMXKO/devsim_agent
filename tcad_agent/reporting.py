@@ -202,6 +202,59 @@ def artifact_rows(artifacts: dict[str, str], base_dir: Path) -> list[list[str]]:
     return rows
 
 
+def deck_lineage_rows(final_state: dict[str, Any] | None, base_dir: Path) -> list[list[Any]]:
+    if not final_state:
+        return []
+    request = final_state.get("request") or {}
+    active_mutation = request.get("active_deck_mutation") or {}
+    repair_context = final_state.get("repair_context") or {}
+    mutation_effect = final_state.get("mutation_effect_analysis") or {}
+    artifacts = final_artifacts(final_state)
+    agent_policy = repair_context.get("agent_policy") if isinstance(repair_context, dict) else {}
+    if not isinstance(agent_policy, dict):
+        agent_policy = {}
+    rows: list[list[Any]] = []
+    if active_mutation:
+        rows.append(["Active mutation", active_mutation.get("target") or active_mutation.get("name")])
+        rows.append(["Mutation reason", active_mutation.get("reason")])
+    if repair_context:
+        rows.append(["Repair action", repair_context.get("action_name")])
+        rows.append(["Parent state", markdown_link("parent", repair_context.get("parent_state_path"), base_dir)])
+        rows.append(["Baseline state", markdown_link("baseline", repair_context.get("baseline_state_path"), base_dir)])
+        rows.append(["Worth continuing", repair_context.get("worth_continuing_mutation")])
+        rows.append(["Recommended next target", repair_context.get("recommended_next_target")])
+    if mutation_effect:
+        rows.append(["Mutation decision", mutation_effect.get("decision")])
+        rows.append(["Mutation rationale", mutation_effect.get("rationale")])
+        rows.append(["Primary metric", mutation_effect.get("primary_metric")])
+        rows.append(["Improved metrics", mutation_effect.get("improved_metrics")])
+        rows.append(["Regressed metrics", mutation_effect.get("regressed_metrics")])
+    observation = repair_context.get("agent_observation_summary") or agent_policy.get("observation_summary")
+    hypothesis = repair_context.get("agent_hypothesis_zh") or agent_policy.get("hypothesis_zh")
+    tool_plan = repair_context.get("agent_tool_plan") if isinstance(repair_context.get("agent_tool_plan"), list) else agent_policy.get("tool_plan")
+    safety_review = (
+        repair_context.get("agent_safety_review")
+        if isinstance(repair_context.get("agent_safety_review"), dict)
+        else agent_policy.get("safety_review")
+    )
+    if observation or hypothesis or tool_plan or safety_review:
+        rows.append(["Agent observation", observation])
+        rows.append(["Agent hypothesis", hypothesis])
+        rows.append(["Agent tool plan", tool_plan])
+        rows.append(["Agent safety review", safety_review])
+    for key in [
+        "deck_patch_history",
+        "tcad_deck_ir",
+        "semantic_deck_diff",
+        "patched_source_deck",
+        "tcad_deck_artifact",
+        "baseline_mutation_overlay",
+    ]:
+        if artifacts.get(key):
+            rows.append([key, markdown_link(Path(artifacts[key]).name, artifacts[key], base_dir)])
+    return rows
+
+
 def render_best_section(
     *,
     best: dict[str, Any] | None,
@@ -237,6 +290,9 @@ def render_best_section(
         lines.extend(["", markdown_image("Best IV curve", plot_path, base_dir)])
     if artifacts:
         lines.extend(["", "### Best Artifacts", "", table(["Artifact", "Path"], artifact_rows(artifacts, base_dir))])
+    lineage_rows = deck_lineage_rows(final_state, base_dir)
+    if lineage_rows:
+        lines.extend(["", "### Deck Patch Lineage", "", table(["Field", "Value"], lineage_rows)])
     return "\n".join(lines) + "\n", plot_path
 
 

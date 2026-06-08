@@ -288,6 +288,35 @@ def relative_delta(left: float, right: float) -> float:
     return abs(left - right) / max(abs(left), abs(right), 1e-300)
 
 
+def engineering_split_metrics(state: ToolConvergenceState, completed: list[dict[str, Any]]) -> dict[str, Any]:
+    if (
+        state.target_tool != "mosfet_2d_id_sweep"
+        or state.axis_path != "drain_voltage"
+        or "vth_at_threshold_current_v" not in state.metric_path
+        or len(completed) < 2
+    ):
+        return {}
+    ordered = sorted(completed, key=lambda case: float(case["axis_value"]))
+    low = ordered[0]
+    high = ordered[-1]
+    low_vd = float(low["axis_value"])
+    high_vd = float(high["axis_value"])
+    low_vth = float(low["metric_value"])
+    high_vth = float(high["metric_value"])
+    delta_vd = high_vd - low_vd
+    if delta_vd == 0:
+        return {}
+    dibl_mv_per_v = (low_vth - high_vth) / delta_vd * 1000.0
+    return {
+        "engineering_metric": "dibl",
+        "dibl_mv_per_v": dibl_mv_per_v,
+        "low_drain_voltage_v": low_vd,
+        "high_drain_voltage_v": high_vd,
+        "low_drain_vth_v": low_vth,
+        "high_drain_vth_v": high_vth,
+    }
+
+
 def build_case_request(request: ToolConvergenceRequest, value: Any, index: int, convergence_dir: Path) -> dict[str, Any]:
     case_request = set_value_at_path(request.base_request, request.axis_path, value)
     base_run_id = str(request.base_request.get("run_id") or request.convergence_id or "toolconv")
@@ -332,6 +361,7 @@ def build_quality_report(state: ToolConvergenceState) -> dict[str, Any]:
     left_metric = float(left["metric_value"])
     right_metric = float(right["metric_value"])
     delta = relative_delta(left_metric, right_metric)
+    split_metrics = engineering_split_metrics(state, completed)
     if delta > state.relative_tolerance:
         issues.append(
             {
@@ -373,7 +403,8 @@ def build_quality_report(state: ToolConvergenceState) -> dict[str, Any]:
             "right_metric": right_metric,
             "relative_delta": delta,
             "relative_tolerance": state.relative_tolerance,
-        },
+        }
+        | split_metrics,
         "recommended_next_action": (
             "接受该工具/指标的收敛结果"
             if quality == ToolConvergenceQuality.PASSED

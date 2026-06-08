@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from tcad_agent.deck_writer import write_deck_artifacts
 from tcad_agent.metrics import extract_mosfet_metrics_from_csv, load_mosfet_points
 from tcad_agent.physical_quality import check_mosfet_physics
 
@@ -80,6 +81,12 @@ class MOSFET2DIDRequest(BaseModel):
     run_id: str | None = None
     run_root: Path = PROJECT_ROOT / "runs" / "agent_tools"
     resume: bool = False
+    tcad_deck_spec: dict[str, Any] | None = None
+    tcad_deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
+    deck_patch_history: list[dict[str, Any]] = Field(default_factory=list)
+    source_deck_path: str | None = None
+    repair_source_state_path: str | None = None
+    repair_baseline_state_path: str | None = None
 
     @model_validator(mode="after")
     def validate_request(self) -> "MOSFET2DIDRequest":
@@ -124,6 +131,8 @@ class RunState(BaseModel):
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     final_summary: dict[str, Any] | None = None
     quality_report: dict[str, Any] | None = None
+    tcad_deck_spec: dict[str, Any] | None = None
+    tcad_deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def utc_timestamp() -> str:
@@ -272,6 +281,8 @@ def create_initial_state(request: MOSFET2DIDRequest, run_id: str, run_dir: Path)
         request=request.model_dump(mode="json"),
         created_at=now,
         updated_at=now,
+        tcad_deck_spec=request.tcad_deck_spec,
+        tcad_deck_mutations=request.tcad_deck_mutations,
         next_action="start first DEVSIM 2D MOSFET attempt",
         checkpoint={"gate_step_v": request.gate_step, "drain_step_v": request.drain_step, "completed_attempts": 0},
     )
@@ -471,6 +482,17 @@ def run_mosfet_2d_id_sweep(request: MOSFET2DIDRequest) -> dict[str, Any]:
         if attempt.status == ToolStatus.COMPLETED:
             summary = json.loads(Path(attempt.summary_path).read_text(encoding="utf-8"))
             quality_report = judge_summary_quality(summary, request)
+            deck_artifacts = write_deck_artifacts(
+                Path(state.run_dir),
+                tool_name="mosfet_2d_id_sweep",
+                request=request.model_dump(mode="json"),
+                deck_spec=request.tcad_deck_spec,
+                mutations=request.tcad_deck_mutations,
+                source_goal_text=(request.tcad_deck_spec or {}).get("source_goal_text") if request.tcad_deck_spec else None,
+            )
+            summary.setdefault("artifacts", {}).update(deck_artifacts)
+            summary["tcad_deck_spec"] = request.tcad_deck_spec
+            summary["tcad_deck_mutations"] = request.tcad_deck_mutations
             state.status = ToolStatus.COMPLETED if quality_report["status"] != "failed" else ToolStatus.FAILED
             state.final_summary = summary
             state.quality_report = quality_report

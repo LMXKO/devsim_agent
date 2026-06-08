@@ -64,6 +64,17 @@ class DashboardPoint(BaseModel):
     turn_on_voltage_at_1ua_v: float | None = None
     ideality_factor_estimate: float | None = None
     differential_resistance_last_ohm: float | None = None
+    active_deck_mutation: str | None = None
+    deck_patch_decision: str | None = None
+    deck_patch_rationale: str | None = None
+    recommended_next_target: str | None = None
+    deck_patch_history_path: str | None = None
+    semantic_deck_diff_path: str | None = None
+    baseline_mutation_overlay_path: str | None = None
+    agent_observation_summary: str | None = None
+    agent_hypothesis_zh: str | None = None
+    agent_tool_plan: list[dict[str, Any]] | None = None
+    agent_safety_review: dict[str, Any] | None = None
 
 
 def utc_timestamp() -> str:
@@ -127,6 +138,13 @@ def point_from_item(item: dict[str, Any], axis_name: str | None, rank: int | Non
     final_state = load_final_state(item.get("final_state_path"))
     artifacts = final_artifacts(final_state)
     metrics = final_metrics(final_state)
+    request = (final_state or {}).get("request") or {}
+    active_mutation = request.get("active_deck_mutation") if isinstance(request.get("active_deck_mutation"), dict) else {}
+    mutation_effect = (final_state or {}).get("mutation_effect_analysis") or {}
+    repair_context = (final_state or {}).get("repair_context") or {}
+    agent_policy = repair_context.get("agent_policy") if isinstance(repair_context, dict) else {}
+    if not isinstance(agent_policy, dict):
+        agent_policy = {}
     try:
         objective = float(item.get("objective_value")) if item.get("objective_value") is not None else None
     except (TypeError, ValueError):
@@ -160,6 +178,43 @@ def point_from_item(item: dict[str, Any], axis_name: str | None, rank: int | Non
         differential_resistance_last_ohm=float(metrics["differential_resistance_last_ohm"])
         if metrics.get("differential_resistance_last_ohm") is not None
         else None,
+        active_deck_mutation=(active_mutation.get("target") or active_mutation.get("name")) if active_mutation else None,
+        deck_patch_decision=mutation_effect.get("decision") if isinstance(mutation_effect, dict) else None,
+        deck_patch_rationale=mutation_effect.get("rationale") if isinstance(mutation_effect, dict) else None,
+        recommended_next_target=(
+            repair_context.get("recommended_next_target")
+            if isinstance(repair_context, dict)
+            else None
+        ),
+        deck_patch_history_path=artifacts.get("deck_patch_history"),
+        semantic_deck_diff_path=artifacts.get("semantic_deck_diff"),
+        baseline_mutation_overlay_path=artifacts.get("baseline_mutation_overlay"),
+        agent_observation_summary=(
+            repair_context.get("agent_observation_summary")
+            or agent_policy.get("observation_summary")
+            if isinstance(repair_context, dict)
+            else agent_policy.get("observation_summary")
+        ),
+        agent_hypothesis_zh=(
+            repair_context.get("agent_hypothesis_zh")
+            or agent_policy.get("hypothesis_zh")
+            if isinstance(repair_context, dict)
+            else agent_policy.get("hypothesis_zh")
+        ),
+        agent_tool_plan=(
+            repair_context.get("agent_tool_plan")
+            if isinstance(repair_context.get("agent_tool_plan"), list)
+            else agent_policy.get("tool_plan")
+            if isinstance(agent_policy.get("tool_plan"), list)
+            else []
+        ),
+        agent_safety_review=(
+            repair_context.get("agent_safety_review")
+            if isinstance(repair_context.get("agent_safety_review"), dict)
+            else agent_policy.get("safety_review")
+            if isinstance(agent_policy.get("safety_review"), dict)
+            else {}
+        ),
     )
 
 
@@ -521,6 +576,59 @@ def best_plot(point: DashboardPoint | None, base_dir: Path) -> str:
     return f'<img class="iv-plot" src="{h(dashboard_target(point.plot_path, base_dir))}" alt="Best IV curve">'
 
 
+def deck_lineage_panel(point: DashboardPoint | None, base_dir: Path) -> str:
+    if not point or not any([point.active_deck_mutation, point.deck_patch_decision, point.deck_patch_history_path]):
+        return ""
+    tool_plan_items = []
+    for item in (point.agent_tool_plan or [])[:4]:
+        if isinstance(item, dict):
+            label = item.get("tool") or "agent tool"
+            detail = item.get("expected_evidence") or item.get("why") or ""
+            tool_plan_items.append(f"<li><strong>{h(label)}</strong><span>{h(detail)}</span></li>")
+    safety_review = point.agent_safety_review or {}
+    safety_text = ""
+    if safety_review:
+        safety_text = ", ".join(
+            f"{key}: {format_value(value)}"
+            for key, value in safety_review.items()
+            if value not in (None, "", [])
+        )
+    links = " ".join(
+        item
+        for item in [
+            link("patch history", point.deck_patch_history_path, base_dir, "pill-link"),
+            link("semantic diff", point.semantic_deck_diff_path, base_dir, "pill-link"),
+            link("curve overlay", point.baseline_mutation_overlay_path, base_dir, "pill-link"),
+        ]
+        if item
+    )
+    agent_rows = "".join(
+        row
+        for row in [
+            f'<div class="lineage-row"><span>Observation</span><strong>{h(point.agent_observation_summary)}</strong></div>'
+            if point.agent_observation_summary
+            else "",
+            f'<div class="lineage-row"><span>Hypothesis</span><strong>{h(point.agent_hypothesis_zh)}</strong></div>'
+            if point.agent_hypothesis_zh
+            else "",
+            f'<div class="lineage-row"><span>Safety</span><strong>{h(safety_text)}</strong></div>' if safety_text else "",
+        ]
+    )
+    tool_plan_html = f'<ul class="lineage-tool-plan">{"".join(tool_plan_items)}</ul>' if tool_plan_items else ""
+    return f"""
+          <div class="lineage">
+            <div class="lineage-title">Deck Patch Lineage</div>
+            <div class="lineage-row"><span>Mutation</span><strong>{h(point.active_deck_mutation)}</strong></div>
+            <div class="lineage-row"><span>Decision</span><strong>{h(point.deck_patch_decision)}</strong></div>
+            <div class="lineage-row"><span>Next target</span><strong>{h(point.recommended_next_target)}</strong></div>
+            {agent_rows}
+            {tool_plan_html}
+            <div class="lineage-note">{h(point.deck_patch_rationale)}</div>
+            <div class="lineage-links">{links}</div>
+          </div>
+""".strip()
+
+
 def count_summary_text(counts: dict[str, int]) -> str:
     return ", ".join(f"{key}: {value}" for key, value in sorted(counts.items())) or "none"
 
@@ -592,6 +700,7 @@ def render_dashboard(
                 link("state", best_point.final_state_path, base_dir, "pill-link"),
                 link("csv", best_point.csv_path, base_dir, "pill-link"),
                 link("plot", best_point.plot_path, base_dir, "pill-link"),
+                link("overlay", best_point.baseline_mutation_overlay_path, base_dir, "pill-link"),
                 link("log", best_point.log_path, base_dir, "pill-link"),
             ]
             if item
@@ -734,6 +843,27 @@ def render_dashboard(
       margin: 0 4px 4px 0;
       background: var(--good-bg);
     }}
+    .lineage {{
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdfc;
+      padding: 12px;
+    }}
+    .lineage-title {{ font-weight: 720; margin-bottom: 8px; }}
+    .lineage-row {{ display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; margin-top: 6px; }}
+    .lineage-row span {{ color: var(--muted); }}
+    .lineage-row strong {{ word-break: break-word; }}
+    .lineage-note {{ color: var(--muted); margin-top: 8px; }}
+    .lineage-links {{ margin-top: 8px; }}
+    .lineage-tool-plan {{
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }}
+    .lineage-tool-plan li {{ margin: 5px 0; }}
+    .lineage-tool-plan strong {{ color: var(--ink); margin-right: 6px; }}
+    .lineage-tool-plan span {{ word-break: break-word; }}
     .table-wrap {{
       overflow-x: auto;
       border: 1px solid var(--line);
@@ -789,6 +919,7 @@ def render_dashboard(
             <div class="kv"><span>Leakage current</span><strong>{h(format_value(best_point.leakage_current_a if best_point else None))} A</strong></div>
             <div class="kv"><span>Last dV/dI</span><strong>{h(format_value(best_point.differential_resistance_last_ohm if best_point else None))} ohm</strong></div>
           </div>
+          {deck_lineage_panel(best_point, base_dir)}
         </div>
       </div>
     </section>

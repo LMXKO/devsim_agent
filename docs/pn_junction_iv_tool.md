@@ -1,6 +1,6 @@
-# PN Junction IV Tool
+# PN Junction IV Seed Tool
 
-This tool is the first agent-callable TCAD execution interface. It wraps the DEVSIM PN junction runner with:
+This low-level tool wraps the DEVSIM PN junction runner. Public examples should use it as a seed path for the diode/SBD breakdown and reverse-leakage category, while higher-level missions should prefer `diode_breakdown_leakage_sweep` for BV-oriented work. It provides:
 
 - structured request validation;
 - isolated subprocess execution;
@@ -13,18 +13,18 @@ This tool is the first agent-callable TCAD execution interface. It wraps the DEV
 ## Command
 
 ```bash
-python3.11 -m tcad_agent.tools.pn_junction_iv --stop 0.5 --step 0.1
+python3.11 -m tcad_agent.tools.pn_junction_iv --start 0 --stop -1 --step 0.25
 ```
 
 Useful options:
 
 ```bash
 python3.11 -m tcad_agent.tools.pn_junction_iv \
-  --run-id agent_smoke \
+  --run-id diode_seed_smoke \
   --start 0.0 \
-  --stop 0.5 \
-  --step 0.1 \
-  --min-step 0.025 \
+  --stop -1.0 \
+  --step 0.25 \
+  --min-step 0.0625 \
   --max-attempts 3 \
   --quality-max-abs-current-a 1.0
 ```
@@ -33,9 +33,10 @@ Parameterized device options:
 
 ```bash
 python3.11 -m tcad_agent.tools.pn_junction_iv \
-  --run-id param_agent_smoke \
-  --stop 0.2 \
-  --step 0.1 \
+  --run-id diode_seed_param_smoke \
+  --start 0.0 \
+  --stop -1.0 \
+  --step 0.25 \
   --length-um 0.2 \
   --junction-um 0.08 \
   --p-doping-cm3 1e17 \
@@ -53,8 +54,9 @@ This command intentionally starts with a very large bias step:
 
 ```bash
 python3.11 -m tcad_agent.tools.pn_junction_iv \
-  --run-id agent_extreme \
-  --stop 5.0 \
+  --run-id diode_seed_extreme \
+  --start 0.0 \
+  --stop -5.0 \
   --step 5.0 \
   --min-step 1.25 \
   --max-attempts 3
@@ -72,9 +74,10 @@ Resume reads the existing checkpoint:
 
 ```bash
 python3.11 -m tcad_agent.tools.pn_junction_iv \
-  --run-id agent_extreme \
+  --run-id diode_seed_extreme \
   --resume \
-  --stop 5.0 \
+  --start 0.0 \
+  --stop -5.0 \
   --step 5.0 \
   --min-step 1.25 \
   --max-attempts 3
@@ -135,10 +138,10 @@ quality_max_abs_current_a: 1.0
 quality_max_convergence_failures: 0
 ```
 
-Example outcomes verified locally:
+Seed outcomes verified locally:
 
-- `--stop 0.5 --step 0.1`: `quality_report.status = passed`;
-- `--stop 5.0 --step 5.0 --min-step 1.25 --max-attempts 3`: `quality_report.status = suspicious`.
+- `--start 0 --stop -1 --step 0.25`: reverse-leakage seed run should complete;
+- `--start 0 --stop -5 --step 5.0 --min-step 1.25 --max-attempts 3`: intentionally difficult reverse sweep should exercise retry and quality warnings.
 
 ## Failure Classes
 

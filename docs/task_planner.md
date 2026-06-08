@@ -15,15 +15,15 @@ Use the configured OpenAI-compatible endpoint to produce a task plan:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_planner \
-  --task-id planner_smoke \
-  --text "做一个 PN 结 IV，从 0V 扫到 5V，初始步长 5V，最小步长 1.25V，最多 3 次 attempt，最多 3 轮" \
+  --task-id diode_planner_smoke \
+  --text "做一个 diode/SBD reverse leakage，从 0V 扫到 -5V，初始步长 1V，最小步长 0.25V，最多 3 次 attempt，最多 3 轮" \
   --loop-no-llm
 ```
 
 This writes:
 
 ```text
-runs/task_plans/planner_smoke/
+runs/task_plans/diode_planner_smoke/
   task_plan_result.json
   task.json
 ```
@@ -37,8 +37,8 @@ Ask the LLM planner to create `TaskSpec`, then run the autonomous loop:
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
   --planner llm \
-  --task-id planner_execute_smoke \
-  --text "做一个 PN 结 IV，从 0V 扫到 5V，初始步长 5V，最小步长 1.25V，最多 3 次 attempt，最多 3 轮" \
+  --task-id diode_planner_execute_smoke \
+  --text "做一个 diode/SBD reverse leakage，从 0V 扫到 -5V，初始步长 1V，最小步长 0.25V，最多 3 次 attempt，最多 3 轮" \
   --execute \
   --no-llm
 ```
@@ -55,8 +55,8 @@ By default, planner failures fall back to deterministic parsing. To require a va
 
 ```bash
 python3.11 -m tcad_agent.tools.task_planner \
-  --task-id planner_strict \
-  --text "PN junction IV from 0 to 5 V step 5 V" \
+  --task-id diode_planner_strict \
+  --text "diode/SBD reverse leakage from 0 to -5 V step 1 V" \
   --no-fallback
 ```
 
@@ -66,8 +66,8 @@ For `task_runner`, use:
 python3.11 -m tcad_agent.tools.task_runner \
   --planner llm \
   --no-planner-fallback \
-  --task-id planner_strict_run \
-  --text "PN junction IV from 0 to 5 V step 5 V" \
+  --task-id diode_planner_strict_run \
+  --text "diode/SBD reverse leakage from 0 to -5 V step 1 V" \
   --execute \
   --no-llm
 ```
@@ -93,10 +93,10 @@ The planner can also emit device parameters:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_planner \
-  --task-id param_planner \
-  --text "做 PN 结 IV，0 到 0.2V，步长 0.1V，器件长度 0.2um，结位置 0.08um，P 区掺杂 1e17，N 区掺杂 2e17，温度 325K" \
+  --task-id diode_param_planner \
+  --text "做 diode/SBD reverse leakage，0 到 -5V，步长 0.5V，器件长度 0.2um，结位置 0.08um，P 区掺杂 1e17，N 区掺杂 2e17，温度 325K" \
   --loop-no-llm \
   --no-fallback
 ```
 
-The current executable surface remains deliberately narrow: PN junction IV with DEVSIM. More device types should be added by extending `TaskSpec`, adding a concrete tool, and then allowing the planner to emit the new schema branch.
+The legacy `TaskSpec` runner remains deliberately narrow and PN-focused. Richer natural-language device routing now lives in `engineering_intent`, `goal_decomposer`, `device_templates`, and `supervisor`, which distinguish executable TCAD paths from compact baselines and planned templates before dispatching tool calls.

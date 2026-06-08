@@ -33,28 +33,34 @@ The agent should not simply call a simulator once. It should plan, execute, insp
 
 ## First Milestone
 
-Create a minimal closed loop for a PN junction task:
+Create a minimal closed loop around the seven-category showcase, starting with executable MOSCAP, MOSFET, and diode/SBD paths:
 
-- generate a DEVSIM Python script;
-- run a voltage sweep;
-- save IV data;
-- plot the IV curve;
+- generate or select a DEVSIM Python deck;
+- run C-V, Id-Vg/Id-Vd, or reverse-leakage/BV sweeps;
+- save curve data;
+- plot the generated curve;
 - save solver logs;
 - summarize the result.
 
-Current runnable command:
+Current MOSCAP command:
 
 ```bash
-python3.11 -m tcad_agent.examples.pn_junction.run --stop 0.5 --step 0.1
+python3.11 -m tcad_agent.tools.mos_capacitor_cv --start -0.5 --stop 0.5 --step 0.25
 ```
 
-Current agent-callable tool:
+Current MOSFET command:
 
 ```bash
-python3.11 -m tcad_agent.tools.pn_junction_iv --stop 0.5 --step 0.1
+python3.11 -m tcad_agent.tools.mosfet_2d_id --sweep-type both --gate-start 0 --gate-stop 1.2 --gate-step 0.1
 ```
 
-The tool adds explicit convergence-failure classification, smaller sweep-step retry, persistent run state, and checkpoint resume.
+Current diode/SBD breakdown command:
+
+```bash
+python3.11 -m tcad_agent.tools.diode_breakdown --start 0 --stop -5 --step 0.5 --breakdown-current-a 1e-6
+```
+
+These tools add explicit convergence-failure classification, smaller sweep-step retry, persistent run state, and checkpoint resume.
 
 It also adds deterministic result quality judging:
 
@@ -121,56 +127,79 @@ tcad_agent/
 
 ## Benchmark Tasks
 
-### Task 1: PN Junction IV
+### Task 1: MOS Capacitor / Capacitance
 
-Objective: generate an IV curve over a requested voltage range and report turn-on behavior.
-
-Success criteria:
-
-- simulation finishes;
-- voltage-current table is produced;
-- IV plot is produced;
-- final summary includes bias range, current trend, and any convergence retries.
-
-### Task 2: MOS Capacitor Sweep
-
-Objective: sweep gate voltage and extract a target capacitance or surface-potential trend.
+Objective: sweep gate voltage and extract Cox, Cmin, flat-band shift, and fixed-charge plausibility.
 
 Success criteria:
 
-- deck is generated;
-- sweep completes;
-- curve and extracted metrics are saved.
+- C-V sweep completes;
+- curve and extracted metrics are saved;
+- Cox is compared with an analytic oxide-capacitance estimate;
+- final summary labels calibration or fixed-charge gaps.
 
-### Task 3: MOSFET DC Characteristics
+### Task 2: MOSFET Id-Vg / Id-Vd / DIBL
 
-Objective: sweep gate and drain bias to obtain Id-Vg and Id-Vd curves.
+Objective: sweep gate and drain bias to obtain Id-Vg, Id-Vd, Vth, SS, Ion/Ioff, gm, and DIBL evidence.
 
 Success criteria:
 
 - curves are generated;
 - threshold-related metrics are estimated;
-- failed bias points are retried with smaller steps.
+- low/high drain Id-Vg cases are kept distinct for DIBL;
+- failed bias points are retried with smaller steps or restart from a saved state.
 
-### Task 4: Parameter Optimization
+### Task 3: Diode / SBD Breakdown
 
-Objective: adjust geometry, doping, or oxide thickness to meet a target device metric.
-
-Success criteria:
-
-- all trials are logged;
-- best candidate is selected;
-- optimization reasoning is summarized.
-
-### Task 5: Convergence Repair
-
-Objective: recover from intentionally difficult solver settings or bias steps.
+Objective: run reverse leakage/BV and Schottky/SBD barrier-calibration tasks with explicit breakdown and model-coupling evidence.
 
 Success criteria:
 
-- failure is classified;
-- at least one recovery strategy is attempted;
-- final status is clear and reproducible.
+- reverse IV or calibration curve is produced;
+- leakage and BV/barrier metrics are extracted;
+- reverse-bias continuation failures are classified;
+- high-field or thermionic-contact coupling limits are explicit.
+
+### Task 4: LDMOS / IGBT Power Devices
+
+Objective: run a physics-coupled LDMOS/power-MOSFET BV/Ron baseline, then keep IGBT turn-off as a planned transient-promotion workflow.
+
+Success criteria:
+
+- power MOSFET/LDMOS states carry peak-field, Ron-component, and impact-ionization evidence;
+- BV/Ron or tail-current metrics are named;
+- high-voltage continuation and transient initialization are specified;
+- final conclusion does not claim signoff without a real runner.
+
+### Task 5: GaN / AlGaN HEMT
+
+Objective: route output, BV, 2DEG, and current-collapse goals into a planned heterojunction workflow.
+
+Success criteria:
+
+- polarization, trap, self-heating, and field-plate model gaps are recorded;
+- stress/recovery and dynamic-Ron metrics are defined;
+- planned-only status is visible to the user.
+
+### Task 6: BJT Gummel / Output
+
+Objective: run BJT Gummel/output with a `physics_1d` transport baseline, then correlate it against public DEVSIM-backed BJT runner coverage.
+
+Success criteria:
+
+- beta, Early voltage, and leakage metrics are named;
+- base-emitter and collector-bias continuation steps are defined;
+- public-source promotion steps are recorded.
+
+### Task 7: FinFET / SOI Variability
+
+Objective: define 3D/advanced-geometry, density-gradient, capacitance, DIBL, and variability campaign evidence.
+
+Success criteria:
+
+- quantum-correction and 3D geometry gaps are visible;
+- nominal-first and mesh-reuse strategy is defined;
+- distribution-level signoff replaces single-point claims.
 
 ## Long-Running Requirements
 

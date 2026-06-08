@@ -19,7 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--supervisor-max-cycles", type=int, default=3)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--use-llm", action="store_true", help="Use the configured OpenAI-compatible model for goal decomposition.")
+    parser.add_argument("--use-llm", action="store_true", default=True, help="Use the configured OpenAI-compatible model for goal decomposition (default: on, with fallback).")
+    parser.add_argument("--no-llm", action="store_true", help="Disable agent-first LLM decomposition and use deterministic planning only.")
     parser.add_argument("--no-llm-fallback", action="store_true", help="Fail instead of falling back to deterministic decomposition.")
     return parser.parse_args()
 
@@ -35,7 +36,7 @@ def main() -> None:
             resume=args.resume,
             max_cycles=args.max_cycles,
             supervisor_max_cycles=args.supervisor_max_cycles,
-            use_llm_decomposer=args.use_llm,
+            use_llm_decomposer=args.use_llm and not args.no_llm,
             allow_llm_fallback=not args.no_llm_fallback,
         )
         print(json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False))

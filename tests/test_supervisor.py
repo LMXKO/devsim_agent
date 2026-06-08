@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from tcad_agent.llm import LLMConfig
 from tcad_agent.supervisor import (
     SupervisorAction,
     SupervisorActionKind,
@@ -14,6 +16,7 @@ from tcad_agent.supervisor import (
     choose_next_action,
     execute_action,
     run_supervisor,
+    supervisor_action_from_agent,
     utc_timestamp,
 )
 
@@ -43,6 +46,18 @@ def state_with_index(goal: str, recent_records: list[dict[str, object]] | None =
     )
 
 
+class FakeSupervisorClient:
+    config = LLMConfig(model="fake-supervisor-agent")
+
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def chat(self, system: str, user: str, temperature: float = 0.1) -> str:
+        self.calls.append({"system": system, "user": user, "temperature": temperature})
+        return self.response
+
+
 class SupervisorTest(unittest.TestCase):
     def test_plan_only_writes_rebuild_index_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,6 +72,54 @@ class SupervisorTest(unittest.TestCase):
             self.assertEqual(state.actions[0].kind, SupervisorActionKind.REBUILD_INDEX)
             self.assertTrue((Path(tmp) / "sup_plan" / "supervisor_state.json").exists())
             self.assertIn("planned_action", state.checkpoint)
+            self.assertTrue(state.checkpoint["agent_first_policy"]["enabled"])
+
+    def test_supervisor_agent_can_override_deterministic_candidate(self) -> None:
+        state = state_with_index("把最近的优化结果做 dashboard")
+        deterministic = choose_next_action(state)
+        client = FakeSupervisorClient(
+            json.dumps(
+                {
+                    "action": {
+                        "kind": "generate_dashboard",
+                        "reason": "agent sees a completed optimization state and the user asked for visual inspection.",
+                        "request": {"state": "/tmp/opt_a/optimization_state.json"},
+                    },
+                    "observation_summary": "recent_records contains a completed adaptive optimization.",
+                    "hypothesis_zh": "用户要看结果，不需要再跑新仿真。",
+                    "evidence_used": ["goal_text", "recent_records", "deterministic_candidate"],
+                }
+            )
+        )
+
+        action, decision = supervisor_action_from_agent(state, deterministic, client=client)
+
+        self.assertEqual(action.kind, SupervisorActionKind.GENERATE_DASHBOARD)
+        self.assertFalse(decision["fallback_used"])
+        self.assertEqual(decision["hypothesis_zh"], "用户要看结果，不需要再跑新仿真。")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_supervisor_agent_falls_back_on_unsupported_or_command_response(self) -> None:
+        state = state_with_index("做 MOS capacitor C-V")
+        deterministic = choose_next_action(state)
+        client = FakeSupervisorClient(
+            json.dumps(
+                {
+                    "action": {
+                        "kind": "run_shell",
+                        "reason": "bad",
+                        "request": {},
+                        "command": "rm -rf runs",
+                    }
+                }
+            )
+        )
+
+        action, decision = supervisor_action_from_agent(state, deterministic, client=client)
+
+        self.assertEqual(action.kind, deterministic.kind)
+        self.assertTrue(decision["fallback_used"])
+        self.assertIn("unsupported action kind", decision["failure_reason"])
 
     def test_routes_mos_cv_after_index_refresh(self) -> None:
         action = choose_next_action(state_with_index("做 MOS capacitor C-V 从 -0.5V 到 0.5V 步长 0.25V 氧化层 5nm"))
@@ -141,6 +204,17 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(action.request["temperature_k"], 350.0)
         self.assertEqual(action.request["electron_lifetime_s"], 1e-7)
         self.assertEqual(action.request["hole_lifetime_s"], 1e-7)
+
+    def test_routes_structure_leakage_edits_to_power_deck_mutations(self) -> None:
+        action = choose_next_action(
+            state_with_index("这个结构漏电偏高，改 field plate / drift doping / lifetime 看看")
+        )
+
+        self.assertEqual(action.kind, SupervisorActionKind.RUN_EXTENDED_DEVICE)
+        self.assertEqual(action.request["device_type"], "power_mosfet_bv_ron")
+        self.assertEqual(action.request["fidelity"], "physics_1d")
+        targets = {mutation["target"] for mutation in action.request["tcad_deck_mutations"]}
+        self.assertEqual(targets, {"field_plate", "drift_doping", "lifetime"})
 
     def test_routes_diode_customer_leakage_investigation_natural_goal(self) -> None:
         action = choose_next_action(

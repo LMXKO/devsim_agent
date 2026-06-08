@@ -160,6 +160,14 @@ class GoalDecomposerTest(unittest.TestCase):
         self.assertEqual(convergence_steps[0].request["tool_name"], "schottky_iv_calibration")
         self.assertEqual(convergence_steps[0].request["axis_path"], "step")
 
+    def test_measured_curve_goal_adds_golden_comparison_step(self) -> None:
+        result = deterministic_decompose_goal("做 MOSFET Id-Vg，measured_curve target.csv，最后给结论")
+        golden_steps = [step for step in result.steps if step.kind == GoalStepKind.RUN_GOLDEN_COMPARISON]
+
+        self.assertEqual(len(golden_steps), 1)
+        self.assertEqual(golden_steps[0].request["reference_curve_path"], "target.csv")
+        self.assertIn(GoalStepKind.RUN_PHYSICAL_BENCHMARK, [step.kind for step in result.steps])
+
     def test_output_characteristic_signoff_uses_idvd_convergence(self) -> None:
         result = deterministic_decompose_goal("客户说 NMOS output characteristic 有 kink，做 signoff 并给工程结论")
         convergence_steps = [step for step in result.steps if step.kind == GoalStepKind.RUN_TOOL_CONVERGENCE]
@@ -199,12 +207,51 @@ class GoalDecomposerTest(unittest.TestCase):
         self.assertEqual(convergence.request["tool_name"], "diode_breakdown_leakage_sweep")
         self.assertEqual(convergence.request["axis_path"], "temperature_k")
 
-    def test_planned_industrial_template_asks_to_implement_runner_first(self) -> None:
+    def test_advanced_industrial_template_routes_to_physics_runner(self) -> None:
         result = deterministic_decompose_goal("GaN HEMT 输出特性和 current collapse 风险，帮我扫栅压和漏压")
 
+        self.assertIn(GoalStepKind.RUN_SUPERVISOR, [step.kind for step in result.steps])
+        self.assertIn(GoalStepKind.RUN_TOOL_CONVERGENCE, [step.kind for step in result.steps])
+        primary = next(step for step in result.steps if step.kind == GoalStepKind.RUN_SUPERVISOR)
+        convergence = next(step for step in result.steps if step.kind == GoalStepKind.RUN_TOOL_CONVERGENCE)
+        self.assertEqual(primary.request["request_hint"]["device_type"], "gan_hemt_id_bv")
+        self.assertEqual(primary.request["request_hint"]["fidelity"], "physics_1d")
+        self.assertEqual(convergence.request["base_request"]["fidelity"], "physics_1d")
+        self.assertEqual(convergence.request["axis_path"], "gan_2deg_density_cm2")
+        self.assertFalse(any("尚未实现" in warning for warning in result.warnings))
+
+    def test_abstract_goal_asks_for_required_tcad_details(self) -> None:
+        result = deterministic_decompose_goal("TCAD仿真工程师通过自然语言描述完成工作，需要agent长时间、自动解决遇到的问题")
+
         self.assertEqual(result.steps[0].kind, GoalStepKind.ASK_USER)
-        self.assertIn("engineering_intent", result.steps[0].request)
-        self.assertIn("尚未实现", result.warnings[0])
+        self.assertGreaterEqual(len(result.steps[0].request["questions"]), 2)
+        self.assertIn("澄清", result.warnings[0])
+
+    def test_power_mosfet_goal_routes_to_physics_path_without_compact_warning(self) -> None:
+        result = deterministic_decompose_goal("做 power MOSFET BV 和 Ron tradeoff，最后给工程结论")
+
+        self.assertIn(GoalStepKind.RUN_SUPERVISOR, [step.kind for step in result.steps])
+        primary = next(step for step in result.steps if step.kind == GoalStepKind.RUN_SUPERVISOR)
+        self.assertEqual(primary.request["request_hint"]["fidelity"], "physics_1d")
+        self.assertFalse(any("compact baseline" in warning for warning in result.warnings))
+
+    def test_structure_edit_goal_creates_deck_mutation_sweeps(self) -> None:
+        result = deterministic_decompose_goal("这个结构漏电偏高，改 field plate / drift doping / lifetime 看看")
+        primary = next(step for step in result.steps if step.kind == GoalStepKind.RUN_SUPERVISOR)
+        convergence_steps = [step for step in result.steps if step.kind == GoalStepKind.RUN_TOOL_CONVERGENCE]
+
+        self.assertEqual(primary.request["engineering_intent"]["device_family"], "power_mosfet")
+        self.assertEqual(primary.request["request_hint"]["device_type"], "power_mosfet_bv_ron")
+        self.assertEqual(len(convergence_steps), 3)
+        self.assertEqual(
+            {step.request["axis_path"] for step in convergence_steps},
+            {
+                "power_mos_field_plate_length_um",
+                "power_mos_drift_region_doping_cm3",
+                "power_mos_carrier_lifetime_s",
+            },
+        )
+        self.assertTrue(all(step.request["base_request"].get("tcad_deck_mutations") for step in convergence_steps))
 
     def test_deterministic_replan_classifies_schema_alias_issue(self) -> None:
         decision = replan_goal_after_issue(

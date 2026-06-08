@@ -240,6 +240,9 @@ class ConclusionTest(unittest.TestCase):
         self.assertIn("ion_ioff_ratio", text)
         self.assertIn("MOSFET 网格/模型验证", text)
         self.assertIn("复核 Vth", text)
+        self.assertIn("签核证据包", text)
+        self.assertIn("下一轮可执行请求", text)
+        self.assertIn("签核补证动作", text)
 
 
 if __name__ == "__main__":

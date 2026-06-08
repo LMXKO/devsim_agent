@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from tcad_agent.conclusion import generate_experiment_conclusion
 from tcad_agent.engineering_intent import parse_engineering_intent
 from tcad_agent.experiment_index import default_index_db_path, list_records, rebuild_index
+from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
 from tcad_agent.goal_decomposer import (
     ChatClient,
     GoalStep,
@@ -46,6 +47,7 @@ class MissionStepKind(str, Enum):
     QUERY_HISTORY = "query_history"
     RUN_SUPERVISOR = "run_supervisor"
     RUN_TOOL_CONVERGENCE = "run_tool_convergence"
+    RUN_GOLDEN_COMPARISON = "run_golden_comparison"
     RUN_PHYSICAL_BENCHMARK = "run_physical_benchmark"
     REPLAN = "agent_replan"
     GENERATE_REPAIR_PLAN = "generate_repair_plan"
@@ -108,6 +110,7 @@ RELEVANT_KINDS = {
     "schottky_iv_calibration",
     "task_run",
     "tool_convergence",
+    "golden_curve_comparison",
 }
 
 
@@ -330,7 +333,24 @@ def tool_convergence_checkpoint_record(state: MissionState) -> dict[str, Any] | 
     }
 
 
+def golden_comparison_checkpoint_record(state: MissionState) -> dict[str, Any] | None:
+    state_path_value = state.checkpoint.get("golden_comparison_state_path")
+    if not state_path_value:
+        return None
+    return {
+        "experiment_id": state.checkpoint.get("golden_comparison_id") or f"{state.mission_id}_golden_comparison",
+        "kind": "golden_curve_comparison",
+        "status": state.checkpoint.get("golden_comparison_status"),
+        "quality_status": state.checkpoint.get("golden_comparison_quality_status"),
+        "state_path": str(state_path_value),
+    }
+
+
 def current_evidence_record(state: MissionState) -> dict[str, Any] | None:
+    if state.checkpoint.get("golden_comparison_completed"):
+        record = golden_comparison_checkpoint_record(state)
+        if record:
+            return record
     if state.checkpoint.get("post_tool_convergence_index_refreshed"):
         record = tool_convergence_checkpoint_record(state)
         if record and record.get("status") != "failed" and record.get("quality_status") != "failed":
@@ -486,6 +506,14 @@ def state_digest_for_llm(path_value: str | Path | None) -> dict[str, Any]:
         },
         "quality_report": compact_quality_report(data.get("quality_report")),
         "benchmark_context": data.get("benchmark_context"),
+        "repair_context": data.get("repair_context"),
+        "mutation_effect_analysis": data.get("mutation_effect_analysis"),
+        "agent_reasoning": {
+            "last_repair_agent_decision": (data.get("checkpoint") or {}).get("last_repair_agent_decision")
+            if isinstance(data.get("checkpoint"), dict)
+            else None,
+            "repair_agent_policy": request.get("agent_policy"),
+        },
         "final_metrics": {
             key: value
             for key, value in ((final_summary.get("metrics") or final_summary) if isinstance(final_summary, dict) else {}).items()
@@ -869,12 +897,17 @@ def create_initial_state(
         "engineering_intent": intent.model_dump(mode="json"),
         "long_horizon_policy": {
             "mode": "autonomous",
-            "planner": "llm_with_deterministic_fallback" if use_llm_decomposer else "deterministic_fallback",
+            "planner": "agent_first_llm_with_deterministic_fallback" if use_llm_decomposer else "deterministic_fallback",
             "risk_level": intent.risk_level,
             "max_replan_attempts": replan_budget,
             "max_repair_rounds": 4 if intent.risk_level == "high" else 3,
             "required_evidence": intent.evidence_requirements,
             "intent_summary_zh": intent.summary_zh,
+            "agent_first_policy": {
+                "mission_planner": use_llm_decomposer,
+                "repair_executor": True,
+                "deterministic_fallback": allow_llm_fallback,
+            },
         },
         "risk_ledger": [],
     }
@@ -985,6 +1018,14 @@ def choose_next_step(state: MissionState) -> MissionStep:
             request={"root": str(PROJECT_ROOT / "runs"), "db_path": str(default_index_db_path())},
         )
 
+    if state.checkpoint.get("golden_comparison_completed") and not state.checkpoint.get("post_golden_comparison_index_refreshed"):
+        return MissionStep(
+            **common,
+            kind=MissionStepKind.REBUILD_INDEX,
+            reason="refresh experiment memory after golden/measured curve comparison",
+            request={"root": str(PROJECT_ROOT / "runs"), "db_path": str(default_index_db_path())},
+        )
+
     if should_replan_before_ready_goal_step(state):
         return MissionStep(
             **common,
@@ -1056,6 +1097,24 @@ def mission_step_for_goal_step(
         )
 
     if step_kind == "run_tool_convergence":
+        primary_record = state.checkpoint.get("primary_tcad_record")
+        if state.checkpoint.get("primary_supervisor_completed") and not isinstance(primary_record, dict):
+            request["question"] = "主 TCAD 步骤没有产出当前 state.json，不能用默认 convergence 替代本轮仿真结果。"
+            return MissionStep(
+                **common,
+                kind=MissionStepKind.ASK_USER,
+                reason="goal-decomposition tool convergence step has no primary TCAD result",
+                request=request,
+            )
+        if isinstance(primary_record, dict) and record_needs_repair(primary_record):
+            request["skip_reason"] = "primary TCAD result is suspicious or failed; run benchmark/repair before convergence"
+            request["target_state"] = primary_record.get("state_path")
+            return MissionStep(
+                **common,
+                kind=MissionStepKind.SKIP_GOAL_STEP,
+                reason="skip automatic convergence until the primary TCAD result is repaired",
+                request=request,
+            )
         convergence_request = dict(goal_request)
         convergence_request.setdefault("convergence_id", f"{state.mission_id}_tool_convergence")
         convergence_request.setdefault("convergence_root", str(Path(state.mission_dir) / "tool_convergence"))
@@ -1066,6 +1125,39 @@ def mission_step_for_goal_step(
             **common,
             kind=MissionStepKind.RUN_TOOL_CONVERGENCE,
             reason="execute goal-decomposition tool convergence study before accepting TCAD evidence",
+            request=request,
+        )
+
+    if step_kind == "run_golden_comparison":
+        primary_record = state.checkpoint.get("primary_tcad_record")
+        if not isinstance(primary_record, dict) or not primary_record.get("state_path"):
+            request["question"] = "没有本轮 primary TCAD state.json，不能执行 golden/measured 曲线对比。"
+            return MissionStep(
+                **common,
+                kind=MissionStepKind.ASK_USER,
+                reason="golden/measured comparison step has no primary TCAD result",
+                request=request,
+            )
+        reference = goal_request.get("reference_curve_path")
+        if not reference:
+            request["question"] = "golden/measured 曲线对比缺少 reference_curve_path。"
+            return MissionStep(
+                **common,
+                kind=MissionStepKind.ASK_USER,
+                reason="golden/measured comparison step has no reference curve",
+                request=request,
+            )
+        comparison_request = {
+            "comparison_id": goal_request.get("comparison_id") or f"{state.mission_id}_golden_comparison",
+            "source_state_path": primary_record["state_path"],
+            "reference_curve_path": reference,
+            "run_root": str(Path(state.mission_dir) / "golden_curve_comparison"),
+        }
+        request["comparison_request"] = comparison_request
+        return MissionStep(
+            **common,
+            kind=MissionStepKind.RUN_GOLDEN_COMPARISON,
+            reason="compare primary TCAD curve against golden/measured reference before benchmark",
             request=request,
         )
 
@@ -1222,6 +1314,10 @@ def execute_step(step: MissionStep, state: MissionState, *, llm_client: ChatClie
                 "post_tool_convergence_index_refreshed"
             ):
                 state.checkpoint["post_tool_convergence_index_refreshed"] = True
+            elif state.checkpoint.get("golden_comparison_completed") and not state.checkpoint.get(
+                "post_golden_comparison_index_refreshed"
+            ):
+                state.checkpoint["post_golden_comparison_index_refreshed"] = True
             elif state.checkpoint.get("primary_supervisor_completed"):
                 state.checkpoint["post_primary_index_refreshed"] = True
         elif step.kind == MissionStepKind.QUERY_HISTORY:
@@ -1247,6 +1343,8 @@ def execute_step(step: MissionStep, state: MissionState, *, llm_client: ChatClie
                 supervisor_root=Path(step.request["supervisor_root"]),
                 execute=state.execute,
                 max_cycles=int(step.request.get("max_cycles") or state.supervisor_max_cycles),
+                use_agent_policy=bool(step.request.get("use_agent_policy", True)),
+                llm_client=llm_client,
             )
             result = supervisor_state.model_dump(mode="json")
             step.result = result
@@ -1320,7 +1418,35 @@ def execute_step(step: MissionStep, state: MissionState, *, llm_client: ChatClie
                         "quality_status": quality_status,
                         "state_path": state.checkpoint["tool_convergence_state_path"],
                     },
+                    )
+        elif step.kind == MissionStepKind.RUN_GOLDEN_COMPARISON:
+            request = GoldenCurveComparisonRequest.model_validate(step.request["comparison_request"])
+            comparison = run_golden_curve_comparison(request)
+            result = comparison.model_dump(mode="json")
+            step.result = result
+            state.checkpoint["golden_comparison_completed"] = True
+            state.checkpoint["golden_comparison_state_path"] = str(
+                Path(result["comparison_dir"]) / "state.json"
+            )
+            state.checkpoint["golden_comparison_id"] = result.get("comparison_id")
+            state.checkpoint["golden_comparison_status"] = result.get("status")
+            state.checkpoint["golden_comparison_quality_status"] = (result.get("quality_report") or {}).get("status")
+            if goal_step_index:
+                quality_status = state.checkpoint.get("golden_comparison_quality_status")
+                terminal_status = "completed" if quality_status == "passed" else "soft_failed"
+                mark_goal_step(
+                    state,
+                    goal_step_index,
+                    terminal_status,
+                    kind=str(goal_step_kind),
+                    mission_step=step,
+                    result={
+                        "state_path": state.checkpoint["golden_comparison_state_path"],
+                        "quality_status": quality_status,
+                    },
                 )
+                if terminal_status == "soft_failed":
+                    append_soft_failure(state, step, (result.get("failure_reason") or "golden/measured comparison did not pass"))
         elif step.kind == MissionStepKind.RUN_PHYSICAL_BENCHMARK:
             benchmark = run_physical_benchmark(Path(step.request["state"]))
             result = benchmark.model_dump(mode="json")
@@ -1399,6 +1525,8 @@ def execute_step(step: MissionStep, state: MissionState, *, llm_client: ChatClie
                 execution_root=Path(step.request["execution_root"]) if step.request.get("execution_root") else None,
                 execute=state.execute,
                 max_rounds=int(step.request.get("max_rounds") or 3),
+                use_agent_policy=bool(step.request.get("use_agent_policy", True)),
+                llm_client=llm_client,
             )
             result = execution.model_dump(mode="json")
             step.result = result
@@ -1512,7 +1640,7 @@ def run_mission_agent(
     resume: bool = False,
     max_cycles: int = 8,
     supervisor_max_cycles: int = 3,
-    use_llm_decomposer: bool = False,
+    use_llm_decomposer: bool = True,
     allow_llm_fallback: bool = True,
     llm_client: ChatClient | None = None,
 ) -> MissionState:

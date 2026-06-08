@@ -135,6 +135,36 @@ class ToolConvergenceTest(unittest.TestCase):
         self.assertEqual(request.values, [8, 12, 16])
         self.assertEqual(request.metric_path, "quality_report.metrics.idvd_final_current_a")
 
+    def test_mosfet_dibl_split_metric_from_drain_voltage_cases(self) -> None:
+        def runner(request: dict[str, object]) -> dict[str, object]:
+            drain_voltage = float(request["drain_voltage"])
+            vth = 0.45 if drain_voltage < 0.5 else 0.39
+            return {
+                "tool_name": "mosfet_2d_id_sweep",
+                "status": "completed",
+                "run_id": request["run_id"],
+                "run_dir": str(self.root / "fake_dibl" / str(request["run_id"])),
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {"vth_at_threshold_current_v": vth},
+                },
+            }
+
+        state = run_tool_convergence(
+            self.request(
+                base_request={"run_id": "dibl_base", "sweep_type": "idvg", "drain_voltage": 0.05},
+                axis_path="drain_voltage",
+                values=[0.05, 1.0],
+                metric_path="quality_report.metrics.vth_at_threshold_current_v",
+                relative_tolerance=1.0,
+            ),
+            registry={"mosfet_2d_id_sweep": runner},
+        )
+
+        metrics = state.quality_report["metrics"]
+        self.assertEqual(metrics["engineering_metric"], "dibl")
+        self.assertAlmostEqual(metrics["dibl_mv_per_v"], (0.45 - 0.39) / 0.95 * 1000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

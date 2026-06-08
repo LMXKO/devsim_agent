@@ -2,7 +2,7 @@
 
 `tcad_agent.tools.autonomous_loop` is the first top-level long-running executor. It does not replace the lower-level TCAD tool. It orchestrates it:
 
-1. run the PN junction IV tool;
+1. run the PN-junction seed tool for a diode/SBD reverse-leakage task;
 2. inspect the tool `quality_report`;
 3. optionally ask the configured LLM to diagnose suspicious or failed runs;
 4. build a constrained follow-up request with `strategy_executor`;
@@ -15,8 +15,9 @@ Start without LLM calls:
 
 ```bash
 python3.11 -m tcad_agent.tools.autonomous_loop \
-  --loop-id auto_extreme \
-  --stop 5.0 \
+  --loop-id diode_seed_auto_extreme \
+  --start 0.0 \
+  --stop -5.0 \
   --step 5.0 \
   --min-step 1.25 \
   --max-attempts 3 \
@@ -24,7 +25,7 @@ python3.11 -m tcad_agent.tools.autonomous_loop \
   --no-llm
 ```
 
-This is the default and is useful for reproducible automation. A suspicious high-current 5 V sweep is expected to create a follow-up request with a narrower voltage range.
+This is the default and is useful for reproducible automation. A suspicious large-step reverse sweep is expected to create a follow-up request with a narrower voltage range.
 
 ## LLM-Assisted Command
 
@@ -32,8 +33,9 @@ Use the OpenAI-compatible model endpoint for diagnosis before planning the follo
 
 ```bash
 python3.11 -m tcad_agent.tools.autonomous_loop \
-  --loop-id auto_extreme_llm \
-  --stop 5.0 \
+  --loop-id diode_seed_auto_extreme_llm \
+  --start 0.0 \
+  --stop -5.0 \
   --step 5.0 \
   --min-step 1.25 \
   --max-attempts 3 \
@@ -54,7 +56,7 @@ Resume a loop from its checkpoint:
 
 ```bash
 python3.11 -m tcad_agent.tools.autonomous_loop \
-  --loop-id auto_extreme \
+  --loop-id diode_seed_auto_extreme \
   --resume
 ```
 

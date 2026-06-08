@@ -18,11 +18,16 @@ The deterministic planner can add:
 - primary supervisor execution;
 - tool convergence study;
 - repair executor step;
+- user clarification step;
 - final engineering conclusion.
 
 For Schottky calibration goals that mention a trusted/measured curve and convergence, the convergence step targets `schottky_iv_calibration` and sweeps the calibration voltage step size. This keeps calibration missions on the calibration path instead of falling back to the generic PN IV convergence baseline.
 
-If a future goal matches a device template that is still marked `planned`, the deterministic plan starts with `ask_user` and includes the template's missing implementation work instead of pretending the device is executable. Current Schottky, BJT, JFET, power MOSFET, and photodiode templates route through executable compact baselines.
+If a goal is too abstract, for example "让 TCAD 仿真工程师自动完成我的工作" without a device, analysis type, or target metric, the deterministic plan starts with `ask_user` and stores concrete clarification questions.
+
+If a goal matches a device template that is still marked `planned`, the deterministic plan also starts with `ask_user` and includes the template's missing implementation work instead of pretending the device is executable.
+
+If a goal matches a `compact_baseline` template, the plan can continue into `extended_device_sweep`, but the primary step carries `capability_warnings`, `assumptions`, and an evidence policy that says the result is planning evidence only. Schottky diode routes through `extended_device_sweep` with `fidelity=devsim_1d` and is treated separately from compact baselines.
 
 ## LLM Plan
 

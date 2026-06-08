@@ -31,6 +31,10 @@ class EngineeringIntent(BaseModel):
     sweep_hints: dict[str, Any] = Field(default_factory=dict)
     request_hint: dict[str, Any] = Field(default_factory=dict)
     ambiguity: list[str] = Field(default_factory=list)
+    clarification_questions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    capability_warnings: list[str] = Field(default_factory=list)
+    evidence_policy: str = "exploratory"
     risk_level: str = "medium"
     summary_zh: str = ""
 
@@ -65,80 +69,108 @@ DEVICE_CATALOG: list[dict[str, Any]] = [
         "template_id": "pn_junction_iv",
         "support": DeviceSupport.EXECUTABLE,
         "tool": "pn_junction_iv_sweep",
-        "aliases": ["pn junction", "pn结", "p-n", "pn iv", "二极管 iv"],
+        "aliases": ["pn junction", "pn结", "p-n", "pn iv", "pn diode", "pn 二极管", "pn二极管", "pn 任务", "pn任务", "二极管 iv"],
         "request": {"start": 0.0, "stop": 0.5, "step": 0.1},
     },
     {
         "device_family": "schottky_diode",
         "template_id": "schottky_diode",
-        "support": DeviceSupport.COMPACT_BASELINE,
+        "support": DeviceSupport.EXECUTABLE,
         "tool": "extended_device_sweep",
         "aliases": ["schottky", "肖特基"],
-        "request": {"device_type": "schottky_diode", "start": -0.5, "stop": 0.8, "step": 0.1},
+        "request": {"device_type": "schottky_diode", "fidelity": "devsim_1d", "start": -0.5, "stop": 0.8, "step": 0.1},
     },
     {
         "device_family": "power_mosfet",
         "template_id": "power_mosfet_bv_ron",
-        "support": DeviceSupport.COMPACT_BASELINE,
+        "support": DeviceSupport.EXECUTABLE,
         "tool": "extended_device_sweep",
-        "aliases": ["power mos", "power mosfet", "vdmos", "ldmos", "功率mos", "功率mosfet"],
-        "request": {"device_type": "power_mosfet_bv_ron", "start": 0.0, "stop": -90.0, "step": 5.0},
+        "aliases": [
+            "power mos",
+            "power mosfet",
+            "vdmos",
+            "ldmos",
+            "field plate",
+            "field-plate",
+            "drift doping",
+            "drift region",
+            "功率mos",
+            "功率mosfet",
+            "场板",
+            "漂移区",
+            "漂移区掺杂",
+        ],
+        "request": {
+            "device_type": "power_mosfet_bv_ron",
+            "fidelity": "physics_1d",
+            "evidence_level": "tcad_executable",
+            "start": 0.0,
+            "stop": -90.0,
+            "step": 5.0,
+        },
     },
     {
         "device_family": "bjt",
         "template_id": "bjt_gummel_output",
-        "support": DeviceSupport.COMPACT_BASELINE,
+        "support": DeviceSupport.EXECUTABLE,
         "tool": "extended_device_sweep",
         "aliases": ["bjt", "gummel", "bipolar", "双极", "晶体管"],
-        "request": {"device_type": "bjt_gummel_output", "start": 0.55, "stop": 0.8, "step": 0.025},
+        "request": {
+            "device_type": "bjt_gummel_output",
+            "fidelity": "physics_1d",
+            "evidence_level": "tcad_executable",
+            "start": 0.55,
+            "stop": 0.8,
+            "step": 0.025,
+        },
     },
     {
         "device_family": "jfet",
         "template_id": "jfet_transfer_output",
-        "support": DeviceSupport.COMPACT_BASELINE,
+        "support": DeviceSupport.EXECUTABLE,
         "tool": "extended_device_sweep",
         "aliases": ["jfet", "junction fet", "结型场效应"],
-        "request": {"device_type": "jfet_transfer_output", "start": -3.0, "stop": 0.0, "step": 0.25},
+        "request": {"device_type": "jfet_transfer_output", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": -3.0, "stop": 0.0, "step": 0.25},
     },
     {
         "device_family": "photodiode",
         "template_id": "photodiode_iv",
-        "support": DeviceSupport.COMPACT_BASELINE,
+        "support": DeviceSupport.EXECUTABLE,
         "tool": "extended_device_sweep",
         "aliases": ["photodiode", "photo diode", "光电二极管", "光电"],
-        "request": {"device_type": "photodiode_iv", "start": -1.0, "stop": 0.8, "step": 0.1},
+        "request": {"device_type": "photodiode_iv", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": -1.0, "stop": 0.8, "step": 0.1},
     },
     {
         "device_family": "finfet",
         "template_id": "finfet_id_cv",
-        "support": DeviceSupport.PLANNED,
-        "tool": None,
+        "support": DeviceSupport.EXECUTABLE,
+        "tool": "extended_device_sweep",
         "aliases": ["finfet", "gaa", "纳米片", "nanosheet", "nanowire"],
-        "request": {},
+        "request": {"device_type": "finfet_id_cv", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": 0.0, "stop": 1.0, "step": 0.1},
     },
     {
         "device_family": "sic_power_diode",
         "template_id": "sic_power_diode_bv_leakage",
-        "support": DeviceSupport.PLANNED,
-        "tool": None,
+        "support": DeviceSupport.EXECUTABLE,
+        "tool": "extended_device_sweep",
         "aliases": ["sic diode", "sic jbs", "sic sbd", "碳化硅", "jbs"],
-        "request": {},
+        "request": {"device_type": "sic_power_diode_bv_leakage", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": 0.0, "stop": -1200.0, "step": 50.0},
     },
     {
         "device_family": "gan_hemt",
         "template_id": "gan_hemt_id_bv",
-        "support": DeviceSupport.PLANNED,
-        "tool": None,
+        "support": DeviceSupport.EXECUTABLE,
+        "tool": "extended_device_sweep",
         "aliases": ["gan hemt", "hemt", "algan", "氮化镓"],
-        "request": {},
+        "request": {"device_type": "gan_hemt_id_bv", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": -4.0, "stop": 2.0, "step": 0.25},
     },
     {
         "device_family": "igbt",
         "template_id": "igbt_output_turnoff",
-        "support": DeviceSupport.PLANNED,
-        "tool": None,
+        "support": DeviceSupport.EXECUTABLE,
+        "tool": "extended_device_sweep",
         "aliases": ["igbt", "绝缘栅双极"],
-        "request": {},
+        "request": {"device_type": "igbt_output_turnoff", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": 0.0, "stop": 4.0, "step": 0.25},
     },
 ]
 
@@ -177,6 +209,8 @@ MODEL_KEYWORDS: dict[str, list[str]] = {
     "fixed_oxide_charge": ["fixed charge", "fixed oxide charge", "qf", "固定电荷"],
     "impact_ionization": ["impact ionization", "avalanche", "雪崩", "碰撞电离"],
     "srh_lifetime": ["srh", "lifetime", "寿命", "复合"],
+    "field_plate": ["field plate", "field-plate", "场板"],
+    "drift_doping": ["drift doping", "drift region doping", "漂移区掺杂", "漂移区浓度"],
     "temperature_corner": ["temperature", "temp", "高温", "低温", "温度", "corner"],
 }
 
@@ -319,6 +353,49 @@ def build_request_hint(entry: dict[str, Any] | None, analyses: list[str], sweep_
     return request
 
 
+def parse_spec_constraints(text: str) -> list[str]:
+    constraints: list[str] = []
+    lowered = text.lower()
+    current_match = re.search(
+        r"(?:leakage|漏电|暗电流)[^\n。；;，,]{0,32}?(?:<=|≤|<|不超过|低于|小于|limit|上限)?\s*(\d+(?:\.\d+)?(?:e[-+]?\d+)?)\s*(a|ma|ua|μa|na|pa)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if current_match:
+        constraints.append(f"leakage_current_limit={current_match.group(1)}{current_match.group(2)}")
+    ion_match = re.search(
+        r"(?:ion/ioff|开关比)[^\n。；;，,]{0,32}?(?:>=|≥|至少|大于|超过)?\s*(\d+(?:\.\d+)?(?:e[-+]?\d+)?)",
+        lowered,
+        flags=re.IGNORECASE,
+    )
+    if ion_match:
+        constraints.append(f"ion_ioff_min={ion_match.group(1)}")
+    bv_match = re.search(
+        r"(?:bv|breakdown|耐压|击穿)[^\n。；;，,]{0,32}?(?:>=|≥|至少|大于|超过)?\s*(\d+(?:\.\d+)?)\s*v",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if bv_match:
+        constraints.append(f"breakdown_voltage_min={bv_match.group(1)}V")
+    return constraints
+
+
+def build_clarification_questions(
+    entry: dict[str, Any] | None,
+    analyses: list[str],
+    metrics: list[str],
+    text: str,
+) -> list[str]:
+    questions: list[str] = []
+    if entry is None:
+        questions.append("要仿真的器件/结构是什么，例如 PN、MOSCAP、2D MOSFET、Schottky，还是新的工业器件模板？")
+    if not analyses:
+        questions.append("目标分析类型是什么，例如 IV、C-V、Id-Vg、Id-Vd、击穿/漏电、校准、优化或收敛签核？")
+    if not metrics and text_has_any(text, ["完成工作", "工程师", "signoff", "签核", "达标", "优化"]):
+        questions.append("本轮要交付的关键指标和规格是什么，例如 Vth、SS、Ion/Ioff、BV、漏电上限或 golden 曲线误差？")
+    return questions[:3]
+
+
 def parse_engineering_intent(text: str) -> EngineeringIntent:
     entry = match_device(text)
     analyses = unique([name for name, words in ANALYSIS_KEYWORDS.items() if text_has_any(text, words)])
@@ -360,9 +437,34 @@ def parse_engineering_intent(text: str) -> EngineeringIntent:
         objectives.append("minimize_leakage")
     if not objectives and ("ion_ioff" in metrics or "idvg" in analyses):
         objectives.append("extract_and_improve_key_metrics")
-    constraints = []
+    constraints = parse_spec_constraints(text)
     if text_has_any(text, ["达标", "约束", "不能超过", "至少", "小于", "大于", "limit", "spec"]):
         constraints.append("natural_language_spec_constraint_present")
+    constraints = unique(constraints)
+
+    clarification_questions = build_clarification_questions(entry, analyses, metrics, text)
+    assumptions: list[str] = []
+    capability_warnings: list[str] = []
+    if support == DeviceSupport.UNKNOWN:
+        assumptions.append("缺少可执行任务细节时，不应直接运行 TCAD；需要先澄清器件、分析类型和指标。")
+    elif support == DeviceSupport.COMPACT_BASELINE:
+        capability_warnings.append("当前路径是 compact baseline，只能作为规划证据，不能作为最终 TCAD 签核证据。")
+        assumptions.append("若用户要求签核/可信结论，需要补充真实 TCAD runner、收敛验证和 golden/measured 对比。")
+    elif support == DeviceSupport.PLANNED:
+        capability_warnings.append("该工业模板尚未实现真实 TCAD runner、质量规则和 benchmark 证据链。")
+        assumptions.append("必须先实现模板/runner/benchmark，不能把 compact 或占位曲线当作完成结果。")
+
+    evidence_policy = (
+        "blocked_until_runner_implemented"
+        if support == DeviceSupport.PLANNED
+        else "compact_planning_only"
+        if support == DeviceSupport.COMPACT_BASELINE
+        else "requires_signoff_evidence"
+        if "engineering_signoff" in evidence or "golden_or_measured" in evidence
+        else "executable_exploratory"
+        if support == DeviceSupport.EXECUTABLE
+        else "needs_clarification"
+    )
 
     summary_parts = [
         f"器件={device_family}",
@@ -388,6 +490,10 @@ def parse_engineering_intent(text: str) -> EngineeringIntent:
         sweep_hints=sweep_hints,
         request_hint=request_hint,
         ambiguity=ambiguity,
+        clarification_questions=clarification_questions,
+        assumptions=assumptions,
+        capability_warnings=capability_warnings,
+        evidence_policy=evidence_policy,
         risk_level=risk_level,
         summary_zh="；".join(summary_parts),
     )

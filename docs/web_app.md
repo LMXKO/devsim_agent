@@ -33,7 +33,7 @@ The transcript shows:
 
 The transcript follows the latest visible event only while the user is already near the bottom. Scrolling upward pauses auto-follow so earlier TCAD output can be inspected without being pulled back down; mission submission and the compact `最新` button force the view back to the newest event.
 
-The compact `例子` menu floats above the `Send` button and contains natural-language semiconductor-engineering test cases such as MOS C-V fixed-charge debug, tox/Qf corner review, 2D MOSFET Vth/DIBL/SS triage, Id-Vd kink debug, diode BV/leakage spec signoff, Schottky golden-curve and temperature-corner calibration, mesh/model signoff, and existing bad-run repair. Each example shows a short title plus expected outputs. The canonical list is in `docs/semiconductor_engineering_test_cases.md`.
+The compact `例子` menu floats above the `Send` button and contains natural-language semiconductor-engineering test cases aligned to the seven public TCAD source categories: MOSCAP/capacitance, MOSFET Id-Vg/Id-Vd/DIBL, diode/SBD breakdown, LDMOS/IGBT power devices, GaN HEMT, BJT Gummel/output, and FinFET/SOI variability. Each example shows a short title plus expected outputs. The canonical list is in `docs/semiconductor_engineering_test_cases.md`.
 
 Run:
 
@@ -79,12 +79,11 @@ The in-page worker controls call the same durable queue worker used by `tcad_age
 
 The workbench routes through the same mission, supervisor, and queue runners used by tests:
 
-- PN junction IV;
 - MOS capacitor C-V;
 - 2D MOSFET Id-Vg / Id-Vd;
 - diode breakdown and leakage;
 - Schottky IV calibration and convergence;
-- extended compact devices such as BJT, JFET, power MOSFET BV/Ron, and photodiode IV;
+- compact/planned seven-category routes such as BJT, LDMOS/power MOSFET, IGBT, GaN HEMT, and FinFET/SOI variability;
 - physical benchmarks;
 - parameter sweeps, adaptive optimization, multidimensional optimization;
 - engineering objective and Pareto evaluation;

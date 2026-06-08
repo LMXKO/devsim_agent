@@ -247,6 +247,22 @@ class MissionAgentTest(unittest.TestCase):
         self.assertTrue(state.checkpoint["goal_decomposer_fallback_used"])
         self.assertEqual(state.checkpoint["goal_decomposition"]["status"], "fallback")
 
+    def test_mission_defaults_to_agent_first_planner_with_fallback(self) -> None:
+        state = run_mission_agent(
+            "完成一个 MOSFET 任务",
+            mission_id="mission_default_agent_first",
+            mission_root=self.root,
+            execute=False,
+            llm_client=FakeLLMClient(RuntimeError("planner offline")),
+        )
+
+        policy = state.checkpoint["long_horizon_policy"]
+        self.assertEqual(state.status, MissionStatus.PLANNED)
+        self.assertEqual(state.checkpoint["goal_decomposer"], "llm")
+        self.assertTrue(state.checkpoint["goal_decomposer_fallback_used"])
+        self.assertEqual(policy["planner"], "agent_first_llm_with_deterministic_fallback")
+        self.assertTrue(policy["agent_first_policy"]["mission_planner"])
+
     def test_llm_decomposition_can_fail_without_fallback(self) -> None:
         state = run_mission_agent(
             "完成一个 MOSFET 任务",
@@ -281,8 +297,9 @@ class MissionAgentTest(unittest.TestCase):
 
         with (
             patch("tcad_agent.mission_agent.rebuild_index", return_value={"records_indexed": 1}),
-            patch("tcad_agent.mission_agent.list_records", side_effect=[[], [recent_record]]),
+            patch("tcad_agent.mission_agent.list_records", side_effect=[[], [recent_record], [recent_record]]),
             patch("tcad_agent.mission_agent.run_supervisor", return_value=self.fake_supervisor_state(tool_result)),
+            patch("tcad_agent.mission_agent.run_tool_convergence", return_value=self.fake_tool_convergence()),
             patch("tcad_agent.mission_agent.run_physical_benchmark", return_value=self.fake_benchmark()),
             patch("tcad_agent.mission_agent.generate_experiment_conclusion", return_value=self.fake_conclusion()),
         ):
@@ -291,7 +308,7 @@ class MissionAgentTest(unittest.TestCase):
                 mission_id="mission_conclusion",
                 mission_root=self.root,
                 execute=True,
-                max_cycles=6,
+                max_cycles=8,
             )
 
         self.assertEqual(state.status, MissionStatus.COMPLETED)
@@ -299,14 +316,18 @@ class MissionAgentTest(unittest.TestCase):
             MissionStepKind.REBUILD_INDEX,
             MissionStepKind.RUN_SUPERVISOR,
             MissionStepKind.REBUILD_INDEX,
+            MissionStepKind.RUN_TOOL_CONVERGENCE,
+            MissionStepKind.REBUILD_INDEX,
             MissionStepKind.RUN_PHYSICAL_BENCHMARK,
             MissionStepKind.SKIP_GOAL_STEP,
             MissionStepKind.GENERATE_CONCLUSION,
         ])
         self.assertIn("conclusion_path", state.checkpoint)
+        self.assertEqual(state.checkpoint["goal_step_statuses"]["1"]["status"], "completed")
         self.assertEqual(state.checkpoint["goal_step_statuses"]["2"]["status"], "completed")
-        self.assertEqual(state.checkpoint["goal_step_statuses"]["3"]["status"], "skipped")
-        self.assertEqual(state.checkpoint["goal_step_statuses"]["4"]["status"], "completed")
+        self.assertEqual(state.checkpoint["goal_step_statuses"]["3"]["status"], "completed")
+        self.assertEqual(state.checkpoint["goal_step_statuses"]["4"]["status"], "skipped")
+        self.assertEqual(state.checkpoint["goal_step_statuses"]["5"]["status"], "completed")
         self.assertEqual(len(state.checkpoint["controller_cycles"]), len(state.steps))
         last_decision = state.checkpoint["controller_cycles"][-1]["decision"]
         self.assertEqual(last_decision["action"], "finish")
@@ -338,7 +359,7 @@ class MissionAgentTest(unittest.TestCase):
 
         self.assertEqual(state.status, MissionStatus.WAITING_FOR_USER)
         self.assertEqual(state.steps[-1].kind, MissionStepKind.ASK_USER)
-        self.assertIn("物理 benchmark", state.steps[-1].request["question"])
+        self.assertIn("主 TCAD", state.steps[-1].request["question"])
         repair_plan.assert_not_called()
         conclusion.assert_not_called()
 
@@ -408,7 +429,7 @@ class MissionAgentTest(unittest.TestCase):
                 mission_id="mission_repair",
                 mission_root=self.root,
                 execute=True,
-                max_cycles=6,
+                max_cycles=7,
             )
 
         self.assertEqual(state.status, MissionStatus.WAITING_FOR_USER)
@@ -446,7 +467,7 @@ class MissionAgentTest(unittest.TestCase):
                 mission_id="mission_auto_repair",
                 mission_root=self.root,
                 execute=True,
-                max_cycles=7,
+                max_cycles=8,
             )
 
         self.assertEqual(state.status, MissionStatus.COMPLETED)
@@ -524,11 +545,18 @@ class MissionAgentTest(unittest.TestCase):
             "quality_status": "passed",
             "state_path": str(self.root / "state" / "tool_convergence_state.json"),
         }
+        tool_result = {
+            "tool_name": "schottky_iv_calibration",
+            "calibration_id": "schottky_cal",
+            "status": "completed",
+            "state_path": calibration_record["state_path"],
+            "quality_report": {"status": "passed"},
+        }
 
         with (
             patch("tcad_agent.mission_agent.rebuild_index", return_value={"records_indexed": 1}),
             patch("tcad_agent.mission_agent.list_records", side_effect=[[], [calibration_record], [calibration_record, convergence_record]]),
-            patch("tcad_agent.mission_agent.run_supervisor", return_value=self.fake_supervisor_state()),
+            patch("tcad_agent.mission_agent.run_supervisor", return_value=self.fake_supervisor_state(tool_result)),
             patch("tcad_agent.mission_agent.run_tool_convergence", return_value=self.fake_tool_convergence()) as convergence,
             patch("tcad_agent.mission_agent.run_physical_benchmark", return_value=self.fake_benchmark()),
             patch("tcad_agent.mission_agent.generate_experiment_conclusion", return_value=self.fake_conclusion()) as conclusion,

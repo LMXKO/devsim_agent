@@ -51,7 +51,9 @@ When possible, it also writes or refreshes `benchmark.json` through `physical_be
 - benchmark status and check counts;
 - warning/error benchmark codes;
 - an engineering decision: accept as baseline, use conditionally, or do not trust yet;
+- signoff evidence pack, including missing evidence, blocking reasons, and required evidence item statuses;
 - anomalies such as failed/suspicious cases, missing objectives, objective outliers, and nonmonotonic single-axis trends;
 - next experiment packages with a target tool and request hint.
+- executable next-request JSON snippets that can seed a follow-up agent/tool call.
 
 An LLM can be layered on top later to turn this structured conclusion into richer prose while keeping the evidence grounded.

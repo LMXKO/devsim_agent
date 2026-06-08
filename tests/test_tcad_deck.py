@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from tcad_agent.tcad_deck import build_tcad_deck_spec, compact_tcad_deck_spec
+from tcad_agent.tcad_deck import (
+    build_tcad_deck_spec,
+    compact_tcad_deck_spec,
+    parse_tcad_deck_source,
+    semantic_patch_tcad_deck_source,
+)
 
 
 class TCADDeckSpecTest(unittest.TestCase):
@@ -54,6 +59,127 @@ class TCADDeckSpecTest(unittest.TestCase):
         self.assertEqual(deck["device_family"], "pn_diode_breakdown_leakage")
         self.assertEqual(deck["signoff_requirements"]["leakage_voltage_v"], -5.0)
         self.assertTrue(deck["signoff_requirements"]["require_breakdown"])
+
+    def test_power_device_deck_records_open_mutations(self) -> None:
+        deck = build_tcad_deck_spec(
+            "这个结构漏电偏高，改 field plate / drift doping / lifetime 看看",
+            "extended_device_sweep",
+            {
+                "device_type": "power_mosfet_bv_ron",
+                "fidelity": "physics_1d",
+                "power_mos_field_plate_length_um": 1.5,
+                "power_mos_drift_region_doping_cm3": 1e16,
+                "power_mos_carrier_lifetime_s": 1e-6,
+            },
+        )
+
+        targets = {mutation["target"] for mutation in deck["planned_mutations"]}
+        self.assertEqual(deck["device_family"], "power_mosfet_bv_ron")
+        self.assertEqual(targets, {"field_plate", "drift_doping", "lifetime"})
+        self.assertEqual(deck["physics_models"]["carrier_lifetime_s"], 1e-6)
+        compact = compact_tcad_deck_spec(deck)
+        self.assertEqual(len(compact["planned_mutations"]), 3)
+
+    def test_parses_existing_devsim_deck_sections_and_semantic_patch_diff(self) -> None:
+        source = "\n".join(
+            [
+                "field_plate_length_um = 1.5",
+                "drift_region_doping_cm3 = 1e16",
+                "def build_mesh():",
+                "    create_1d_mesh(mesh='m', ps=0.01)",
+                "set_parameter(name='carrier_lifetime_s', value=1e-6)",
+                "solve(type='dc', absolute_error=1e10)",
+            ]
+        )
+
+        ir = parse_tcad_deck_source(source, source_path="user_deck.py")
+        section_names = {section.name for section in ir.sections}
+
+        self.assertIn("geometry", section_names)
+        self.assertIn("model", section_names)
+        self.assertIn("bias", section_names)
+
+        result = semantic_patch_tcad_deck_source(
+            source,
+            [
+                {"deck_path": "geometry.field_plate_length_um", "request_path": "power_mos_field_plate_length_um", "value": 2.0},
+                {"deck_path": "physics_models.carrier_lifetime_s", "request_path": "power_mos_carrier_lifetime_s", "value": 1e-5},
+            ],
+            source_path="user_deck.py",
+        )
+
+        self.assertIn("-field_plate_length_um = 1.5", result.unified_diff)
+        self.assertIn("+field_plate_length_um = 2", result.unified_diff)
+        self.assertIn("value=1e-05", result.patched_source)
+        self.assertEqual(len(result.applied_patches), 2)
+
+    def test_extended_mutation_vocabulary_is_verifiable(self) -> None:
+        deck = build_tcad_deck_spec(
+            "power MOSFET 漏电偏高，扫 guard ring、junction depth、oxide thickness、implant dose、trench corner radius、trap density、region-specific lifetime",
+            "extended_device_sweep",
+            {
+                "device_type": "power_mosfet_bv_ron",
+                "fidelity": "physics_1d",
+                "power_mos_guard_ring_spacing_um": 1.0,
+                "power_mos_junction_depth_um": 0.35,
+                "power_mos_gate_oxide_thickness_nm": 50.0,
+                "power_mos_implant_dose_cm2": 1e13,
+                "power_mos_trench_corner_radius_um": 0.08,
+                "power_mos_trap_density_cm2": 1e11,
+                "power_mos_drift_region_lifetime_s": 1e-6,
+            },
+        )
+
+        mutations = {mutation["target"]: mutation for mutation in deck["planned_mutations"]}
+
+        self.assertIn("guard_ring", mutations)
+        self.assertIn("junction_depth", mutations)
+        self.assertIn("oxide_thickness", mutations)
+        self.assertIn("implant_dose", mutations)
+        self.assertIn("trench_corner_radius", mutations)
+        self.assertIn("trap_density", mutations)
+        self.assertIn("region_lifetime", mutations)
+        self.assertTrue(mutations["trap_density"]["validation_metric_paths"])
+        self.assertTrue(mutations["guard_ring"]["requires_user_confirmation"])
+
+    def test_semantic_patch_handles_nested_dict_calls_mesh_and_bias(self) -> None:
+        source = "\n".join(
+            [
+                "device = {",
+                "    'geometry': {'field_plate_length_um': 1.5, 'guard_ring_spacing_um': 0.8},",
+                "    'physics_models': {'regions': {'drift': {'carrier_lifetime_s': 1e-6}}, 'trap_density_cm2': 1e11},",
+                "}",
+                "set_parameter(device=device, name='drift_region_doping_cm3', value=1e16)",
+                "create_2d_mesh(mesh='m', min_spacing=0.01, refine_at='junction')",
+                "solve(type='dc', drain_voltage=20.0)",
+            ]
+        )
+
+        ir = parse_tcad_deck_source(source, source_path="complex_user_deck.py")
+        section_names = {section.name for section in ir.sections}
+
+        self.assertIn("geometry", section_names)
+        self.assertIn("mesh", section_names)
+        self.assertIn("bias", section_names)
+
+        result = semantic_patch_tcad_deck_source(
+            source,
+            [
+                {"deck_path": "geometry.field_plate_length_um", "request_path": "power_mos_field_plate_length_um", "value": 2.25},
+                {"deck_path": "physics_models.regions.drift.carrier_lifetime_s", "request_path": "power_mos_drift_region_lifetime_s", "value": 1e-5},
+                {"deck_path": "doping.drift_region_doping_cm3", "request_path": "power_mos_drift_region_doping_cm3", "value": 8e15},
+                {"deck_path": "mesh.min_spacing", "request_path": "mesh_min_spacing_um", "value": 0.005},
+                {"deck_path": "bias.drain_voltage", "request_path": "drain_stop", "value": 30.0},
+            ],
+            source_path="complex_user_deck.py",
+        )
+
+        self.assertEqual(len(result.unapplied_patches), 0)
+        self.assertIn("'field_plate_length_um': 2.25", result.patched_source)
+        self.assertIn("'carrier_lifetime_s': 1e-05", result.patched_source)
+        self.assertIn("value=8e+15", result.patched_source)
+        self.assertIn("min_spacing=0.005", result.patched_source)
+        self.assertIn("drain_voltage=30", result.patched_source)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from tcad_agent.deck_writer import write_deck_artifacts
 from tcad_agent.physical_quality import check_mos_capacitor_physics
 
 
@@ -52,6 +53,12 @@ class MOSCapacitorCVRequest(BaseModel):
     run_id: str | None = None
     run_root: Path = PROJECT_ROOT / "runs" / "agent_tools"
     resume: bool = False
+    tcad_deck_spec: dict[str, Any] | None = None
+    tcad_deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
+    deck_patch_history: list[dict[str, Any]] = Field(default_factory=list)
+    source_deck_path: str | None = None
+    repair_source_state_path: str | None = None
+    repair_baseline_state_path: str | None = None
 
     @model_validator(mode="after")
     def validate_request(self) -> "MOSCapacitorCVRequest":
@@ -89,6 +96,8 @@ class RunState(BaseModel):
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     final_summary: dict[str, Any] | None = None
     quality_report: dict[str, Any] | None = None
+    tcad_deck_spec: dict[str, Any] | None = None
+    tcad_deck_mutations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def utc_timestamp() -> str:
@@ -182,6 +191,8 @@ def create_initial_state(request: MOSCapacitorCVRequest, run_id: str, run_dir: P
         request=request.model_dump(mode="json"),
         created_at=now,
         updated_at=now,
+        tcad_deck_spec=request.tcad_deck_spec,
+        tcad_deck_mutations=request.tcad_deck_mutations,
         next_action="start first DEVSIM MOS capacitor attempt",
         checkpoint={"current_step_v": request.step, "completed_attempts": 0},
     )
@@ -334,6 +345,17 @@ def run_mos_capacitor_cv_sweep(request: MOSCapacitorCVRequest) -> dict[str, Any]
         if attempt.status == ToolStatus.COMPLETED:
             summary = json.loads(Path(attempt.summary_path).read_text(encoding="utf-8"))
             quality_report = judge_summary_quality(summary, request)
+            deck_artifacts = write_deck_artifacts(
+                Path(state.run_dir),
+                tool_name="mos_capacitor_cv_sweep",
+                request=request.model_dump(mode="json"),
+                deck_spec=request.tcad_deck_spec,
+                mutations=request.tcad_deck_mutations,
+                source_goal_text=(request.tcad_deck_spec or {}).get("source_goal_text") if request.tcad_deck_spec else None,
+            )
+            summary.setdefault("artifacts", {}).update(deck_artifacts)
+            summary["tcad_deck_spec"] = request.tcad_deck_spec
+            summary["tcad_deck_mutations"] = request.tcad_deck_mutations
             state.status = ToolStatus.COMPLETED if quality_report["status"] != "failed" else ToolStatus.FAILED
             state.final_summary = summary
             state.quality_report = quality_report

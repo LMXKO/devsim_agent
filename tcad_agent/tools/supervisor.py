@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cycles", type=int, default=3)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--no-agent-policy", action="store_true", help="Disable agent-first supervisor routing.")
     return parser.parse_args()
 
 
@@ -31,6 +32,7 @@ def main() -> None:
             execute=args.execute,
             resume=args.resume,
             max_cycles=args.max_cycles,
+            use_agent_policy=not args.no_agent_policy,
         )
         print(json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False))
         raise SystemExit(0 if state.status != SupervisorStatus.FAILED else 1)

@@ -163,6 +163,23 @@ class RunQueueTest(unittest.TestCase):
         self.assertTrue(kwargs["use_llm_decomposer"])
         self.assertFalse(kwargs["allow_llm_fallback"])
 
+    def test_default_mission_runner_is_agent_first_without_explicit_flag(self) -> None:
+        fake_state = Mock()
+        fake_state.model_dump.return_value = {"status": "planned", "mission_id": "mission_default"}
+
+        with patch("tcad_agent.mission_agent.run_mission_agent", return_value=fake_state) as runner:
+            result = default_runner_registry()["mission_agent"](
+                {
+                    "goal_text": "做 MOSFET Id-Vg 并给工程结论",
+                    "execute": False,
+                    "max_cycles": 1,
+                }
+            )
+
+        self.assertEqual(result["mission_id"], "mission_default")
+        kwargs = runner.call_args.kwargs
+        self.assertTrue(kwargs["use_llm_decomposer"])
+
     def test_worker_marks_unknown_tool_failed(self) -> None:
         enqueue_run(self.db, queue_id="q_unknown", tool_name="missing", request={})
 

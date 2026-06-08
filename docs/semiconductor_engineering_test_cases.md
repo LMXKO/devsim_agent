@@ -1,8 +1,12 @@
 # Semiconductor TCAD Engineering Test Cases
 
-These cases are realistic mission templates for validating the long-running TCAD agent UI and backend. Each case should show planning, tool execution, process logs, generated curves/data artifacts, quality checks, and an engineering conclusion in the web transcript.
+These cases are the canonical examples for the long-running TCAD agent UI and backend. They now align with the seven public TCAD source categories in `tcad_agent.public_sources`.
 
-## 1. MOS C-V Oxide QC
+Each case should show planning, tool execution or a clear capability boundary, process logs, generated artifacts when executable, quality checks, and an engineering conclusion in the web transcript.
+
+## 1. MOSCAP C-V Oxide QC
+
+Category: MOS capacitor / capacitance
 
 Goal: run MOS capacitor C-V for a process-control wafer. Use P-substrate 1e17 cm^-3, tox 5 nm, and gate sweep -2 V to 2 V with 0.25 V step.
 
@@ -13,20 +17,37 @@ Expected outputs:
 - unit, curve-shape, and physical-quality checks;
 - conclusion on oxide thickness or fixed-charge abnormality.
 
-## 2. 2D MOSFET Id-Vg Split
+## 2. MOSCAP Customer Flat-Band Shift
 
-Goal: run 2D NMOS Id-Vg at Vd = 0.05 V and 1.0 V, with Vg from 0 V to 1.2 V at 0.05 V step.
+Category: MOS capacitor / capacitance
+
+Goal: explain a customer-reported MOSCAP flat-band shift near -0.1 V using tox 5 nm and fixed oxide charge 5e11 cm^-2.
 
 Expected outputs:
 
-- linear and saturation Id-Vg curves;
+- C-V result or calibrated planning trace;
+- equivalent flat-band shift estimate;
+- fixed-charge plausibility check;
+- calibration recommendation.
+
+## 3. MOSFET Id-Vg / DIBL Split
+
+Category: MOSFET Id-Vg / Id-Vd / DIBL
+
+Goal: run 2D NMOS Id-Vg at Vd = 0.05 V and 1.0 V, with Vg from 0 V to 1.2 V, and extract Vth shift for DIBL review.
+
+Expected outputs:
+
+- low/high drain Id-Vg curves;
 - Vth, SS, Ion/Ioff, and DIBL-risk summary;
 - retry log when gate-step refinement or checkpoint reuse is needed;
 - final engineering signoff or next experiment suggestion.
 
-## 3. 2D MOSFET Id-Vd Output
+## 4. MOSFET Id-Vd Output Kink
 
-Goal: run output characteristics for Vg = 0.8 V, 1.0 V, and 1.2 V, sweeping Vd from 0 V to 1.2 V at 0.05 V step.
+Category: MOSFET Id-Vg / Id-Vd / DIBL
+
+Goal: run output characteristics for Vg = 0.8 V, 1.0 V, and 1.2 V, sweeping Vd from 0 V to 1.2 V.
 
 Expected outputs:
 
@@ -35,117 +56,9 @@ Expected outputs:
 - boundary-condition and mesh sanity report;
 - conclusion on whether the output characteristic is credible.
 
-## 4. Diode Breakdown And Leakage
+## 5. MOSFET Evidence Signoff
 
-Goal: run PN diode reverse leakage and breakdown from 0 V to -30 V, starting with 0.5 V bias step and target current threshold 1e-6 A.
-
-Expected outputs:
-
-- reverse IV curve;
-- leakage at -5 V and breakdown voltage;
-- convergence failures and repair attempts, including reduced bias-step or continuation-ramp retries;
-- quality report explaining whether the BV extraction is physically trustworthy.
-
-## 5. Schottky Barrier Calibration
-
-Goal: calibrate Schottky diode barrier height and series resistance against a golden IV curve.
-
-Expected outputs:
-
-- simulated and reference-fit curve;
-- barrier height, ideality factor, and log-current RMSE;
-- ranked best parameters;
-- abnormal points and suggested next calibration round.
-
-## 6. Mesh Convergence Signoff
-
-Goal: run coarse, nominal, and fine mesh variants for a selected PN IV or MOSFET Id-Vg metric.
-
-Expected outputs:
-
-- curve comparison across mesh levels;
-- relative metric delta;
-- pass/fail signoff against a 5% stability target;
-- mesh refinement recommendation when the metric is not stable.
-
-## 7. Ion/Leakage Pareto Optimization
-
-Goal: run a constrained multi-parameter optimization where Ion/Ioff must be at least 1e4 and reverse leakage is minimized.
-
-Expected outputs:
-
-- 2D sweep heatmap or Pareto plot;
-- top candidate process points;
-- constraint status for each candidate;
-- next adaptive-sampling plan.
-
-## 8. MOS C-V Fixed-Charge Debug
-
-Goal: debug a MOSCAP C-V curve shifted toward negative gate bias by comparing fixed oxide charge assumptions.
-
-Expected outputs:
-
-- C-V overlay;
-- flat-band shift estimate;
-- fixed-charge diagnosis;
-- Chinese engineering conclusion.
-
-## 9. MOSFET Output Kink Debug
-
-Goal: run NMOS Id-Vd output curves for a customer-reported high-Vd kink, allowing natural wording such as "output characteristic".
-
-Expected outputs:
-
-- Id-Vd curves;
-- field-alias repair trace when planner wording differs from tool schema;
-- Ron/current/kink checks;
-- conclusion with mesh/boundary-condition risk.
-
-## 10. High-Temperature Diode Leakage Triage
-
-Goal: use a 300 K reverse-IV baseline to estimate whether a PN diode needs a temperature split for leakage risk.
-
-Expected outputs:
-
-- reverse IV curve;
-- leakage at the target reverse bias;
-- retry or repair trace;
-- next temperature-split recommendation.
-
-## 11. Schottky Golden-Curve Mismatch
-
-Goal: recalibrate Schottky barrier height, ideality factor, and series resistance when the golden-curve residual is high.
-
-Expected outputs:
-
-- residual/fitted curve;
-- ranked calibrated parameters;
-- physical-quality warnings;
-- next scan range.
-
-## 12. PN IV Unit Sanity
-
-Goal: verify whether a suspicious PN IV current magnitude looks like a unit/area mistake or a physical-model issue.
-
-Expected outputs:
-
-- forward IV curve;
-- ideality factor and monotonicity check;
-- unit sanity diagnosis;
-- minimal next experiment.
-
-## 13. MOSFET Vth Shift Triage
-
-Goal: investigate a high-Vth NMOS lot using a quick 2D Id-Vg run and threshold-crossing checks.
-
-Expected outputs:
-
-- Id-Vg curve;
-- Vth/SS/Ion-Ioff metrics;
-- warning when threshold is not crossed;
-- bias/model follow-up advice.
-
-## 14. Mesh/Model Signoff
+Category: MOSFET Id-Vg / Id-Vd / DIBL
 
 Goal: run a primary MOSFET simulation and a mesh/model convergence signoff, with automatic replanning when optional convergence cases fail.
 
@@ -156,28 +69,142 @@ Expected outputs:
 - agent replan record;
 - signoff conclusion.
 
-## 15. Existing Bad-Run Repair
+## 6. Diode / SBD Breakdown And Leakage
 
-Goal: inspect the latest suspicious TCAD run, diagnose mesh/bias/solver/schema problems, and propose or execute the smallest repair.
+Category: Diode / SBD breakdown
+
+Goal: run diode or SBD reverse leakage and breakdown from 0 V to -30 V, starting with 0.5 V bias step and target current threshold 1e-6 A.
 
 Expected outputs:
 
-- history lookup;
-- repair diagnosis;
-- Chinese failure-chain summary;
-- minimal next experiment.
+- reverse IV curve;
+- leakage at -5 V and breakdown voltage;
+- convergence failures and repair attempts, including reduced bias-step or continuation-ramp retries;
+- quality report explaining whether the BV extraction is physically trustworthy.
 
-## 16-25. Additional Natural-Language Robustness Cases
+## 7. Schottky / SBD Barrier Calibration
 
-The web workbench also includes newer cases that intentionally use more human engineering language rather than strict CLI-style fields:
+Category: Diode / SBD breakdown
 
-- MOSFET DIBL split review: Id-Vg at low/high drain bias, Vth shift, DIBL risk, and automatic sweep-range repair when threshold is not crossed.
-- MOSCAP tox/Qf corner review: oxide-thickness vs fixed-charge diagnosis, Cox comparison, and equivalent flat-band shift.
-- Diode BV spec signoff: BV/leakage against a project spec, with reverse-range recommendations when breakdown is not reached.
-- PN doping/unit regression: current magnitude, ideality factor, junction/mesh sanity, and likely unit-error diagnosis.
-- MOSFET interface-trap SS review: interface trap intent, SS extraction, and model-coupling warnings when physics is metadata-only.
-- MOSFET mobility-model A/B: constant vs doping-dependent mobility comparison and model-convergence risk.
-- Diode lifetime leakage calibration: reverse leakage triage and next lifetime sweep range.
-- Schottky temperature corner: golden-curve calibration plus temperature-extension risk.
-- Latest suspicious run explain: history lookup and Chinese failure-chain/repair/risk summary.
-- MOSCAP flat-band customer curve: fixed-charge voltage-shift plausibility against a customer-reported flat-band offset.
+Goal: calibrate Schottky/SBD barrier height and series resistance against a golden IV curve.
+
+Expected outputs:
+
+- simulated and reference-fit curve;
+- barrier height, ideality factor, and log-current RMSE;
+- ranked best parameters;
+- abnormal points and suggested next calibration round.
+
+## 8. LDMOS BV/Ron Tradeoff
+
+Category: LDMOS / IGBT power devices
+
+Goal: organize a power MOSFET/LDMOS BV and specific-Ron tradeoff baseline, then identify what must be promoted from compact planning to a real high-voltage TCAD runner.
+
+Expected outputs:
+
+- BV/Ron metric table;
+- compact-baseline warning;
+- high-voltage continuation strategy;
+- runner promotion checklist.
+
+## 9. IGBT Turn-Off Tail Template
+
+Category: LDMOS / IGBT power devices
+
+Goal: define the IGBT output, blocking, lifetime, and turn-off tail-current workflow needed for future transient TCAD automation.
+
+Expected outputs:
+
+- IGBT metric list;
+- transient solver and layered-geometry gaps;
+- DC-to-transient initialization strategy;
+- implementation checklist.
+
+## 10. GaN HEMT Output / BV
+
+Category: GaN / AlGaN HEMT
+
+Goal: map GaN HEMT Id-Vg, Id-Vd, 2DEG density, and BV tasks to required polarization, trap, self-heating, and high-field models.
+
+Expected outputs:
+
+- HEMT metric table;
+- model-coupling gaps;
+- high-field convergence playbook;
+- signoff boundary.
+
+## 11. GaN HEMT Current Collapse
+
+Category: GaN / AlGaN HEMT
+
+Goal: draft a stress/recovery experiment plan for current-collapse risk, dynamic Ron ratio, trap occupancy, and gate-edge high-field sensitivity.
+
+Expected outputs:
+
+- off-state stress and recovery plan;
+- dynamic Ron metric definition;
+- trap/current-collapse model gaps;
+- planned-only risk conclusion.
+
+## 12. BJT Gummel / Beta
+
+Category: BJT Gummel / output
+
+Goal: run the BJT `physics_1d` Gummel/output workflow, then prepare correlation against public DEVSIM BJT example sources.
+
+Expected outputs:
+
+- Gummel and output-curve task plan;
+- beta, Early voltage, and leakage extraction list;
+- base/emitter and collector-bias continuation strategy;
+- public-source runner promotion steps.
+
+## 13. BJT Output / Early Voltage
+
+Category: BJT Gummel / output
+
+Goal: plan fixed-Vbe output families, Vce sweeps, collector leakage windows, and Early-voltage extraction with saved bias states.
+
+Expected outputs:
+
+- output-family plan;
+- Early-voltage extraction rule;
+- collector-leakage sanity window;
+- physics_1d evidence boundary and golden/measured correlation recommendation.
+
+## 14. FinFET / GAA DIBL-CV
+
+Category: FinFET / SOI variability
+
+Goal: define FinFET/GAA Id-Vg, Id-Vd, Cgg/Cgd, DIBL, and quantum-correction evidence needed before short-channel signoff.
+
+Expected outputs:
+
+- FinFET metric list;
+- 3D geometry and density-gradient gaps;
+- DIBL/CV extraction plan;
+- signoff boundary.
+
+## 15. SOI / FinFET Variability Campaign
+
+Category: FinFET / SOI variability
+
+Goal: design a nominal-first variability campaign for SOI/FinFET Vth distribution, random trap or geometry splits, mesh reuse, and distribution-level signoff.
+
+Expected outputs:
+
+- sample plan;
+- distribution metrics;
+- mesh/cache strategy;
+- risk conclusion that avoids single-point signoff.
+
+## Coverage Checklist
+
+- MOSFET/DIBL: cases 3, 4, 5
+- MOSCAP/capacitance: cases 1, 2
+- Diode/SBD breakdown: cases 6, 7
+- LDMOS/IGBT: cases 8, 9
+- GaN HEMT: cases 10, 11
+- BJT: cases 12, 13
+- FinFET/SOI variability: cases 14, 15

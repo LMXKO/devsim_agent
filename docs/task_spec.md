@@ -2,10 +2,10 @@
 
 `TaskSpec` is the handoff format between a user-facing planner and the autonomous TCAD execution loop.
 
-The first supported task is:
+The first low-level schema is still PN-runner based, but public examples should frame it as the diode/SBD breakdown category:
 
 ```text
-PN junction IV sweep with DEVSIM
+diode/SBD reverse leakage or BV seed sweep with DEVSIM
 ```
 
 ## Text To Task
@@ -14,15 +14,15 @@ Create a standardized task from natural language without executing it:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
-  --task-id pn_iv_text \
-  --text "PN junction IV from 0 to 5 V step 5 V min_step 1.25 V max_attempts 3 max_cycles 3" \
+  --task-id diode_leakage_text \
+  --text "diode/SBD reverse leakage from 0 to -5 V step 1 V min_step 0.25 V max_attempts 3 max_cycles 3" \
   --no-llm
 ```
 
 This writes:
 
 ```text
-runs/tasks/pn_iv_text/
+runs/tasks/diode_leakage_text/
   task.json
   task_run_state.json
 ```
@@ -35,8 +35,8 @@ Add `--execute` to run the autonomous loop:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
-  --task-id pn_iv_text_run \
-  --text "PN junction IV from 0 to 5 V step 5 V min_step 1.25 V max_attempts 3 max_cycles 3" \
+  --task-id diode_leakage_text_run \
+  --text "diode/SBD reverse leakage from 0 to -5 V step 1 V min_step 0.25 V max_attempts 3 max_cycles 3" \
   --execute \
   --no-llm
 ```
@@ -54,7 +54,7 @@ Resume an existing task by loading its `task.json`:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
-  --task runs/tasks/pn_iv_text_run/task.json \
+  --task runs/tasks/diode_leakage_text_run/task.json \
   --execute \
   --resume \
   --no-llm
@@ -67,7 +67,7 @@ python3.11 -m tcad_agent.tools.task_runner \
 - `schema_version`: currently `actsoft.tcad.task.v1`;
 - `task_id`: stable task identifier used as the loop id;
 - `intent`: currently `simulate_iv`;
-- `device`: currently `pn_junction`;
+- `device`: currently `pn_junction`, used as the low-level seed for diode/SBD leakage examples;
 - `simulator`: currently `devsim`;
 - `sweep`: start, stop, step, and minimum retry step;
 - `parameters`: PN junction length, junction position, doping, temperature, and carrier lifetimes;
@@ -84,8 +84,8 @@ See [task_planner.md](task_planner.md) for the LLM-assisted planner that produce
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
-  --task-id param_task \
-  --text "PN IV 从 0V 扫到 0.2V 步长 0.1V 器件长度 0.2um 结位置 0.08um p区掺杂 1e17 n区掺杂 2e17 温度 325K" \
+  --task-id diode_param_task \
+  --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V 器件长度 0.2um 结位置 0.08um p区掺杂 1e17 n区掺杂 2e17 温度 325K" \
   --execute \
   --no-llm
 ```

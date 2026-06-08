@@ -4,7 +4,7 @@
 
 It reads a suspicious or failed run `state.json`, builds a repair plan, selects the highest-priority executable action, applies the action patch to the original request, launches the corresponding TCAD tool again, then repeats until:
 
-- the repaired run has `quality_report.status = passed`;
+- the repaired run has `quality_report.status = passed` and its post-repair physical benchmark passes;
 - a repair action requires user confirmation;
 - the repair budget is exhausted;
 - the runner fails.
@@ -44,6 +44,9 @@ The executor can rerun:
 - `mos_capacitor_cv_sweep`;
 - `diode_breakdown_leakage_sweep`;
 - `mosfet_2d_id_sweep`.
+- `extended_device_sweep`.
+
+After each executed repair, the executor runs `physical_benchmark`. If benchmark status is `suspicious` or `failed`, it writes a benchmark-augmented state with the benchmark checks folded into `quality_report.issues`, then uses that state as the next repair input.
 
 ## Mission Agent Integration
 

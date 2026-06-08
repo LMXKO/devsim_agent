@@ -46,7 +46,7 @@ CAPABILITIES: list[dict[str, Any]] = [
     {
         "name": "Device Coverage",
         "tool": "supervisor",
-        "scope": "PN IV, MOS capacitor C-V, 2D MOSFET Id-Vg/Id-Vd, diode breakdown/leakage, Schottky calibration",
+        "scope": "MOSCAP, MOSFET/DIBL, diode/SBD breakdown, LDMOS/IGBT, GaN HEMT, BJT, FinFET/SOI variability",
     },
     {
         "name": "Quality",
@@ -79,19 +79,30 @@ SEMICONDUCTOR_TEST_CASES: list[dict[str, Any]] = [
         "expected_outputs": ["C-V 曲线", "Cox/Cmin", "平带偏移判断", "中文结论"],
     },
     {
+        "id": "moscap_flatband_customer_curve",
+        "title": "MOSCAP 客户平带点",
+        "goal": (
+            "业务任务：客户给的 MOSCAP C-V 平带点比我们仿真大概负偏 0.1V。"
+            "帮我用 tox 5nm 和 fixed oxide charge 5e11 cm^-2 做个快速解释，看看等效平带偏移是不是一个量级，最后说值不值得继续校准。"
+        ),
+        "priority": 16,
+        "max_cycles": 14,
+        "expected_outputs": ["C-V 结果", "平带偏移估算", "Qf 合理性", "校准建议"],
+    },
+    {
         "id": "mosfet_idvg_split",
-        "title": "NMOS Id-Vg 分裂",
+        "title": "MOSFET DIBL 分裂",
         "goal": (
             "业务任务：帮我看一下这个 2D NMOS 的线性区和饱和区 Id-Vg。Vd 用 0.05V 和 1.0V 两个点，"
             "Vg 大概从 0 扫到 1.2V。我要 Vth、SS、Ion/Ioff，还有 DIBL 有没有明显风险；中间收敛失败你自己调步长重跑。"
         ),
         "priority": 18,
-        "max_cycles": 14,
-        "expected_outputs": ["Id-Vg 双曲线", "Vth/SS/Ion-Ioff", "DIBL 风险", "重试过程"],
+        "max_cycles": 16,
+        "expected_outputs": ["Id-Vg split", "Vth/SS/Ion-Ioff", "DIBL 风险", "重试过程"],
     },
     {
-        "id": "mosfet_idvd_output",
-        "title": "NMOS 输出特性",
+        "id": "mosfet_output_kink_debug",
+        "title": "MOSFET 输出 kink",
         "goal": (
             "业务任务：客户要看 NMOS 输出特性，我想先固定几个 Vg，比如 0.8、1.0、1.2V，"
             "然后把 Vd 从 0 拉到 1.2V。帮我画 Id-Vd，看看 Ron、饱和电流和高压段有没有 kink，最后说这个结果能不能拿去讨论。"
@@ -101,118 +112,8 @@ SEMICONDUCTOR_TEST_CASES: list[dict[str, Any]] = [
         "expected_outputs": ["Id-Vd 曲线", "Ron/饱和电流", "kink 检查", "可信度结论"],
     },
     {
-        "id": "diode_bv_leakage",
-        "title": "二极管漏电和 BV",
-        "goal": (
-            "业务任务：项目里这颗 PN diode 反偏漏电有点悬，帮我从 0V 往 -30V 扫一下。"
-            "我关心 -5V 漏电和大概 BV，电流到 1e-6A 可以认为接近击穿；如果扫不到或者中途不收敛，你自己缩小 bias step。"
-        ),
-        "priority": 17,
-        "max_cycles": 14,
-        "expected_outputs": ["反偏 IV", "-5V 漏电", "BV 估算", "修复记录"],
-    },
-    {
-        "id": "schottky_barrier_calibration",
-        "title": "Schottky 拟合偏差",
-        "goal": (
-            "业务任务：Schottky 的 golden curve 最近对不上，帮我重新估一下 barrier height 和串联电阻。"
-            "不用只报最小误差，把 log-current 拟合残差、ideality factor 和最可疑的偏差区间也说清楚。"
-        ),
-        "priority": 15,
-        "max_cycles": 12,
-        "expected_outputs": ["拟合曲线", "barrier/RMSE", "ideality factor", "下一轮建议"],
-    },
-    {
-        "id": "mesh_convergence_signoff",
-        "title": "网格签核检查",
-        "goal": (
-            "业务任务：这个结果准备给项目会看，我不放心 mesh。帮我拿一个关键指标做 coarse、normal、fine 三档网格检查，"
-            "曲线和相对变化都列出来；如果差异超过 5%，直接告诉我现在不能签核以及应该加密哪里。"
-        ),
-        "priority": 14,
-        "max_cycles": 12,
-        "expected_outputs": ["网格对比", "相对变化", "签核判断", "加密建议"],
-    },
-    {
-        "id": "leakage_ion_pareto",
-        "title": "Ion 和漏电取舍",
-        "goal": (
-            "业务任务：我想找一个折中工艺点，Ion/Ioff 至少要到 1e4，但漏电越低越好。"
-            "你先围绕 doping 和结深做一轮扫描，给我 heatmap 或 Pareto 排名，别忘了说明前三个点各自的风险。"
-        ),
-        "priority": 13,
-        "max_cycles": 16,
-        "expected_outputs": ["二维扫描", "Pareto 候选", "约束状态", "下一轮采样"],
-    },
-    {
-        "id": "moscap_fixed_charge_debug",
-        "title": "固定电荷排查",
-        "goal": (
-            "业务任务：今天量到的 MOSCAP 平带点偏得有点明显，像是氧化层固定电荷。"
-            "帮我用 tox 5nm、P-sub 1e17 跑一下 fixed charge 为 0 和 5e11 cm^-2 的对比，看偏移量是不是同一个量级。"
-        ),
-        "priority": 19,
-        "max_cycles": 12,
-        "expected_outputs": ["C-V 叠图", "平带偏移", "Qf 判断", "中文结论"],
-    },
-    {
-        "id": "mosfet_output_kink_debug",
-        "title": "高 Vd kink 排查",
-        "goal": (
-            "业务任务：客户反馈 NMOS 在高 Vd 那段像有 kink。你先别急着打开复杂高场模型，"
-            "先跑稳定的 2D Id-Vd 基线，Vg 用 0.8/1.0/1.2V，Vd 到 1.2V；如果真的有异常，再告诉我下一步该加什么模型或网格验证。"
-        ),
-        "priority": 18,
-        "max_cycles": 14,
-        "expected_outputs": ["Id-Vd 曲线", "kink 检查", "模型建议", "工程结论"],
-    },
-    {
-        "id": "diode_high_temp_leakage",
-        "title": "高温漏电预估",
-        "goal": (
-            "业务任务：这个 PN diode 后面要看高温漏电，但我先想知道 300K baseline 靠不靠谱。"
-            "请从 0V 扫到 -10V，提取 -5V 漏电；如果曲线形状或收敛不稳，先修到可信再建议 350K/400K 怎么拆。"
-        ),
-        "priority": 16,
-        "max_cycles": 14,
-        "expected_outputs": ["反偏 IV", "-5V 漏电", "修复过程", "温度 split 建议"],
-    },
-    {
-        "id": "schottky_golden_mismatch",
-        "title": "Schottky golden 不匹配",
-        "goal": (
-            "业务任务：Schottky 的 golden curve 拟合虽然能降误差，但我怀疑参数不太物理。"
-            "帮我重新扫 barrier、ideality 和 series resistance，结果数值过了但不合理的点也要标出来。"
-        ),
-        "priority": 15,
-        "max_cycles": 12,
-        "expected_outputs": ["残差", "最佳 barrier", "物理告警", "下一轮范围"],
-    },
-    {
-        "id": "pn_iv_unit_sanity",
-        "title": "PN 电流单位可疑",
-        "goal": (
-            "业务任务：有人说 PN junction IV 电流大得不太正常，可能是面积或者单位错了。"
-            "你帮我跑 0 到 0.8V 的正向 IV，看看电流量级、ideality factor 和单调性，最后用中文判断更像单位问题还是模型问题。"
-        ),
-        "priority": 14,
-        "max_cycles": 12,
-        "expected_outputs": ["正向 IV", "ideality factor", "单位检查", "中文判断"],
-    },
-    {
-        "id": "mosfet_vth_shift_triage",
-        "title": "Vth 偏高 triage",
-        "goal": (
-            "业务任务：这批 NMOS 的 Vth 比预期高，我想先做个快速 triage。"
-            "用 2D Id-Vg，Vd 取 0.05V，Vg 从 0 到 1.2V；如果阈值电流没穿过，别硬算，告诉我 sweep 范围或模型哪里要改。"
-        ),
-        "priority": 18,
-        "max_cycles": 14,
-        "expected_outputs": ["Id-Vg 曲线", "Vth/SS", "阈值告警", "修正建议"],
-    },
-    {
         "id": "mesh_vs_model_signoff",
-        "title": "项目会签核",
+        "title": "MOSFET 签核证据",
         "goal": (
             "业务任务：这个 MOSFET 结果明天要给项目会，我需要一个能站得住的版本。"
             "请先跑主曲线，再做网格或模型可信度检查；如果中间某个 convergence case 挂了，自己重新编排，不要直接丢一个失败给我。"
@@ -222,125 +123,114 @@ SEMICONDUCTOR_TEST_CASES: list[dict[str, Any]] = [
         "expected_outputs": ["主曲线", "收敛验证", "自动再编排", "签核结论"],
     },
     {
-        "id": "existing_bad_run_repair",
-        "title": "修最近失败 run",
+        "id": "diode_bv_leakage",
+        "title": "Diode/SBD BV 漏电",
         "goal": (
-            "业务任务：你帮我看一下最近那个 suspicious 或 failed 的 TCAD run，到底是 mesh、bias step、solver，还是字段写错了。"
-            "能自动修就修，修不了就把失败链路翻译成人话，再给我一个最小复现实验。"
+            "业务任务：项目里这颗 diode/SBD 反偏漏电有点悬，帮我从 0V 往 -30V 扫一下。"
+            "我关心 -5V 漏电和大概 BV，电流到 1e-6A 可以认为接近击穿；如果扫不到或者中途不收敛，你自己缩小 bias step。"
+        ),
+        "priority": 17,
+        "max_cycles": 14,
+        "expected_outputs": ["反偏 IV", "-5V 漏电", "BV 估算", "修复记录"],
+    },
+    {
+        "id": "schottky_barrier_calibration",
+        "title": "Schottky/SBD 校准",
+        "goal": (
+            "业务任务：Schottky/SBD 的 golden curve 最近对不上，帮我重新估一下 barrier height 和串联电阻。"
+            "不用只报最小误差，把 log-current 拟合残差、ideality factor 和最可疑的偏差区间也说清楚。"
+        ),
+        "priority": 15,
+        "max_cycles": 12,
+        "expected_outputs": ["拟合曲线", "barrier/RMSE", "ideality factor", "下一轮建议"],
+    },
+    {
+        "id": "ldmos_bv_ron_tradeoff",
+        "title": "LDMOS BV/Ron 取舍",
+        "goal": (
+            "业务任务：我想先把 LDMOS 的 BV/Ron tradeoff 模板立起来。"
+            "帮我按 power MOSFET BV 和 specific Ron 的公开来源口径做规划基线，明确哪些只是 compact baseline，哪些必须升级到高压 TCAD runner 后才能签核。"
         ),
         "priority": 13,
-        "max_cycles": 12,
-        "expected_outputs": ["历史检索", "修复诊断", "中文失败链路", "最小实验"],
-    },
-    {
-        "id": "mosfet_dibl_split_review",
-        "title": "DIBL 风险复核",
-        "goal": (
-            "业务任务：短沟道这版 NMOS 我担心 DIBL 偏大。帮我用低 Vd 和高 Vd 各跑一条 Id-Vg，"
-            "大概 0.05V 对 1.0V，Vg 到 1.2V；比较两个 Vth，如果算不出来就自动调整 sweep 或说明为什么。"
-        ),
-        "priority": 18,
-        "max_cycles": 16,
-        "expected_outputs": ["Id-Vg split", "Vth shift", "DIBL 风险", "修复轨迹"],
-    },
-    {
-        "id": "moscap_tox_qf_corner_review",
-        "title": "tox 还是 Qf",
-        "goal": (
-            "业务任务：MOSCAP 这条 C-V 不确定是 tox 偏厚，还是 Qf 偏高。"
-            "你先按 tox 4.5、5、5.5nm 的思路做个 sanity，再看 fixed charge 5e11 cm^-2 的平带偏移能不能解释。"
-        ),
-        "priority": 17,
         "max_cycles": 14,
-        "expected_outputs": ["C-V sanity", "Cox 对比", "Qf 偏移", "中文判断"],
+        "expected_outputs": ["BV/Ron 指标", "compact 边界", "高压收敛策略", "runner 晋级步骤"],
     },
     {
-        "id": "diode_bv_spec_signoff",
-        "title": "二极管 BV 签核",
+        "id": "igbt_turnoff_tail",
+        "title": "IGBT 尾电流模板",
         "goal": (
-            "业务任务：项目会前帮我看一下这颗 PN diode 能不能过 BV 规格。"
-            "目标是 BV 至少到 -20V，-5V 漏电小于 1e-7A；如果扫描范围没覆盖击穿，不要说通过，直接建议下一轮反偏范围和步长。"
+            "业务任务：IGBT 关断尾电流这个方向后面要做长任务自动化。"
+            "请按输出曲线、blocking、turn-off tail current 和 lifetime sweep 梳理一个可执行/不可执行边界，给我下一步真实 TCAD runner 的最小实现清单。"
         ),
-        "priority": 17,
-        "max_cycles": 16,
-        "expected_outputs": ["BV/漏电", "规格判断", "范围建议", "风险结论"],
-    },
-    {
-        "id": "pn_doping_unit_regression",
-        "title": "掺杂单位回归",
-        "goal": (
-            "业务任务：PN junction 最近回归测试飘了，我怀疑有人把掺杂或结深单位写错。"
-            "麻烦跑一条 0 到 0.8V 的 forward IV，顺手检查结位置、网格和电流数量级，最后告诉我最像哪个输入错了。"
-        ),
-        "priority": 15,
-        "max_cycles": 12,
-        "expected_outputs": ["正向 IV", "单位 sanity", "ideality factor", "问题假设"],
-    },
-    {
-        "id": "mosfet_interface_trap_ss_review",
-        "title": "SS 像界面态",
-        "goal": (
-            "业务任务：NMOS 的 SS 比预期差，我怀疑和界面态有关。"
-            "帮我先跑一条 Id-Vg，并尝试 interface trap density 1e11 cm^-2 的 triage；如果这个模型在当前 deck 里只是记录参数没有真实耦合，要明确标出来。"
-        ),
-        "priority": 16,
+        "priority": 13,
         "max_cycles": 14,
-        "expected_outputs": ["Id-Vg", "SS", "模型耦合告警", "签核风险"],
+        "expected_outputs": ["IGBT 指标表", "瞬态缺口", "收敛 playbook", "实现清单"],
     },
     {
-        "id": "mosfet_mobility_model_ab",
-        "title": "迁移率模型 A/B",
+        "id": "gan_hemt_output_bv",
+        "title": "GaN HEMT 输出/BV",
         "goal": (
-            "业务任务：这个 NMOS 的 Id-Vg 对 mobility model 挺敏感，你帮我做个 A/B。"
-            "先用 constant mobility，再和 doping-dependent mobility 对比，看看 Vth 和 Ion/Ioff 差多少；差太大就说明模型选择风险。"
-        ),
-        "priority": 15,
-        "max_cycles": 16,
-        "expected_outputs": ["模型对比", "Vth/Ion-Ioff 差异", "收敛状态", "风险结论"],
-    },
-    {
-        "id": "diode_lifetime_leakage_calibration",
-        "title": "lifetime 漏电校准",
-        "goal": (
-            "业务任务：反偏漏电比客户数据高了差不多一个数量级，我怀疑 SRH lifetime 不对。"
-            "先跑 baseline reverse IV，抓 -5V 漏电；如果确实偏高，帮我建议 electron/hole lifetime 下一轮扫什么范围。"
+            "业务任务：GaN HEMT 输出特性和 BV 风险需要进入模板库。"
+            "帮我用公开来源整理 Id-Vg、Id-Vd、2DEG、BV 的指标和模型要求，尤其说明 polarization charge、trap 和 self-heating 现在缺在哪里。"
         ),
         "priority": 15,
         "max_cycles": 14,
-        "expected_outputs": ["反偏 IV", "漏电指标", "lifetime 假设", "下一轮范围"],
+        "expected_outputs": ["HEMT 指标", "模型缺口", "收敛策略", "签核边界"],
     },
     {
-        "id": "schottky_temperature_corner",
-        "title": "Schottky 温度 corner",
+        "id": "gan_hemt_current_collapse",
+        "title": "GaN current collapse",
         "goal": (
-            "业务任务：Schottky barrier 现在 300K 拟合还行，但客户后面会问温度 corner。"
-            "你先把 300K golden curve 校准清楚，再告诉我扩到 350K、400K 时最该盯哪些物理量和拟合风险。"
+            "业务任务：客户问 GaN HEMT current collapse，我想让 agent 先给一个压力/恢复实验计划。"
+            "请按 trap occupancy、off-state stress、dynamic Ron ratio 和高场 gate edge 风险组织步骤，明确当前只能规划不能签核。"
+        ),
+        "priority": 15,
+        "max_cycles": 14,
+        "expected_outputs": ["stress/recovery 计划", "dynamic Ron", "trap 缺口", "风险结论"],
+    },
+    {
+        "id": "bjt_gummel_gain",
+        "title": "BJT Gummel/beta",
+        "goal": (
+            "业务任务：BJT Gummel 和 beta 提取要从 compact baseline 晋级到真实 runner。"
+            "帮我用公开 DEVSIM BJT 示例做路线梳理，列出 base-emitter ramp、collector bias family、beta 噪声地板和 Early voltage 的证据要求。"
         ),
         "priority": 14,
         "max_cycles": 12,
-        "expected_outputs": ["barrier 校准", "温度建议", "ideality 检查", "下一步计划"],
+        "expected_outputs": ["Gummel 指标", "beta/Early", "公开来源", "runner 晋级步骤"],
     },
     {
-        "id": "latest_suspicious_run_explain",
-        "title": "解释最近可疑结果",
+        "id": "bjt_output_early",
+        "title": "BJT 输出 Early",
         "goal": (
-            "业务任务：我不想看一堆 JSON，帮我把最近那个 suspicious run 当成真实 debug case 复盘一下。"
-            "请自动查历史，把哪里失败、为什么质量可疑、修过什么、还剩什么风险都翻译成中文。"
+            "业务任务：BJT 输出曲线要用于 Early voltage 和 leakage review。"
+            "请把 Vbe 固定族、Vce sweep、collector leakage 和保存中间解的收敛策略写成 agent 可执行任务草案，并标注当前 compact baseline 的限制。"
         ),
-        "priority": 13,
+        "priority": 14,
         "max_cycles": 12,
-        "expected_outputs": ["历史检索", "中文复盘", "修复摘要", "剩余风险"],
+        "expected_outputs": ["输出族计划", "Early 提取", "leakage 窗口", "限制说明"],
     },
     {
-        "id": "moscap_flatband_customer_curve",
-        "title": "客户平带点偏差",
+        "id": "finfet_dibl_cv",
+        "title": "FinFET DIBL/CV",
         "goal": (
-            "业务任务：客户给的 MOSCAP C-V 平带点比我们仿真大概负偏 0.1V。"
-            "帮我用 tox 5nm 和 fixed oxide charge 5e11 cm^-2 做个快速解释，看看等效平带偏移是不是一个量级，最后说值不值得继续校准。"
+            "业务任务：FinFET/GAA 后面要看 DIBL 和 gate capacitance。"
+            "帮我按 3D MOSFET、density-gradient、Cgg/Cgd 和短沟道指标整理模板，说明哪些可以用公开 DEVSIM 资料启动，哪些还缺 3D/量子修正验证。"
         ),
-        "priority": 16,
+        "priority": 14,
         "max_cycles": 14,
-        "expected_outputs": ["C-V 结果", "平带偏移估算", "Qf 合理性", "校准建议"],
+        "expected_outputs": ["FinFET 指标", "3D/量子缺口", "DIBL/CV 计划", "签核边界"],
+    },
+    {
+        "id": "soi_finfet_variability",
+        "title": "SOI/FinFET 变异",
+        "goal": (
+            "业务任务：SOI/FinFET 这版我担心 random trap 或几何 split 导致 Vth 分布太宽。"
+            "请给一个 nominal-first、mesh reuse、样本分布签核的 variability campaign 计划，别把单点结果当成最终结论。"
+        ),
+        "priority": 14,
+        "max_cycles": 16,
+        "expected_outputs": ["Vth 分布计划", "样本策略", "mesh reuse", "签核口径"],
     },
 ]
 

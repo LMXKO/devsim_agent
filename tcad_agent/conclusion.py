@@ -329,6 +329,7 @@ def benchmark_digest(source_path: Path) -> dict[str, Any]:
             "signoff_label_zh": (data.get("summary") or {}).get("signoff_label_zh"),
             "confidence_score": (data.get("summary") or {}).get("confidence_score"),
             "credibility": (data.get("summary") or {}).get("credibility") or {},
+            "signoff_evidence_pack": (data.get("summary") or {}).get("signoff_evidence_pack") or {},
             "recommended_next_action_zh": (data.get("summary") or {}).get("recommended_next_action_zh"),
             "evidence_matrix": (data.get("summary") or {}).get("evidence_matrix") or {},
             "warning_codes": [check.get("code") for check in checks if check.get("severity") == "warning"][:5],
@@ -604,6 +605,7 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
 
     lines.extend(["", "## 物理可信度检查", ""])
     credibility = benchmark.get("credibility") or {}
+    signoff_pack = benchmark.get("signoff_evidence_pack") or {}
     if benchmark.get("failure_reason"):
         lines.append(f"- 物理 benchmark 状态：`{format_status(benchmark.get('status'))}`；失败原因：`{benchmark.get('failure_reason')}`。")
     else:
@@ -624,6 +626,23 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
             ]
         )
 
+    if signoff_pack:
+        lines.extend(["", "## 签核证据包", ""])
+        lines.extend(
+            [
+                f"- 证据包结论：`{format_value(signoff_pack.get('label_zh') or signoff_pack.get('verdict'))}`；分数：`{format_value(signoff_pack.get('score'))}`。",
+                f"- 缺失证据：`{format_value(signoff_pack.get('missing_evidence') or [])}`。",
+                f"- 阻塞原因：`{format_value(signoff_pack.get('blocking_reasons') or [])}`。",
+                f"- 风险备注：`{format_value(signoff_pack.get('risk_notes') or [])}`。",
+            ]
+        )
+        for item in signoff_pack.get("required_items") or []:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- `{item.get('name')}`：`{item.get('status')}`，required=`{format_value(item.get('required'))}`。"
+            )
+
     lines.extend(["", "## 异常点", ""])
     lines.extend([f"- {line}" for line in anomalies] or ["- 未发现明显的失败、可疑、缺失目标值、离群或非单调异常。"])
 
@@ -638,6 +657,23 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
         for index, package in enumerate(next_packages, start=1):
             lines.append(f"{index}. `{package['title']}` 使用 `{package['tool_name']}`：{package['rationale']}")
             lines.append(f"   请求提示：`{format_value(package.get('request_hint'))}`")
+        lines.extend(["", "## 下一轮可执行请求", ""])
+        executable_requests = [
+            {
+                "tool_name": package.get("tool_name"),
+                "title": package.get("title"),
+                "request_hint": package.get("request_hint") or {},
+            }
+            for package in next_packages
+        ]
+        lines.append("```json")
+        lines.append(json.dumps(executable_requests, ensure_ascii=False, indent=2))
+        lines.append("```")
+    if signoff_pack.get("next_actions"):
+        lines.extend(["", "## 签核补证动作", ""])
+        lines.append("```json")
+        lines.append(json.dumps(signoff_pack.get("next_actions"), ensure_ascii=False, indent=2))
+        lines.append("```")
     lines.extend(["", f"来源状态：`{source_path}`", ""])
     return "\n".join(lines)
 

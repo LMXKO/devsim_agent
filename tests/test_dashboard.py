@@ -22,7 +22,7 @@ class DashboardTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def write_final_state(self, name: str, current: float) -> Path:
+    def write_final_state(self, name: str, current: float, *, lineage: bool = False) -> Path:
         run_dir = self.root / "runs" / name
         plot = run_dir / "iv_curve.png"
         csv = run_dir / "iv_sweep.csv"
@@ -32,26 +32,72 @@ class DashboardTest(unittest.TestCase):
         csv.write_text("voltage,current\n0,0\n", encoding="utf-8")
         log.write_text("completed\n", encoding="utf-8")
         state_path = run_dir / "state.json"
+        artifacts = {
+            "plot": str(plot),
+            "csv": str(csv),
+            "log": str(log),
+        }
+        state = {
+            "final_summary": {
+                "artifacts": artifacts,
+                "final_total_current_a": current,
+                "points": 3,
+            },
+            "quality_report": {
+                "metrics": {
+                    "final_total_current_a": current,
+                    "max_abs_current_a": abs(current),
+                    "points": 3,
+                }
+            },
+        }
+        if lineage:
+            overlay = run_dir / "baseline_mutation_overlay.svg"
+            diff = run_dir / "semantic.diff"
+            history = run_dir / "deck_patch_history.json"
+            overlay.write_text("<svg>overlay</svg>", encoding="utf-8")
+            diff.write_text("--- deck\n+++ deck\n", encoding="utf-8")
+            history.write_text("[]", encoding="utf-8")
+            artifacts.update(
+                {
+                    "baseline_mutation_overlay": str(overlay),
+                    "semantic_deck_diff": str(diff),
+                    "deck_patch_history": str(history),
+                }
+            )
+            state.update(
+                {
+                    "request": {
+                        "active_deck_mutation": {
+                            "target": "field_plate",
+                            "reason": "vary termination field plate",
+                        }
+                    },
+                    "repair_context": {
+                        "action_name": "agent_refine_field_plate",
+                        "recommended_next_target": "field_plate",
+                        "agent_observation_summary": "baseline field peak is high near the termination.",
+                        "agent_hypothesis_zh": "field plate length is the cleanest next lever.",
+                        "agent_tool_plan": [
+                            {
+                                "tool": "curve_diagnostics.overlay",
+                                "expected_evidence": "leakage and field peak both decrease",
+                            }
+                        ],
+                        "agent_safety_review": {
+                            "risk_level": "medium",
+                            "constraints_checked": ["BV", "Ron", "field", "leakage"],
+                        },
+                    },
+                    "mutation_effect_analysis": {
+                        "decision": "continue_same_target",
+                        "rationale": "field and leakage improved without a detected hard tradeoff",
+                    },
+                }
+            )
         write_json(
             state_path,
-            {
-                "final_summary": {
-                    "artifacts": {
-                        "plot": str(plot),
-                        "csv": str(csv),
-                        "log": str(log),
-                    },
-                    "final_total_current_a": current,
-                    "points": 3,
-                },
-                "quality_report": {
-                    "metrics": {
-                        "final_total_current_a": current,
-                        "max_abs_current_a": abs(current),
-                        "points": 3,
-                    }
-                },
-            },
+            state,
         )
         return state_path
 
@@ -264,6 +310,51 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("heatmap-chart", html)
         self.assertIn("parameters.junction_um", html)
         self.assertIn("case_002", html)
+
+    def test_dashboard_renders_agent_deck_patch_lineage(self) -> None:
+        final_state = self.write_final_state("lineage_best", 2.0e-6, lineage=True)
+        sweep_dir = self.root / "lineage_sweep"
+        write_json(
+            sweep_dir / "sweep_state.json",
+            {
+                "tool_name": "parameter_sweep",
+                "status": "completed",
+                "sweep_id": "lineage_dash",
+                "axes": [{"path": "power_mos_field_plate_length_um", "values": [2.1]}],
+                "objective": {"metric_path": "quality_report.metrics.leakage_current_a", "direction": "minimize"},
+                "cases": [
+                    {
+                        "index": 1,
+                        "task_id": "case_agent",
+                        "values": {"power_mos_field_plate_length_um": 2.1},
+                        "status": "completed",
+                        "quality_status": "suspicious",
+                        "objective_value": 2.0e-6,
+                        "final_state_path": str(final_state),
+                    }
+                ],
+                "best_case": {
+                    "index": 1,
+                    "task_id": "case_agent",
+                    "values": {"power_mos_field_plate_length_um": 2.1},
+                    "status": "completed",
+                    "quality_status": "suspicious",
+                    "objective_value": 2.0e-6,
+                    "final_state_path": str(final_state),
+                },
+            },
+        )
+
+        result = generate_experiment_dashboard(sweep_dir)
+
+        html = Path(result.dashboard_path).read_text(encoding="utf-8")
+        self.assertIn("Deck Patch Lineage", html)
+        self.assertIn("curve overlay", html)
+        self.assertIn("baseline_mutation_overlay.svg", html)
+        self.assertIn("baseline field peak is high near the termination", html)
+        self.assertIn("field plate length is the cleanest next lever", html)
+        self.assertIn("curve_diagnostics.overlay", html)
+        self.assertIn("risk_level: medium", html)
 
 
 if __name__ == "__main__":

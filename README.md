@@ -10,49 +10,75 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 
 - Accepts semiconductor simulation tasks from a lightweight web UI.
 - Parses natural-language engineering intent into device family, analyses, metrics, evidence requirements, risk level, and executable request hints.
+- Converts natural language into a structured `TCADSpec` containing geometry, materials, models, bias hints, constraints, evidence policy, missing inputs, and signoff workflow.
 - Decomposes natural-language goals into durable mission steps.
-- Runs a long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
+- Runs an agent-first long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
-- Retries selected failures with TCAD-specific repair strategies such as smaller bias steps.
+- Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, and deterministic fallback actions.
+- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies semantic deck patches, and emits diffs.
+- Compares baseline and mutation curves with shape features, leakage/BV brackets, field peaks, tradeoff checks, and overlay artifacts.
+- Supports deck mutation schemas for field plates, drift doping, lifetime, guard rings, junction depth, oxide thickness, implant dose, trench corner radius, trap density, and region-specific lifetime.
 - Scores physical credibility with unit, curve-shape, model-coupling, convergence, and golden/measured evidence checks.
-- Displays process logs, plots, metrics, quality checks, replanning decisions, and engineering conclusions in the page.
+- Builds a signoff evidence pack that gates quality, artifacts, structured deck/spec, benchmark, convergence, golden/measured comparison, and capability boundary.
+- Displays process logs, plots, metrics, quality checks, deck patch lineage, agent reasoning, replanning decisions, and engineering conclusions in the page.
 - Supports queue/worker recovery so long runs can be resumed after interruption.
 
 ## Current Simulation Scope
 
-The implemented examples are intentionally practical rather than broad:
+The showcased examples are aligned to the seven public TCAD source categories:
 
-- PN junction forward/reverse IV;
-- diode leakage and breakdown-style reverse sweep;
-- MOS capacitor C-V;
-- 2D MOSFET Id-Vg and Id-Vd;
-- Schottky diode compact and DEVSIM-backed calibration paths;
-- compact baseline routes for BJT, JFET, power MOSFET, and photodiode tasks;
-- planned industrial templates for FinFET/GAA, SiC power diode, GaN HEMT, and IGBT workflows;
+- MOS capacitor C-V and flat-band / fixed-charge review;
+- 2D MOSFET Id-Vg, Id-Vd, DIBL, and convergence evidence;
+- diode/SBD reverse leakage, BV, and Schottky calibration;
+- LDMOS / power-MOSFET BV/Ron with `physics_1d` field/avalanche evidence, plus IGBT transient-promotion planning;
+- GaN / AlGaN HEMT output, BV, polarization/trap, and current-collapse planning;
+- BJT Gummel/output, beta, Early-voltage, output-family, and collector-leakage evidence;
+- FinFET/GAA or SOI variability, DIBL, capacitance, and quantum-correction planning;
 - parameter sweep, multi-dimensional optimization, convergence checks, benchmark checks, and report generation.
 
 This is not a sign-off TCAD replacement. Treat results as automation evidence that still needs engineering review, model calibration, and mesh/physics validation.
+
+The capability catalog is deliberately split into three levels:
+
+- `executable`: a real runnable TCAD-backed path exists and can produce engineering evidence;
+- `compact_baseline`: a deterministic compact/planning route exists, but it is not final TCAD signoff evidence;
+- `planned`: the device template is known, but the runner, quality rules, and benchmark evidence must be implemented before execution.
+
+Executable templates also expose `tcad_fidelity` and `signoff_workflow`. Current executable evidence paths are PN 1D drift-diffusion, MOS C-V, diode reverse IV/BV, 2D MOSFET Id sweeps, Schottky 1D thermionic-contact IV, BJT Gummel/output `physics_1d`, and power MOSFET/LDMOS BV/Ron `physics_1d`. Remaining advanced industrial devices stay planned until promoted with runner, quality rules, and benchmark evidence.
 
 ## Architecture
 
 ```text
 Natural-language task
-  -> goal decomposer
+  -> agent-first goal decomposer
   -> engineering-intent parser
   -> mission agent
   -> long-horizon control policy
   -> run queue / worker
-  -> supervisor
+  -> agent-first supervisor
   -> TCAD tool runner
-  -> quality, metrics, convergence, repair
+  -> quality, metrics, curve diagnostics, convergence, repair
+  -> deck IR / semantic patch / mutation overlay
   -> physical credibility assessment
   -> checkpoint / replan / resume
   -> engineering conclusion
   -> web UI
 ```
 
-LLM use is optional. Without an LLM, deterministic planners and validators still run. With an OpenAI-compatible model configured, the agent can use it for freer goal decomposition, diagnosis, replanning, and conclusion summarization.
+The default control path is agent-first where an LLM is configured, with deterministic planners and validators used as safety fallbacks. Without an LLM, the same checkpoints, schemas, quality gates, and deterministic fallback actions still run. With an OpenAI-compatible model configured, the agent can use it for freer goal decomposition, diagnosis, repair-action selection, replanning, and conclusion summarization.
+
+### Agent-Driven Repair Loop
+
+The repair loop is designed around structured agent decisions rather than only fixed rules:
+
+- `mission_agent` decomposes the goal and routes work through the supervisor, convergence checks, golden-curve comparison, physical benchmark, repair planning, and repair execution.
+- `supervisor` can let an agent override the deterministic next action, while rejecting unsupported tool kinds or shell commands.
+- `repair_agent` observes the run state, quality issues, metrics, curve diagnostics, deck mutations, physical benchmark context, and recent repair case memory before choosing one next action.
+- `repair_executor` applies the selected request/deck patch, records the agent observation, hypothesis, tool plan, safety review, benchmark result, mutation-effect analysis, and next target.
+- High-risk geometry/process/model changes require confirmation unless explicitly allowed.
+
+Each repair attempt can produce `deck_patch_history.json`, `tcad_deck_ir.json`, semantic patch diffs, patched source decks, `baseline_mutation_overlay.svg`, physical benchmark evidence, and a case-memory record for future agent context.
 
 ## Install
 
@@ -79,7 +105,7 @@ Open:
 http://127.0.0.1:8766/
 ```
 
-The normal workflow is: type a natural-language TCAD task at the bottom, submit it, and watch the mission steps, tool calls, logs, plots, metrics, replanning decisions, and final conclusion appear above.
+The normal workflow is: type a natural-language TCAD task at the bottom, submit it, and watch the mission steps, tool calls, logs, plots, metrics, deck patch lineage, replanning decisions, and final conclusion appear above.
 
 ## Configure An LLM
 
@@ -98,10 +124,10 @@ Saved web settings live in `runs/llm_settings.json`, which is ignored by git.
 
 ## CLI Examples
 
-Run a PN junction IV sweep:
+List the seven public TCAD source categories:
 
 ```bash
-python3.11 -m tcad_agent.tools.pn_junction_iv --stop 0.5 --step 0.1
+python3.11 -m tcad_agent.tools.device_templates sources --kind categories
 ```
 
 Run a MOS capacitor C-V task:
@@ -125,6 +151,33 @@ python3.11 -m tcad_agent.tools.mosfet_2d_id \
   --idvd-gate-voltage 1.2
 ```
 
+Run a diode/SBD reverse leakage and BV task:
+
+```bash
+python3.11 -m tcad_agent.tools.diode_breakdown \
+  --start 0 \
+  --stop -5 \
+  --step 0.5 \
+  --breakdown-current-a 1e-6 \
+  --require-breakdown
+```
+
+Route extended seven-category templates:
+
+```bash
+python3.11 -m tcad_agent.tools.device_templates route \
+  --goal "GaN HEMT 输出特性和 current collapse 风险"
+
+python3.11 -m tcad_agent.tools.device_templates route \
+  --goal "LDMOS BV 和 Ron tradeoff，检查 impact ionization、场峰值和 Ron 分解"
+
+python3.11 -m tcad_agent.tools.device_templates route \
+  --goal "BJT Gummel plot、beta 和 Early voltage 提取"
+
+python3.11 -m tcad_agent.tools.device_templates route \
+  --goal "FinFET DIBL 和 Cgg/Cgd variability 签核计划"
+```
+
 Run a long-horizon mission:
 
 ```bash
@@ -132,6 +185,24 @@ python3.11 -m tcad_agent.tools.mission_agent \
   --goal "帮我看一下 2D NMOS 的线性区和饱和区 Id-Vg，提取 Vth、SS、Ion/Ioff 和 DIBL，失败时自动修复并给结论" \
   --use-llm \
   --execute
+```
+
+Plan or execute a repair with the agent policy:
+
+```bash
+python3.11 -m tcad_agent.tools.repair_executor \
+  --state path/to/state.json \
+  --use-agent-policy \
+  --max-rounds 3
+
+python3.11 -m tcad_agent.tools.repair_agent --state path/to/state.json
+```
+
+Generate an engineer-readable dashboard or report from a sweep/optimization state:
+
+```bash
+python3.11 -m tcad_agent.tools.experiment_dashboard --state path/to/optimization_state.json
+python3.11 -m tcad_agent.tools.experiment_report --state path/to/optimization_state.json
 ```
 
 Run the queue worker through the web app when you want browser-based long jobs.
@@ -148,8 +219,14 @@ tcad_agent/
   run_queue.py
   engineering_intent.py
   long_horizon_agent.py
+  deck_ir.py
+  deck_writer.py
+  curve_diagnostics.py
+  repair_agent.py
   repair_strategy.py
+  repair_executor.py
   physical_quality.py
+  physical_benchmark.py
 docs/             design notes and tool documentation
 tests/            unit and integration-style tests
 requirements.txt  Python dependencies
@@ -160,7 +237,7 @@ Generated data is written under `runs/` and should not be committed.
 ## Test
 
 ```bash
-python3.11 -m unittest discover
+python3.11 -m pytest -q
 ```
 
 Some tests execute DEVSIM examples and may take longer than pure unit tests.
@@ -182,8 +259,8 @@ This project is released under the MIT License. See [LICENSE](LICENSE).
 
 ## Roadmap
 
-- Broaden TCAD task coverage and add stronger physical-quality checks.
-- Add more robust mesh, continuation, solver, and model-switch repair strategies.
-- Add richer experiment search and comparison across long-running missions.
+- Broaden executable TCAD coverage for planned industrial device templates.
+- Continue improving agent repair playbooks with richer measured/golden-curve grounding and more realistic Pareto policies.
+- Add richer experiment search, comparison, and repair-case retrieval across long-running missions.
 - Add adapters for user-provided licensed commercial TCAD installations without bundling proprietary content.
 - Improve conclusion generation so final reports are concise, evidence-linked, and useful to device engineers.
