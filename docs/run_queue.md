@@ -2,7 +2,7 @@
 
 `tcad_agent.tools.run_queue` is the durable experiment-management layer for long-running TCAD work.
 
-It stores queued runs in SQLite, leases work to workers, and keeps enough state to resume after process crashes or machine restarts. Built-in executable items include `supervisor` and `mission_agent`, so a queue entry can represent either one delegated TCAD action or a long-horizon autonomous mission.
+It stores queued runs in SQLite, leases work to workers, and keeps enough state to resume after process crashes or machine restarts. Built-in executable items include `supervisor`, `mission_agent`, and `autonomous_devsim_agent`, so a queue entry can represent either one delegated TCAD action or a long-horizon DEVSIM agent session.
 
 ## What It Provides
 
@@ -36,6 +36,22 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
   --tool supervisor \
   --request-json '{"goal_text":"做 PN 二极管 breakdown 从 0V 到 -5V step 0.5V","max_cycles":3,"execute":true}'
 ```
+
+## Enqueue An Autonomous DEVSIM Agent
+
+Use `autonomous_devsim_agent` when the queue item should directly keep operating DEVSIM-backed tools over multiple steps: observe state, choose a tool, run or repair it, benchmark evidence, generate a conclusion, and continue until done or blocked for confirmation.
+
+```bash
+python3.11 -m tcad_agent.tools.run_queue enqueue \
+  --queue-id q_devsim_agent_pn \
+  --tool autonomous_devsim_agent \
+  --request-json '{"goal_text":"自主跑 PN IV，发现曲线或收敛问题就修复，最后给工程结论","initial_tool_name":"pn_junction_iv_sweep","initial_request":{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"},"execute":true,"max_steps":8}' \
+  --priority 30 \
+  --max-attempts 2 \
+  --budget-seconds 21600
+```
+
+This is the closest queue-level entry point for the product goal: an AI agent that can keep operating DEVSIM for a long task instead of only launching one fixed runner.
 
 ## Enqueue A Long-Horizon Mission
 

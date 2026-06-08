@@ -550,9 +550,22 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
         value = result.get(key)
         if value:
             return str(value)
-    run_dir = result.get("run_dir") or result.get("supervisor_dir") or result.get("convergence_dir") or result.get("mission_dir")
+    run_dir = (
+        result.get("run_dir")
+        or result.get("supervisor_dir")
+        or result.get("convergence_dir")
+        or result.get("mission_dir")
+        or result.get("agent_dir")
+    )
     if run_dir:
-        for name in ["state.json", "supervisor_state.json", "mission_state.json", "sweep_state.json", "optimization_state.json"]:
+        for name in [
+            "state.json",
+            "supervisor_state.json",
+            "mission_state.json",
+            "autonomous_devsim_agent_state.json",
+            "sweep_state.json",
+            "optimization_state.json",
+        ]:
             candidate = Path(run_dir) / name
             if candidate.exists():
                 return str(candidate.resolve())
@@ -561,6 +574,8 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
 
 def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.adaptive_optimizer import AdaptiveOptimizationRequest, run_adaptive_optimization
+    from tcad_agent.autonomous_devsim_agent import AutonomousDevsimRequest, run_autonomous_devsim_agent
+    from tcad_agent.conclusion import generate_experiment_conclusion
     from tcad_agent.engineering_objectives import (
         EngineeringConstraint,
         EngineeringObjective,
@@ -571,6 +586,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.multidim_optimizer import MultiDimOptimizationRequest, run_multidim_optimization
     from tcad_agent.parameter_sweep import ParameterSweepRequest, run_parameter_sweep
     from tcad_agent.physical_benchmark import run_physical_benchmark
+    from tcad_agent.dashboard import generate_experiment_dashboard
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
@@ -713,7 +729,21 @@ def default_runner_registry() -> dict[str, Runner]:
         output_path = Path(str(request["output_path"])) if request.get("output_path") else None
         return generate_experiment_report(Path(str(source)), output_path).model_dump(mode="json")
 
-    return {
+    def experiment_dashboard_runner(request: dict[str, Any]) -> dict[str, Any]:
+        source = request.get("source") or request.get("state") or request.get("source_state_path")
+        if not source:
+            raise ValueError("experiment dashboard queue item requires source/state")
+        output_path = Path(str(request["output_path"])) if request.get("output_path") else None
+        return generate_experiment_dashboard(Path(str(source)), output_path).model_dump(mode="json")
+
+    def experiment_conclusion_runner(request: dict[str, Any]) -> dict[str, Any]:
+        source = request.get("source") or request.get("state") or request.get("source_state_path")
+        if not source:
+            raise ValueError("experiment conclusion queue item requires source/state")
+        output_path = Path(str(request["output_path"])) if request.get("output_path") else None
+        return generate_experiment_conclusion(Path(str(source)), output_path).model_dump(mode="json")
+
+    registry: dict[str, Runner] = {
         "supervisor": supervisor_runner,
         "mission_agent": mission_runner,
         "pn_junction_iv_sweep": lambda request: result_to_dict(
@@ -741,7 +771,14 @@ def default_runner_registry() -> dict[str, Runner]:
         "engineering_objectives": engineering_objectives_runner,
         "physical_benchmark": physical_benchmark_runner,
         "experiment_report": experiment_report_runner,
+        "experiment_dashboard": experiment_dashboard_runner,
+        "experiment_conclusion": experiment_conclusion_runner,
     }
+    registry["autonomous_devsim_agent"] = lambda request: run_autonomous_devsim_agent(
+        AutonomousDevsimRequest.model_validate(request),
+        runner_registry=registry,
+    ).model_dump(mode="json")
+    return registry
 
 
 def result_to_dict(result: Any) -> dict[str, Any]:

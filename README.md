@@ -13,6 +13,7 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Converts natural language into a structured `TCADSpec` containing geometry, materials, models, bias hints, constraints, evidence policy, missing inputs, and signoff workflow.
 - Decomposes natural-language goals into durable mission steps.
 - Runs an agent-first long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
+- Provides a long-running `autonomous_devsim_agent` runtime that repeatedly chooses tools, runs DEVSIM-backed tasks, inspects state/metrics/artifacts, repairs suspicious results, benchmarks evidence, and writes conclusions.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, and deterministic fallback actions.
@@ -51,6 +52,7 @@ Executable templates also expose `tcad_fidelity` and `signoff_workflow`. Current
 
 ```text
 Natural-language task
+  -> autonomous DEVSIM agent runtime
   -> agent-first goal decomposer
   -> engineering-intent parser
   -> mission agent
@@ -70,8 +72,9 @@ The default control path is agent-first where an LLM is configured, with determi
 
 ### Agent-Driven Repair Loop
 
-The repair loop is designed around structured agent decisions rather than only fixed rules:
+The long-running DEVSIM agent and repair loop are designed around structured agent decisions rather than only fixed rules:
 
+- `autonomous_devsim_agent` is the direct long-horizon runtime for “run DEVSIM, observe, decide, repair, benchmark, report, continue”.
 - `mission_agent` decomposes the goal and routes work through the supervisor, convergence checks, golden-curve comparison, physical benchmark, repair planning, and repair execution.
 - `supervisor` can let an agent override the deterministic next action, while rejecting unsupported tool kinds or shell commands.
 - `repair_agent` observes the run state, quality issues, metrics, curve diagnostics, deck mutations, physical benchmark context, and recent repair case memory before choosing one next action.
@@ -187,6 +190,16 @@ python3.11 -m tcad_agent.tools.mission_agent \
   --execute
 ```
 
+Run the autonomous DEVSIM agent runtime directly:
+
+```bash
+python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+  --goal "自主跑 PN IV，发现曲线或收敛问题就修复，最后给工程结论" \
+  --initial-tool-name pn_junction_iv_sweep \
+  --initial-request-json '{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"}' \
+  --execute
+```
+
 Plan or execute a repair with the agent policy:
 
 ```bash
@@ -214,6 +227,7 @@ tcad_agent/
   examples/       DEVSIM-backed runnable device examples
   tools/          agent-callable CLI tools
   web_app.py      lightweight browser workbench
+  autonomous_devsim_agent.py
   mission_agent.py
   supervisor.py
   run_queue.py

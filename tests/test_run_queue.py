@@ -180,6 +180,24 @@ class RunQueueTest(unittest.TestCase):
         kwargs = runner.call_args.kwargs
         self.assertTrue(kwargs["use_llm_decomposer"])
 
+    def test_default_autonomous_devsim_agent_runner_is_registered(self) -> None:
+        fake_state = Mock()
+        fake_state.model_dump.return_value = {"status": "planned", "agent_id": "agent_unit"}
+
+        with patch("tcad_agent.autonomous_devsim_agent.run_autonomous_devsim_agent", return_value=fake_state) as runner:
+            result = default_runner_registry()["autonomous_devsim_agent"](
+                {
+                    "goal_text": "自主跑 PN IV，失败时修复并给结论",
+                    "execute": False,
+                    "max_steps": 1,
+                    "use_llm": False,
+                }
+            )
+
+        self.assertEqual(result["agent_id"], "agent_unit")
+        self.assertEqual(runner.call_args.args[0].goal_text, "自主跑 PN IV，失败时修复并给结论")
+        self.assertIn("runner_registry", runner.call_args.kwargs)
+
     def test_worker_marks_unknown_tool_failed(self) -> None:
         enqueue_run(self.db, queue_id="q_unknown", tool_name="missing", request={})
 
