@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-state-path", default=None)
     parser.add_argument("--source-deck-path", default=None)
     parser.add_argument("--deck-patches-json", default=None, help="JSON list of semantic deck patches.")
+    parser.add_argument("--allow-unverified-deck-patch-execution", action="store_true")
     parser.add_argument("--objectives-json", default=None, help="JSON list of engineering objectives.")
     parser.add_argument("--constraints-json", default=None, help="JSON list of engineering constraints.")
     parser.add_argument("--cancel-file", type=Path, default=None)
@@ -35,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-user-confirmation-actions", action="store_true")
     parser.add_argument("--supervisor-max-cycles", type=int, default=3)
     parser.add_argument("--repair-max-rounds", type=int, default=3)
+    parser.add_argument("--max-mutation-refinements", type=int, default=1)
+    parser.add_argument("--no-auto-mutation-refinement", action="store_true")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--no-dashboard", action="store_true")
     parser.add_argument("--require-capability-audit", action="store_true")
@@ -78,6 +81,7 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         source_state_path=args.source_state_path,
         source_deck_path=args.source_deck_path,
         deck_patches=deck_patches,
+        allow_unverified_deck_patch_execution=args.allow_unverified_deck_patch_execution,
         objectives=objectives,
         constraints=constraints,
         cancel_file=args.cancel_file,
@@ -88,6 +92,8 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         allow_user_confirmation_actions=args.allow_user_confirmation_actions,
         supervisor_max_cycles=args.supervisor_max_cycles,
         repair_max_rounds=args.repair_max_rounds,
+        max_mutation_refinements=args.max_mutation_refinements,
+        auto_execute_mutation_refinements=not args.no_auto_mutation_refinement,
         generate_report=not args.no_report,
         generate_dashboard=not args.no_dashboard,
         require_capability_audit=args.require_capability_audit,

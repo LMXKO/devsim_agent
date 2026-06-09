@@ -87,6 +87,9 @@ class DeckPatchResult(BaseModel):
     ir_path: str | None = None
     applied_patches: list[dict[str, Any]] = Field(default_factory=list)
     unapplied_patches: list[dict[str, Any]] = Field(default_factory=list)
+    verified_patches: list[dict[str, Any]] = Field(default_factory=list)
+    unverified_patches: list[dict[str, Any]] = Field(default_factory=list)
+    all_patches_verified: bool = False
     unified_diff: str = ""
     patched_source: str | None = None
     ir: DeckSourceIR | None = None
@@ -262,7 +265,66 @@ def patch_candidates(patch: dict[str, Any]) -> set[str]:
     for key in ["name", "target", "source_mutation"]:
         if patch.get(key):
             candidates.add(normalized_name(str(patch[key])))
+    candidates.update(semantic_aliases_for_patch(patch, candidates))
     return {candidate for candidate in candidates if candidate and candidate not in {"geometry", "mesh", "doping", "physics_models", "model"}}
+
+
+def semantic_aliases_for_patch(patch: dict[str, Any], candidates: set[str]) -> set[str]:
+    combined = " ".join(
+        [
+            *(sorted(candidates)),
+            normalized_name(str(patch.get("deck_path") or "")),
+            normalized_name(str(patch.get("request_path") or "")),
+            normalized_name(str(patch.get("target") or "")),
+            normalized_name(str(patch.get("source_mutation") or "")),
+        ]
+    )
+    aliases: set[str] = set()
+    if any(token in combined for token in ["doping", "donor", "acceptor", "implant"]):
+        aliases.update(
+            {
+                "netdoping",
+                "net_doping",
+                "donor",
+                "donors",
+                "acceptor",
+                "acceptors",
+                "doping",
+                "concentration",
+                "n_doping",
+                "p_doping",
+                "profile",
+                "dose",
+            }
+        )
+    if "field_plate" in combined or "fieldplate" in combined:
+        aliases.update({"fieldplate", "field_plate", "field_plate_length", "field_plate_length_um", "plate_length"})
+    if "guard_ring" in combined or "guardring" in combined:
+        aliases.update({"guardring", "guard_ring", "guard_ring_spacing", "guard_ring_spacing_um", "termination_spacing"})
+    if "junction" in combined:
+        aliases.update({"junction", "junction_depth", "junction_depth_um", "junction_spacing", "junction_spacing_um"})
+    if "oxide" in combined or "tox" in combined:
+        aliases.update({"tox", "tox_nm", "oxide", "oxide_thickness", "oxide_thickness_nm", "gate_oxide", "gate_oxide_thickness"})
+    if "lifetime" in combined or "srh" in combined:
+        aliases.update(
+            {
+                "lifetime",
+                "carrier_lifetime",
+                "carrier_lifetime_s",
+                "electron_lifetime",
+                "electron_lifetime_s",
+                "hole_lifetime",
+                "hole_lifetime_s",
+                "srh_lifetime",
+                "taun",
+                "taup",
+            }
+        )
+    if "trap" in combined:
+        aliases.update({"trap", "traps", "trap_density", "trap_density_cm2", "interface_trap", "interface_trap_density"})
+    if "trench" in combined or "corner_radius" in combined:
+        aliases.update({"trench", "trench_radius", "corner_radius", "corner_radius_um", "trench_corner_radius"})
+    return aliases
 
 
 def patch_section(patch: dict[str, Any]) -> str | None:
@@ -418,6 +480,8 @@ def apply_semantic_deck_patch(
                 "reason": reason,
                 "original": original,
                 "replacement": text,
+                "effective": True,
+                "semantic_status": "verified_existing_binding",
             }
         )
 
@@ -432,6 +496,8 @@ def apply_semantic_deck_patch(
                     "reason": "fallback_append",
                     "original": None,
                     "replacement": normalized_name(str(patch.get("deck_path") or patch.get("request_path") or "patched_value")),
+                    "effective": False,
+                    "semantic_status": "unverified_fallback_append",
                 }
             )
 
@@ -443,10 +509,18 @@ def apply_semantic_deck_patch(
             tofile=(source_path or "deck.py") + ".patched",
         )
     )
+    verified = [patch for patch in applied if patch.get("effective")]
+    unverified = [
+        {**patch, "semantic_status": "unverified_fallback_append"}
+        for patch in unapplied
+    ]
     return DeckPatchResult(
         source_path=source_path,
         applied_patches=applied,
         unapplied_patches=unapplied,
+        verified_patches=verified,
+        unverified_patches=unverified,
+        all_patches_verified=not unapplied and len(verified) == len(patch_list),
         unified_diff=diff,
         patched_source=patched,
         ir=parse_devsim_deck_source(patched, source_path=source_path),

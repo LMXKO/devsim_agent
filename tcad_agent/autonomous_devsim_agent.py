@@ -10,11 +10,12 @@ from typing import Any, Callable, Protocol
 
 from pydantic import BaseModel, Field
 
-from tcad_agent.curve_diagnostics import curve_shape_diagnostic, load_curve_rows
+from tcad_agent.curve_diagnostics import compare_state_mutation_effect, curve_shape_diagnostic, load_curve_rows
 from tcad_agent.deck_ir import parse_devsim_deck_file, write_semantic_deck_patch_artifacts
 from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
 from tcad_agent.llm import LLMClient, LLMConfig
+from tcad_agent.mutation_refinement import build_mutation_refinement_plan
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.repair_executor import run_repair_executor
 from tcad_agent.task_planner import parse_json_object
@@ -84,6 +85,7 @@ class DevsimAgentActionKind(str, Enum):
     INGEST_DECK = "ingest_deck"
     APPLY_DECK_PATCH = "apply_deck_patch"
     RUN_USER_DECK = "run_user_deck"
+    PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
     GENERATE_REPORT = "generate_report"
     GENERATE_DASHBOARD = "generate_dashboard"
     STOP_SUCCESS = "stop_success"
@@ -103,6 +105,7 @@ class AutonomousDevsimRequest(BaseModel):
     source_state_path: str | None = None
     source_deck_path: str | None = None
     deck_patches: list[dict[str, Any]] = Field(default_factory=list)
+    allow_unverified_deck_patch_execution: bool = False
     objectives: list[EngineeringObjective] = Field(default_factory=list)
     constraints: list[EngineeringConstraint] = Field(default_factory=list)
     cancel_file: Path | None = None
@@ -113,6 +116,8 @@ class AutonomousDevsimRequest(BaseModel):
     allow_user_confirmation_actions: bool = False
     supervisor_max_cycles: int = Field(default=3, ge=1)
     repair_max_rounds: int = Field(default=3, ge=1)
+    max_mutation_refinements: int = Field(default=1, ge=0)
+    auto_execute_mutation_refinements: bool = True
     generate_report: bool = True
     generate_dashboard: bool = True
     require_capability_audit: bool = False
@@ -544,6 +549,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"deck_path": {"type": "string"}, "timeout_seconds": {"type": "number"}}, required=["deck_path"]),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value,
+            action_kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value,
+            description="Turn baseline-vs-mutation curve diagnostics into the next finer deck/request patch.",
+            parameters=object_schema({"source_state_path": {"type": "string"}}, required=["source_state_path"]),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.GENERATE_REPORT.value,
             action_kind=DevsimAgentActionKind.GENERATE_REPORT.value,
             description="Generate an engineer-readable Markdown report or conclusion.",
@@ -630,9 +641,12 @@ def build_agent_context(
         "source_state_path": request.source_state_path,
         "source_deck_path": request.source_deck_path,
         "deck_patches": request.deck_patches,
+        "allow_unverified_deck_patch_execution": request.allow_unverified_deck_patch_execution,
         "objectives": [item.model_dump(mode="json") for item in request.objectives],
         "constraints": [item.model_dump(mode="json") for item in request.constraints],
         "require_capability_audit": request.require_capability_audit,
+        "max_mutation_refinements": request.max_mutation_refinements,
+        "auto_execute_mutation_refinements": request.auto_execute_mutation_refinements,
         "toolbelt": toolbelt_summary(specs),
         "supported_action_kinds": [kind.value for kind in DevsimAgentActionKind],
     }
@@ -663,6 +677,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
         "guardrails": [
             "一次只选择一个下一步 action。",
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
+            "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
             "compact/planned evidence 不能 stop_success 为签核结论。",
             "如果没有 state 且没有 initial tool，先 run_supervisor。",
@@ -694,6 +709,19 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             reason="Apply requested semantic deck patches and emit a diff before executing the patched workflow.",
             user_confirmation_required=True,
         )
+    if (
+        state.checkpoint.get("deck_patch_done")
+        and state.checkpoint.get("deck_patch_unverified")
+        and not request.allow_unverified_deck_patch_execution
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.ASK_USER,
+            request={
+                "question": "Some deck patches were only appended as unverified fallback variables. Confirm before executing this patched deck.",
+                "unverified_patches": state.checkpoint.get("deck_patch_unverified") or [],
+            },
+            reason="Semantic deck patch did not verify every requested edit against an existing deck binding.",
+        )
     if request.initial_tool_name and not state.checkpoint.get("initial_tool_done"):
         tool_request = dict(request.initial_request)
         if state.checkpoint.get("patched_source_deck"):
@@ -713,11 +741,38 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             request={"deck_path": deck_path, "run_id": f"{state.agent_id}_user_deck"},
             reason="No initial tool was requested; execute the user DEVSIM deck directly after ingest/patch setup.",
         )
+    pending_refinement = state.checkpoint.get("pending_mutation_refinement")
+    if (
+        request.auto_execute_mutation_refinements
+        and isinstance(pending_refinement, dict)
+        and pending_refinement.get("next_request")
+        and not pending_refinement.get("executed")
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_TOOL,
+            tool_name=str(pending_refinement.get("target_tool") or observation.get("tool_name") or ""),
+            request=dict(pending_refinement["next_request"]),
+            reason=str(pending_refinement.get("reason") or "Execute the curve-guided mutation refinement patch."),
+            user_confirmation_required=bool(pending_refinement.get("requires_user_confirmation")),
+        )
     if not state.latest_state_path:
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_SUPERVISOR,
             request={"goal_text": request.goal_text, "execute": True, "max_cycles": request.supervisor_max_cycles},
             reason="No TCAD state exists yet; ask the supervisor to route the goal to a supported tool.",
+        )
+    mutation_refinement_runs = int(state.checkpoint.get("mutation_refinement_runs") or 0)
+    latest_analysis = observation.get("mutation_effect_analysis")
+    if (
+        isinstance(latest_analysis, dict)
+        and latest_analysis
+        and mutation_refinement_runs < request.max_mutation_refinements
+        and state.checkpoint.get("mutation_refinement_plan_source_path") != state.latest_state_path
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
+            source_state_path=state.latest_state_path,
+            reason="Latest state contains baseline-vs-mutation curve evidence; generate the next finer deck/request patch before continuing.",
         )
     if quality_status in {"failed", "suspicious"}:
         return DevsimAgentAction(
@@ -981,6 +1036,8 @@ def write_deck_patch_state(state: AutonomousDevsimAgentState, source_path: Path,
             "metrics": {
                 "deck_patches_applied": len(result.applied_patches),
                 "deck_patches_unapplied": len(result.unapplied_patches),
+                "deck_patches_verified": len(result.verified_patches),
+                "all_patches_verified": result.all_patches_verified,
             },
         },
         "quality_report": {
@@ -989,6 +1046,8 @@ def write_deck_patch_state(state: AutonomousDevsimAgentState, source_path: Path,
             "metrics": {
                 "deck_patches_applied": len(result.applied_patches),
                 "deck_patches_unapplied": len(result.unapplied_patches),
+                "deck_patches_verified": len(result.verified_patches),
+                "all_patches_verified": result.all_patches_verified,
             },
         },
     }
@@ -1002,7 +1061,58 @@ def write_deck_patch_state(state: AutonomousDevsimAgentState, source_path: Path,
         "tcad_deck_ir": result.ir_path,
         "applied_patches": result.applied_patches,
         "unapplied_patches": result.unapplied_patches,
+        "verified_patches": result.verified_patches,
+        "unverified_patches": result.unverified_patches,
+        "all_patches_verified": result.all_patches_verified,
     }
+
+
+def augment_mutation_refinement_result(
+    *,
+    baseline_state_path: str | None,
+    result_state_path: str | None,
+    deck_patch: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not baseline_state_path or not result_state_path:
+        return None
+    baseline = Path(str(baseline_state_path))
+    result_path = Path(str(result_state_path))
+    if not baseline.exists() or not result_path.exists():
+        return None
+    diagnostic = compare_state_mutation_effect(
+        baseline,
+        result_path,
+        deck_patch=deck_patch,
+        overlay_output_path=result_path.parent / "baseline_mutation_overlay.svg",
+    )
+    result_state = load_final_state(str(result_path))
+    if not result_state:
+        return diagnostic.model_dump(mode="json")
+    diagnostic_data = diagnostic.model_dump(mode="json")
+    result_state["mutation_effect_analysis"] = diagnostic_data
+    raw_context = result_state.get("repair_context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    context.update(
+        {
+            "schema_version": "actsoft.tcad.repair_context.v1",
+            "baseline_state_path": str(baseline),
+            "parent_state_path": str(result_path),
+            "action_name": "agent_mutation_refinement",
+            "deck_patch": deck_patch,
+            "mutation_effect_decision": diagnostic.decision,
+            "recommended_next_target": diagnostic.recommended_next_target,
+            "worth_continuing_mutation": diagnostic.worth_continuing,
+        }
+    )
+    result_state["repair_context"] = context
+    if diagnostic.overlay_svg_path:
+        summary = result_state.get("final_summary") or {}
+        artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+        artifacts["baseline_mutation_overlay"] = diagnostic.overlay_svg_path
+        summary["artifacts"] = artifacts
+        result_state["final_summary"] = summary
+    write_json(result_path, result_state)
+    return diagnostic_data
 
 
 def execute_action(
@@ -1069,7 +1179,22 @@ def execute_action(
             tool_request.setdefault("cancel_file", state.cancel_file)
         with temporary_cancel_env(state.cancel_file):
             result = runner(tool_request)
-        return result, infer_result_state_path(result)
+        result_state_path = infer_result_state_path(result)
+        if tool_request.get("mutation_refinement_id"):
+            state.checkpoint["mutation_refinement_runs"] = int(state.checkpoint.get("mutation_refinement_runs") or 0) + 1
+            state.checkpoint["last_mutation_refinement_id"] = tool_request.get("mutation_refinement_id")
+            pending = state.checkpoint.get("pending_mutation_refinement")
+            deck_patch = (pending or {}).get("deck_patch") if isinstance(pending, dict) else {}
+            baseline = tool_request.get("repair_baseline_state_path") or tool_request.get("repair_source_state_path") or state.latest_state_path
+            diagnostic = augment_mutation_refinement_result(
+                baseline_state_path=str(baseline) if baseline else None,
+                result_state_path=result_state_path,
+                deck_patch=deck_patch if isinstance(deck_patch, dict) else {},
+            )
+            if diagnostic:
+                result["mutation_effect_analysis"] = diagnostic
+            state.checkpoint["pending_mutation_refinement"] = {**pending, "executed": True} if isinstance(pending, dict) else {"executed": True}
+        return result, result_state_path
     if action.kind == DevsimAgentActionKind.RUN_REPAIR_EXECUTOR:
         source = action.source_state_path or state.latest_state_path
         if not source:
@@ -1129,6 +1254,8 @@ def execute_action(
         state.checkpoint["deck_patch_done"] = True
         state.checkpoint["patched_source_deck"] = result.get("patched_source_deck")
         state.checkpoint["semantic_deck_diff"] = result.get("semantic_deck_diff")
+        state.checkpoint["deck_patch_verified"] = result.get("all_patches_verified")
+        state.checkpoint["deck_patch_unverified"] = result.get("unverified_patches") or []
         return result, result.get("state_path")
     if action.kind == DevsimAgentActionKind.RUN_USER_DECK:
         runner = runner_registry.get("user_deck_execution")
@@ -1147,6 +1274,24 @@ def execute_action(
         state.checkpoint["user_deck_done"] = True
         state.checkpoint["user_deck_state_path"] = result.get("state_path")
         return result, infer_result_state_path(result) or result.get("state_path")
+    if action.kind == DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("mutation refinement action requires a source state")
+        output_dir = Path(state.agent_dir) / "mutation_refinement"
+        output_path = output_dir / f"mutation_refinement_{int(state.checkpoint.get('mutation_refinement_plans') or 0) + 1:03d}.json"
+        plan = build_mutation_refinement_plan(Path(source), output_path=output_path)
+        result = plan.model_dump(mode="json")
+        state.checkpoint["mutation_refinement_plans"] = int(state.checkpoint.get("mutation_refinement_plans") or 0) + 1
+        state.checkpoint["mutation_refinement_plan_path"] = result.get("output_path")
+        state.checkpoint["mutation_refinement_plan_source_path"] = source
+        if plan.status == "completed" and plan.next_request:
+            state.checkpoint["pending_mutation_refinement"] = result
+        elif plan.status == "blocked_for_pareto_review":
+            state.checkpoint["blocked_mutation_refinement"] = result
+        else:
+            state.checkpoint["failed_mutation_refinement"] = result
+        return result, source
     if action.kind == DevsimAgentActionKind.GENERATE_REPORT:
         source = action.source_state_path or state.latest_state_path
         if not source:

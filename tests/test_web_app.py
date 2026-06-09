@@ -291,6 +291,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(approved["status"], QueueStatus.QUEUED.value)
         self.assertTrue(item.request["resume"])
         self.assertTrue(item.request["allow_user_confirmation_actions"])
+        self.assertTrue(item.request["allow_unverified_deck_patch_execution"])
         self.assertTrue(cancel_removed)
 
     def test_reject_confirmation_cancels_item(self) -> None:

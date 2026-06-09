@@ -66,6 +66,16 @@ PLANNED_INDUSTRIAL_DEVICE_TYPES = {
     "gan_hemt_id_bv",
     "igbt_output_turnoff",
 }
+PHYSICS_1D_PROMOTION_DEVICE_TYPES = {
+    "bjt_gummel_output",
+    "jfet_transfer_output",
+    "power_mosfet_bv_ron",
+    "photodiode_iv",
+    "finfet_id_cv",
+    "sic_power_diode_bv_leakage",
+    "gan_hemt_id_bv",
+    "igbt_output_turnoff",
+}
 
 
 class BenchmarkStatus(str, Enum):
@@ -713,6 +723,45 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                 {"required_for_signoff": ["higher_fidelity_tcad_runner", "convergence_evidence", "golden_or_measured_comparison"]},
             )
         )
+    if device_type in PHYSICS_1D_PROMOTION_DEVICE_TYPES and fidelity == "physics_1d":
+        mesh_nodes = float_or_none(metrics.get("mesh_nodes_estimate") or params.get("mesh_nodes_estimate"))
+        if mesh_nodes is not None and mesh_nodes >= 20:
+            checks.append(
+                pass_check(
+                    "physics_1d_mesh_resolution_recorded",
+                    "Physics_1d run records a mesh-resolution estimate suitable for first-pass convergence planning.",
+                    {"mesh_nodes_estimate": mesh_nodes},
+                )
+            )
+        else:
+            checks.append(
+                warn_check(
+                    "physics_1d_mesh_convergence_missing",
+                    "Physics_1d evidence is executable but still needs explicit mesh/model convergence before strong signoff.",
+                    {"device_type": device_type, "mesh_nodes_estimate": mesh_nodes},
+                    {"required_for_signoff": ["mesh_convergence", "model_convergence", "bias_step_refinement"]},
+                )
+            )
+        if metrics.get("golden_or_measured_comparison") or metrics.get("calibrated_against_reference") or params.get("measured_curve_comparison"):
+            checks.append(
+                pass_check(
+                    "physics_1d_reference_correlation_present",
+                    "Physics_1d run records explicit golden/measured correlation evidence.",
+                    {
+                        "golden_or_measured_comparison": metrics.get("golden_or_measured_comparison"),
+                        "calibrated_against_reference": metrics.get("calibrated_against_reference"),
+                    },
+                )
+            )
+        else:
+            checks.append(
+                warn_check(
+                    "physics_1d_reference_correlation_missing",
+                    "Physics_1d evidence needs measured/golden curve correlation before final engineering signoff.",
+                    {"device_type": device_type, "fidelity": fidelity},
+                    {"required_for_signoff": ["golden_curve_comparison", "measured_curve_fit", "public_runner_correlation"]},
+                )
+            )
     if device_type == "schottky_diode":
         barrier = range_check(
             "schottky_barrier_height",
@@ -1635,6 +1684,9 @@ def credibility_assessment(checks: list[BenchmarkCheck], state: dict[str, Any]) 
     if "planned_industrial_template_runner_missing" in codes:
         risks.append("工业模板尚未实现真实 runner，不能把 surrogate 当作仿真完成。")
         must_fix.append("先实现器件模板、TCAD runner、质量规则和 benchmark，再执行任务。")
+    if "physics_1d_mesh_convergence_missing" in codes or "physics_1d_reference_correlation_missing" in codes:
+        risks.append("physics_1d 结果是可执行探索证据，但还缺 mesh/model 收敛或实测/golden 相关性。")
+        must_fix.append("补 mesh/model/bias convergence，并与 measured/golden 曲线或公开 runner 建立相关性。")
     if error_codes:
         level = "blocked"
         acceptance = "不可作为工程结论依据，必须先修复错误项。"

@@ -385,6 +385,37 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertTrue(Path(deck_step.result["state_path"]).exists())
         self.assertEqual(deck_step.result["reported_stdout_json"], {"deck": "ran"})
 
+    def test_unverified_deck_patch_pauses_before_execution(self) -> None:
+        source_deck = self.root / "unmatched_user_deck.py"
+        source_deck.write_text("solve(type='dc')\n", encoding="utf-8")
+        tool_calls: list[dict[str, object]] = []
+
+        request = AutonomousDevsimRequest(
+            goal_text="Patch unmatched deck symbol then run",
+            agent_id="agent_unverified_patch",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=3,
+            source_deck_path=str(source_deck),
+            deck_patches=[{"deck_path": "geometry.field_plate_length_um", "request_path": "power_mos_field_plate_length_um", "value": 2.0}],
+            allow_user_confirmation_actions=True,
+            initial_tool_name="extended_device_sweep",
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={"extended_device_sweep": lambda request: tool_calls.append(request) or {"status": "completed"}},
+        )
+
+        self.assertEqual(state.status, DevsimAgentStatus.WAITING_FOR_USER)
+        self.assertEqual(tool_calls, [])
+        self.assertFalse(state.checkpoint["deck_patch_verified"])
+        self.assertTrue(state.checkpoint["deck_patch_unverified"])
+        self.assertEqual(state.steps[-1].kind, DevsimAgentActionKind.ASK_USER)
+
     def test_capability_audit_records_coverage_work_package(self) -> None:
         request = AutonomousDevsimRequest(
             goal_text="GaN HEMT current collapse transient signoff",
@@ -441,6 +472,138 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(calls, ["benchmark", "objectives"])
         self.assertEqual(state.checkpoint["engineering_objectives_path"], str(self.root / "objectives.json"))
         self.assertEqual(state.checkpoint["pareto_front"][0]["candidate_id"], "objective_passed")
+
+    def test_agent_plans_and_executes_curve_guided_mutation_refinement(self) -> None:
+        baseline_dir = self.root / "runs" / "baseline_power"
+        baseline_csv = baseline_dir / "curve.csv"
+        baseline_csv.parent.mkdir(parents=True, exist_ok=True)
+        baseline_csv.write_text("drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,0\n-10,2e-8,2e5\n", encoding="utf-8")
+        baseline_state = baseline_dir / "state.json"
+        write_json(
+            baseline_state,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "run_id": "baseline_power",
+                "request": {"power_mos_field_plate_length_um": 1.5},
+                "final_summary": {
+                    "artifacts": {"csv": str(baseline_csv)},
+                    "metrics": {
+                        "leakage_current_a": 2e-8,
+                        "max_electric_field_v_per_cm": 2e5,
+                        "specific_on_resistance_ohm_cm2": 0.05,
+                    },
+                },
+                "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 2e-8}},
+            },
+        )
+        mutation_dir = self.root / "runs" / "mutation_power"
+        mutation_csv = mutation_dir / "curve.csv"
+        mutation_csv.parent.mkdir(parents=True, exist_ok=True)
+        mutation_csv.write_text("drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,0\n-10,1e-8,1.5e5\n", encoding="utf-8")
+        mutation_state = mutation_dir / "state.json"
+        mutation = {
+            "name": "field_plate_length_refine",
+            "target": "field_plate",
+            "request_path": "power_mos_field_plate_length_um",
+            "deck_path": "geometry.field_plate_length_um",
+            "values": [1.5, 2.0, 2.25],
+            "requires_user_confirmation": True,
+        }
+        write_json(
+            mutation_state,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "run_id": "mutation_power",
+                "request": {
+                    "device_type": "power_mosfet_bv_ron",
+                    "fidelity": "physics_1d",
+                    "power_mos_field_plate_length_um": 2.0,
+                    "tcad_deck_mutations": [mutation],
+                },
+                "tcad_deck_mutations": [mutation],
+                "final_summary": {
+                    "artifacts": {"csv": str(mutation_csv)},
+                    "metrics": {
+                        "leakage_current_a": 1e-8,
+                        "max_electric_field_v_per_cm": 1.5e5,
+                        "specific_on_resistance_ohm_cm2": 0.05,
+                    },
+                },
+                "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 1e-8}},
+                "repair_context": {"baseline_state_path": str(baseline_state)},
+                "mutation_effect_analysis": {
+                    "decision": "continue_same_target",
+                    "worth_continuing": True,
+                    "recommended_next_target": "field_plate",
+                    "recommended_next_direction": "increase",
+                    "baseline_value": 1.5,
+                    "mutation_value": 2.0,
+                    "rationale": "field peak improved without Ron tradeoff",
+                },
+            },
+        )
+        refined_dir = self.root / "runs" / "refined_power"
+        refined_state = refined_dir / "state.json"
+        refined_csv = refined_dir / "curve.csv"
+        tool_requests: list[dict[str, object]] = []
+
+        def fake_extended_device(request: dict[str, object]) -> dict[str, object]:
+            tool_requests.append(request)
+            refined_csv.parent.mkdir(parents=True, exist_ok=True)
+            refined_csv.write_text("drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,0\n-10,8e-9,1.4e5\n", encoding="utf-8")
+            write_json(
+                refined_state,
+                {
+                    "tool_name": "extended_device_sweep",
+                    "status": "completed",
+                    "run_id": "refined_power",
+                    "request": request,
+                    "final_summary": {
+                        "artifacts": {"csv": str(refined_csv)},
+                        "metrics": {
+                            "leakage_current_a": 8e-9,
+                            "max_electric_field_v_per_cm": 1.4e5,
+                            "specific_on_resistance_ohm_cm2": 0.05,
+                        },
+                    },
+                    "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 8e-9}},
+                },
+            )
+            return {"status": "completed", "state_path": str(refined_state)}
+
+        request = AutonomousDevsimRequest(
+            goal_text="Refine power MOSFET mutation from curve evidence",
+            agent_id="agent_refine",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=4,
+            source_state_path=str(mutation_state),
+            max_mutation_refinements=1,
+            allow_user_confirmation_actions=True,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={
+                "extended_device_sweep": fake_extended_device,
+                "physical_benchmark": lambda request: {"status": "completed", "benchmark_path": str(self.root / "benchmark.json")},
+            },
+        )
+
+        self.assertEqual(state.status, DevsimAgentStatus.COMPLETED)
+        self.assertIn(DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT, [step.kind for step in state.steps])
+        self.assertEqual(tool_requests[0]["power_mos_field_plate_length_um"], 2.25)
+        self.assertIn("mutation_refinement_id", tool_requests[0])
+        self.assertEqual(state.checkpoint["mutation_refinement_runs"], 1)
+        self.assertTrue(Path(state.checkpoint["mutation_refinement_plan_path"]).exists())
+        refined = json.loads(refined_state.read_text(encoding="utf-8"))
+        self.assertIn("mutation_effect_analysis", refined)
+        self.assertIn("baseline_mutation_overlay", refined["final_summary"]["artifacts"])
 
 
 if __name__ == "__main__":

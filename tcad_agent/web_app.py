@@ -350,6 +350,8 @@ def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         request["initial_request"] = payload["initial_request"]
     if isinstance(payload.get("deck_patches"), list):
         request["deck_patches"] = payload["deck_patches"]
+    if "allow_unverified_deck_patch_execution" in payload:
+        request["allow_unverified_deck_patch_execution"] = bool_from_payload(payload, "allow_unverified_deck_patch_execution", False)
     if isinstance(payload.get("objectives"), list):
         request["objectives"] = payload["objectives"]
     if isinstance(payload.get("constraints"), list):
@@ -394,6 +396,7 @@ def approve_item_confirmation(config: WebAppConfig, queue_id: str) -> dict[str, 
             "resume": True,
             "execute": True,
             "allow_user_confirmation_actions": True,
+            "allow_unverified_deck_patch_execution": True,
         },
         checkpoint_patch={"user_confirmation": "approved"},
     )
@@ -2881,7 +2884,7 @@ def render_app_html() -> str:
     }
 
     function isImageArtifact(path) {
-      return /\.(png|jpg|jpeg|svg|webp)$/i.test(path || '');
+      return /\\.(png|jpg|jpeg|svg|webp)$/i.test(path || '');
     }
 
     function collectArtifacts(value, found = []) {

@@ -135,6 +135,8 @@ def build_signoff_evidence_pack(
         blocking.append("planned industrial runner missing")
     if capability == "compact_baseline":
         risk_notes.append("compact baseline is not signoff evidence")
+    if any(code.startswith("physics_1d_") for code in warning_codes):
+        risk_notes.append("physics_1d evidence needs mesh convergence and measured/golden correlation before strong signoff")
     if warning_codes:
         risk_notes.extend(warning_codes[:8])
 
@@ -170,6 +172,10 @@ def build_signoff_evidence_pack(
         next_actions.append({"action": "promote_to_higher_fidelity_runner", "reason": "compact baseline 不能用于最终签核"})
     if capability == "planned_runner_missing":
         next_actions.append({"action": "implement_runner_quality_benchmark", "reason": "planned 工业模板必须先实现真实 runner"})
+    if "physics_1d_mesh_convergence_missing" in warning_codes:
+        next_actions.append({"action": "run_mesh_or_model_convergence", "reason": "physics_1d 结果需要 mesh/model/bias 收敛证据"})
+    if "physics_1d_reference_correlation_missing" in warning_codes:
+        next_actions.append({"action": "run_golden_or_measured_correlation", "reason": "physics_1d 结果需要和实测/golden 曲线建立相关性"})
     if error_codes or warning_codes:
         next_actions.append({"action": "run_repair_executor", "reason": "用 benchmark/quality issue 生成修复计划"})
 

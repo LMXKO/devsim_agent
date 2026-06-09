@@ -28,6 +28,7 @@ Supported actions:
 - `ingest_deck`: parse a user DEVSIM Python deck into source IR;
 - `apply_deck_patch`: apply semantic deck patches and emit patched source plus unified diff;
 - `run_user_deck`: execute a user-provided or patched DEVSIM Python deck directly and capture stdout/stderr/state;
+- `plan_mutation_refinement`: read baseline-vs-mutation curve diagnostics and generate the next finer request/deck patch;
 - `generate_report`: create a sweep/optimization report, or fall back to an engineering conclusion for single-run states;
 - `generate_dashboard`: create a dashboard for a sweep, optimization, or autonomous timeline;
 - `stop_success`: finish when enough evidence and artifacts exist;
@@ -66,7 +67,10 @@ Useful options:
 - `--allow-user-confirmation-actions`: allow high-risk actions that would otherwise pause;
 - `--source-state-path`: resume from an existing TCAD state;
 - `--source-deck-path` and `--deck-patches-json`: parse and patch a user deck before running tools;
+- `--allow-unverified-deck-patch-execution`: execute even when a semantic deck patch only produced an unverified fallback append;
 - `--objectives-json` and `--constraints-json`: add objective/Pareto gates to the loop;
+- `--max-mutation-refinements`: limit automatic curve-guided follow-up patches;
+- `--no-auto-mutation-refinement`: write the refinement work package without executing it;
 - `--cancel-file` and `--heartbeat-path`: cooperate with external long-run controls;
 - `--require-capability-audit`: record executable/fidelity/signoff coverage before running;
 - `--resume --agent-id ...`: resume an existing agent state.
@@ -89,6 +93,8 @@ The runtime is agent-first, but not unrestricted:
 - no shell commands from the model;
 - unsupported tool names are rejected;
 - high-risk geometry/process/model edits pause unless confirmation is allowed;
+- semantic deck patch results record verified and unverified patches; fallback appends are warnings, not proof that the user deck uses the value;
+- curve-guided mutation refinement respects the same confirmation gate for geometry/process/model changes;
 - queue cancel writes an agent cancel token; the agent checks it at step boundaries and writes heartbeat state;
 - DEVSIM subprocess helpers also poll the cancel token and terminate the child process when it appears;
 - queued confirmation pauses can be approved or rejected through the web API;

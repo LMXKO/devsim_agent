@@ -48,6 +48,8 @@ The executor can rerun:
 
 After each executed repair, the executor runs `physical_benchmark`. If benchmark status is `suspicious` or `failed`, it writes a benchmark-augmented state with the benchmark checks folded into `quality_report.issues`, then uses that state as the next repair input.
 
+When a repair action includes a deck mutation, the executor compares baseline and mutation curves, writes `baseline_mutation_overlay.svg`, records `mutation_effect_analysis`, and stores the recommended next target. The autonomous DEVSIM agent can consume that analysis to generate the next finer request/deck patch instead of blindly applying another rule.
+
 ## Mission Agent Integration
 
 `mission_agent` now uses this executor automatically:

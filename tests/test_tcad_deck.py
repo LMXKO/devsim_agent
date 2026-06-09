@@ -180,6 +180,42 @@ class TCADDeckSpecTest(unittest.TestCase):
         self.assertIn("value=8e+15", result.patched_source)
         self.assertIn("min_spacing=0.005", result.patched_source)
         self.assertIn("drain_voltage=30", result.patched_source)
+        self.assertTrue(result.all_patches_verified)
+        self.assertEqual(len(result.verified_patches), 5)
+
+    def test_semantic_patch_aliases_devsim_named_parameters(self) -> None:
+        source = "\n".join(
+            [
+                "set_parameter(device='dev', region='drift', name='NetDoping', value=1e16)",
+                "set_parameter(device='dev', region='drift', name='taun', value=1e-6)",
+            ]
+        )
+
+        result = semantic_patch_tcad_deck_source(
+            source,
+            [
+                {"deck_path": "doping.drift_region_doping_cm3", "request_path": "power_mos_drift_region_doping_cm3", "value": 8e15},
+                {"deck_path": "physics_models.carrier_lifetime_s", "request_path": "power_mos_carrier_lifetime_s", "value": 2e-6},
+            ],
+            source_path="named_devsim_deck.py",
+        )
+
+        self.assertTrue(result.all_patches_verified)
+        self.assertEqual(len(result.unverified_patches), 0)
+        self.assertIn("name='NetDoping', value=8e+15", result.patched_source)
+        self.assertIn("name='taun', value=2e-06", result.patched_source)
+
+    def test_semantic_patch_marks_fallback_append_unverified(self) -> None:
+        result = semantic_patch_tcad_deck_source(
+            "solve(type='dc')\n",
+            {"deck_path": "geometry.field_plate_length_um", "request_path": "power_mos_field_plate_length_um", "value": 2.0},
+            source_path="unmatched_deck.py",
+        )
+
+        self.assertFalse(result.all_patches_verified)
+        self.assertEqual(len(result.verified_patches), 0)
+        self.assertEqual(len(result.unverified_patches), 1)
+        self.assertEqual(result.applied_patches[0]["semantic_status"], "unverified_fallback_append")
 
 
 if __name__ == "__main__":

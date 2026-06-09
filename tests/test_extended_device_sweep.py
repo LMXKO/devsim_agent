@@ -155,7 +155,7 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
         self.assertTrue(Path(state.final_summary["artifacts"]["tcad_deck_spec"]).exists())
 
         benchmark = run_physical_benchmark(Path(state.run_dir))
-        self.assertEqual(benchmark.status, BenchmarkStatus.PASSED)
+        self.assertEqual(benchmark.status, BenchmarkStatus.SUSPICIOUS)
         self.assertEqual(benchmark.summary["evidence_matrix"]["deck_spec"], "present")
         self.assertEqual(benchmark.summary["evidence_matrix"]["model_coupling_risk"], "not_detected")
         self.assertNotIn("structured_tcad_spec", benchmark.summary["signoff_evidence_pack"]["missing_evidence"])
@@ -163,6 +163,8 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
         self.assertIn("bjt_physics_transport_coupled", codes)
         self.assertIn("bjt_three_terminal_output_family_present", codes)
         self.assertIn("bjt_mesh_resolved_deck_present", codes)
+        self.assertIn("physics_1d_mesh_resolution_recorded", codes)
+        self.assertIn("physics_1d_reference_correlation_missing", codes)
         self.assertNotIn("compact_baseline_not_signoff_evidence", codes)
 
     def test_power_mosfet_physics_fidelity_has_avalanche_evidence(self) -> None:
@@ -193,13 +195,15 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
         self.assertEqual(metrics["carrier_lifetime_s"], 1.0e-6)
 
         benchmark = run_physical_benchmark(Path(state.run_dir))
-        self.assertEqual(benchmark.status, BenchmarkStatus.PASSED)
+        self.assertEqual(benchmark.status, BenchmarkStatus.SUSPICIOUS)
         self.assertEqual(benchmark.summary["evidence_matrix"]["deck_spec"], "present")
         self.assertNotIn("structured_tcad_spec", benchmark.summary["signoff_evidence_pack"]["missing_evidence"])
         codes = {check.code for check in benchmark.checks}
         self.assertIn("power_mos_impact_ionization_coupled", codes)
         self.assertIn("power_mos_ron_components_present", codes)
         self.assertIn("power_mos_mesh_resolved_deck_present", codes)
+        self.assertIn("physics_1d_mesh_resolution_recorded", codes)
+        self.assertIn("physics_1d_reference_correlation_missing", codes)
         self.assertNotIn("compact_baseline_not_signoff_evidence", codes)
 
     def test_power_mosfet_lifetime_mutation_changes_leakage_and_writes_history(self) -> None:
@@ -271,10 +275,11 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
                 self.assertEqual(state.tcad_deck_spec["device_family"], device_type.value)
 
                 benchmark = run_physical_benchmark(Path(state.run_dir))
-                self.assertEqual(benchmark.status, BenchmarkStatus.PASSED)
+                self.assertEqual(benchmark.status, BenchmarkStatus.SUSPICIOUS)
                 self.assertEqual(benchmark.summary["evidence_matrix"]["capability_boundary"], "tcad_executable")
                 codes = {check.code for check in benchmark.checks}
                 self.assertIn(expected_code, codes)
+                self.assertIn("physics_1d_reference_correlation_missing", codes)
                 self.assertNotIn("compact_baseline_not_signoff_evidence", codes)
                 self.assertNotIn("planned_industrial_template_runner_missing", codes)
 
