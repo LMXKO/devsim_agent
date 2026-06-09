@@ -204,6 +204,18 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
   --execute
 ```
 
+Validate long-run behavior:
+
+```bash
+python3.11 -m tcad_agent.tools.long_run_validation --validation-id smoke_longrun
+
+python3.11 -m tcad_agent.tools.long_run_validation \
+  --suite autonomous_e2e \
+  --validation-id autonomous_e2e
+```
+
+The `autonomous_e2e` suite checks confirmation gates, cancellation, repair/report output, multi-round mutation refinement, queue approval/resume, and interrupted-worker recovery. For real overnight LLM/DEVSIM runs, use `--mode real --use-llm --real-agent-request-json ...`; generated evidence stays under `runs/long_run_validation/<validation_id>/`.
+
 Plan or execute a repair with the agent policy:
 
 ```bash

@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.autonomous_devsim_agent import (
+    AutonomousDevsimRequest,
+    DevsimAgentActionKind,
+    DevsimAgentStatus,
+    run_autonomous_devsim_agent,
+)
 from tcad_agent.experiment_index import list_records, rebuild_index
 from tcad_agent.physical_benchmark import run_physical_benchmark
-from tcad_agent.run_queue import enqueue_run, get_item, run_queue_daemon
+from tcad_agent.run_queue import (
+    QueueStatus,
+    claim_next_items,
+    enqueue_run,
+    get_item,
+    recover_owner_running_items,
+    run_queue_daemon,
+    run_queue_worker,
+)
 from tcad_agent.task_spec import PROJECT_ROOT
 
 
@@ -19,12 +34,44 @@ class LongRunValidationStatus(str, Enum):
     FAILED = "failed"
 
 
+class LongRunValidationSuite(str, Enum):
+    QUEUE_SMOKE = "queue_smoke"
+    AUTONOMOUS_E2E = "autonomous_e2e"
+    ALL = "all"
+
+
+class LongRunValidationMode(str, Enum):
+    SIMULATED = "simulated"
+    REAL = "real"
+
+
 class LongRunValidationRequest(BaseModel):
     validation_id: str | None = None
     validation_root: Path = PROJECT_ROOT / "runs" / "long_run_validation"
+    suite: LongRunValidationSuite = LongRunValidationSuite.QUEUE_SMOKE
+    mode: LongRunValidationMode = LongRunValidationMode.SIMULATED
+    scenario_ids: list[str] = Field(default_factory=list)
+    agent_max_steps: int = Field(default=12, ge=1)
+    use_llm: bool = False
+    allow_llm_fallback: bool = True
+    real_agent_request: dict[str, Any] = Field(default_factory=dict)
     queue_goals: list[dict[str, Any]] = Field(default_factory=list)
     poll_interval_seconds: float = 0.0
     max_idle_loops: int = 1
+
+
+class LongRunScenarioResult(BaseModel):
+    scenario_id: str
+    title: str
+    status: LongRunValidationStatus
+    started_at: str
+    completed_at: str
+    duration_seconds: float
+    assertions: list[str] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
+    failure_reason: str | None = None
+    result_path: str | None = None
 
 
 class LongRunValidationState(BaseModel):
@@ -38,6 +85,7 @@ class LongRunValidationState(BaseModel):
     queued_items: list[dict[str, Any]] = Field(default_factory=list)
     daemon_result: dict[str, Any] | None = None
     benchmark_results: list[dict[str, Any]] = Field(default_factory=list)
+    scenario_results: list[dict[str, Any]] = Field(default_factory=list)
     index_summary: dict[str, Any] | None = None
     indexed_records: list[dict[str, Any]] = Field(default_factory=list)
     failure_reason: str | None = None
@@ -49,6 +97,11 @@ def utc_timestamp() -> str:
 
 def default_validation_id() -> str:
     return f"longrun_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def default_queue_goals(validation_dir: Path) -> list[dict[str, Any]]:
@@ -146,8 +199,716 @@ def default_queue_goals(validation_dir: Path) -> list[dict[str, Any]]:
 
 def write_state(state: LongRunValidationState, path: Path) -> None:
     state.updated_at = utc_timestamp()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
+    write_json(path, state.model_dump(mode="json"))
+
+
+def require(condition: bool, message: str) -> str:
+    if not condition:
+        raise RuntimeError(message)
+    return message
+
+
+def artifact(name: str, path: Path | str | None, *, kind: str = "file", description: str | None = None) -> dict[str, Any]:
+    if not path:
+        return {"name": name, "path": None, "kind": kind, "description": description, "exists": False}
+    resolved = Path(str(path))
+    return {
+        "name": name,
+        "path": str(resolved.resolve()) if resolved.exists() else str(resolved),
+        "kind": kind,
+        "description": description,
+        "exists": resolved.exists(),
+    }
+
+
+def write_curve_state(
+    state_path: Path,
+    *,
+    tool_name: str,
+    run_id: str,
+    request: dict[str, Any],
+    quality_status: str,
+    metrics: dict[str, Any],
+    csv_header: str = "voltage_v,current_a,electric_field_v_per_cm",
+    csv_rows: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    curve_path = state_path.parent / "curve.csv"
+    curve_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = csv_rows or ["0,0,0", "1,1e-9,1e5"]
+    curve_path.write_text("\n".join([csv_header, *rows]) + "\n", encoding="utf-8")
+    payload: dict[str, Any] = {
+        "tool_name": tool_name,
+        "status": "completed",
+        "run_id": run_id,
+        "request": request,
+        "run_dir": str(state_path.parent),
+        "final_summary": {"artifacts": {"csv": str(curve_path)}, "metrics": metrics},
+        "quality_report": {
+            "status": quality_status,
+            "issues": [{"code": "long_run_validation_suspicious_state", "severity": "warning"}]
+            if quality_status != "passed"
+            else [],
+            "metrics": metrics,
+        },
+    }
+    if extra:
+        payload.update(extra)
+    write_json(state_path, payload)
+    return state_path
+
+
+def scenario_agent_confirmation_pause(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    source_deck = scenario_dir / "unmatched_user_deck.py"
+    source_deck.parent.mkdir(parents=True, exist_ok=True)
+    source_deck.write_text("solve(type='dc')\n", encoding="utf-8")
+    tool_calls: list[dict[str, Any]] = []
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Validate unverified semantic deck patch confirmation pause.",
+            agent_id="confirmation_pause_agent",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=min(max(request.agent_max_steps, 4), 8),
+            source_deck_path=str(source_deck),
+            deck_patches=[
+                {
+                    "deck_path": "geometry.field_plate_length_um",
+                    "request_path": "power_mos_field_plate_length_um",
+                    "value": 2.0,
+                }
+            ],
+            allow_user_confirmation_actions=True,
+            allow_unverified_deck_patch_execution=False,
+            initial_tool_name="extended_device_sweep",
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={"extended_device_sweep": lambda tool_request: tool_calls.append(tool_request) or {"status": "completed"}},
+    )
+    assertions = [
+        require(state.status == DevsimAgentStatus.WAITING_FOR_USER, "agent paused for user confirmation"),
+        require(state.steps[-1].kind == DevsimAgentActionKind.ASK_USER, "agent converted unverified patch into ask_user action"),
+        require(not tool_calls, "patched user deck was not executed before confirmation"),
+        require(bool(state.checkpoint.get("deck_patch_unverified")), "unverified deck patch lineage was recorded"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("heartbeat", state.heartbeat_path),
+            artifact("semantic_deck_diff", state.checkpoint.get("semantic_deck_diff")),
+            artifact("patched_source_deck", state.checkpoint.get("patched_source_deck")),
+        ],
+        {
+            "agent_status": state.status,
+            "step_kinds": [step.kind.value for step in state.steps],
+            "unverified_patches": state.checkpoint.get("deck_patch_unverified") or [],
+        },
+    )
+
+
+def scenario_agent_cancel_boundary(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del request, queue_db
+    cancel_file = scenario_dir / "agents" / "cancel_agent" / "cancel.requested"
+    cancel_file.parent.mkdir(parents=True, exist_ok=True)
+    cancel_file.write_text(json.dumps({"reason": "validation cancel before first step"}), encoding="utf-8")
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Validate cancellation before the next autonomous step.",
+            agent_id="cancel_agent",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            cancel_file=cancel_file,
+            heartbeat_path=scenario_dir / "agents" / "cancel_agent" / "heartbeat.json",
+            initial_tool_name="extended_device_sweep",
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={"extended_device_sweep": lambda tool_request: {"status": "completed"}},
+    )
+    assertions = [
+        require(state.status == DevsimAgentStatus.CANCELLED, "agent stopped on cancel token before work"),
+        require(len(state.steps) == 0, "cancelled agent did not start a tool step"),
+        require(Path(str(state.heartbeat_path)).exists(), "cancelled agent wrote heartbeat"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("heartbeat", state.heartbeat_path),
+            artifact("cancel_file", cancel_file),
+        ],
+        {"agent_status": state.status, "failure_reason": state.failure_reason},
+    )
+
+
+def scenario_agent_repair_report(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    suspicious_state = write_curve_state(
+        scenario_dir / "runs" / "initial_suspicious" / "state.json",
+        tool_name="pn_junction_iv_sweep",
+        run_id="initial_suspicious",
+        request={"run_id": "initial_suspicious"},
+        quality_status="suspicious",
+        metrics={"leakage_current_a": 2e-6, "points": 3},
+        csv_rows=["-1,2e-6,2e5", "0,1e-10,0", "1,1e-6,1e5"],
+    )
+    repaired_state = write_curve_state(
+        scenario_dir / "runs" / "repaired_passed" / "state.json",
+        tool_name="pn_junction_iv_sweep",
+        run_id="repaired_passed",
+        request={"run_id": "repaired_passed"},
+        quality_status="passed",
+        metrics={"leakage_current_a": 5e-8, "points": 3},
+        csv_rows=["-1,5e-8,1.1e5", "0,1e-10,0", "1,8e-7,9e4"],
+        extra={"repair_context": {"action_name": "validation_fake_repair", "baseline_state_path": str(suspicious_state)}},
+    )
+    calls: list[str] = []
+
+    def fake_repair_runner(source: Path, **kwargs: Any) -> dict[str, Any]:
+        calls.append("repair")
+        require(source == suspicious_state, "repair runner received suspicious state")
+        require(bool(kwargs.get("use_agent_policy")), "repair runner kept agent policy enabled")
+        return {
+            "status": "completed",
+            "final_state_path": str(repaired_state),
+            "current_state_path": str(repaired_state),
+            "final_quality_status": "passed",
+        }
+
+    report_path = scenario_dir / "report" / "repair_report.md"
+    dashboard_path = scenario_dir / "report" / "repair_dashboard.html"
+
+    def fake_report_runner(tool_request: dict[str, Any]) -> dict[str, Any]:
+        del tool_request
+        calls.append("report")
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("# Repair validation\n\nCompleted.\n", encoding="utf-8")
+        return {"status": "completed", "report_path": str(report_path)}
+
+    def fake_dashboard_runner(tool_request: dict[str, Any]) -> dict[str, Any]:
+        del tool_request
+        calls.append("dashboard")
+        dashboard_path.parent.mkdir(parents=True, exist_ok=True)
+        dashboard_path.write_text("<html><body>repair validation</body></html>\n", encoding="utf-8")
+        return {"status": "completed", "dashboard_path": str(dashboard_path)}
+
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Validate repair, benchmark, report, and dashboard in one autonomous loop.",
+            agent_id="repair_report_agent",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=max(request.agent_max_steps, 6),
+            initial_tool_name="pn_junction_iv_sweep",
+            initial_request={"run_id": "initial_suspicious"},
+        ),
+        runner_registry={
+            "pn_junction_iv_sweep": lambda tool_request: calls.append("tool") or {"status": "completed", "state_path": str(suspicious_state)},
+            "physical_benchmark": lambda tool_request: calls.append("benchmark")
+            or {"status": "completed", "benchmark_path": str(scenario_dir / "benchmark.json")},
+            "experiment_report": fake_report_runner,
+            "experiment_dashboard": fake_dashboard_runner,
+        },
+        repair_runner=fake_repair_runner,
+    )
+    step_kinds = [step.kind for step in state.steps]
+    assertions = [
+        require(state.status == DevsimAgentStatus.COMPLETED, "agent completed after repair and reporting"),
+        require(DevsimAgentActionKind.RUN_REPAIR_EXECUTOR in step_kinds, "repair executor was selected from suspicious curve state"),
+        require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK in step_kinds, "physical benchmark ran after repair"),
+        require(DevsimAgentActionKind.GENERATE_REPORT in step_kinds, "engineer-readable report was generated"),
+        require(Path(str(state.final_report_path)).exists(), "final report artifact exists"),
+        require(Path(str(state.final_dashboard_path)).exists(), "dashboard artifact exists"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("initial_state", suspicious_state),
+            artifact("repaired_state", repaired_state),
+            artifact("report", state.final_report_path, kind="markdown"),
+            artifact("dashboard", state.final_dashboard_path, kind="html"),
+        ],
+        {"agent_status": state.status, "step_kinds": [kind.value for kind in step_kinds], "calls": calls},
+    )
+
+
+def scenario_mutation_refinement_multiround(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    mutation = {
+        "name": "field_plate_length_refine",
+        "target": "field_plate",
+        "request_path": "power_mos_field_plate_length_um",
+        "deck_path": "geometry.field_plate_length_um",
+        "values": [1.5, 2.0, 2.25, 2.375],
+        "requires_user_confirmation": True,
+    }
+    baseline_state = write_curve_state(
+        scenario_dir / "runs" / "baseline_power" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="baseline_power",
+        request={"power_mos_field_plate_length_um": 1.5},
+        quality_status="passed",
+        metrics={
+            "leakage_current_a": 2e-8,
+            "max_electric_field_v_per_cm": 2e5,
+            "specific_on_resistance_ohm_cm2": 0.05,
+        },
+        csv_header="drain_voltage_v,off_current_a,electric_field_v_per_cm",
+        csv_rows=["0,1e-10,0", "-10,2e-8,2e5"],
+    )
+    mutation_state = write_curve_state(
+        scenario_dir / "runs" / "mutation_power" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="mutation_power",
+        request={
+            "device_type": "power_mosfet_bv_ron",
+            "fidelity": "physics_1d",
+            "power_mos_field_plate_length_um": 2.0,
+            "tcad_deck_mutations": [mutation],
+        },
+        quality_status="passed",
+        metrics={
+            "leakage_current_a": 1e-8,
+            "max_electric_field_v_per_cm": 1.5e5,
+            "specific_on_resistance_ohm_cm2": 0.05,
+        },
+        csv_header="drain_voltage_v,off_current_a,electric_field_v_per_cm",
+        csv_rows=["0,1e-10,0", "-10,1e-8,1.5e5"],
+        extra={
+            "tcad_deck_mutations": [mutation],
+            "repair_context": {"baseline_state_path": str(baseline_state)},
+            "mutation_effect_analysis": {
+                "decision": "continue_same_target",
+                "worth_continuing": True,
+                "recommended_next_target": "field_plate",
+                "recommended_next_direction": "increase",
+                "baseline_value": 1.5,
+                "mutation_value": 2.0,
+                "rationale": "field peak improved without Ron tradeoff",
+            },
+        },
+    )
+    tool_requests: list[dict[str, Any]] = []
+
+    def fake_extended_device(tool_request: dict[str, Any]) -> dict[str, Any]:
+        tool_requests.append(dict(tool_request))
+        value = float(tool_request["power_mos_field_plate_length_um"])
+        index = len(tool_requests)
+        field = 1.4e5 if index == 1 else 1.32e5
+        leakage = 8e-9 if index == 1 else 7e-9
+        refined_state = write_curve_state(
+            scenario_dir / "runs" / f"refined_power_{index}" / "state.json",
+            tool_name="extended_device_sweep",
+            run_id=f"refined_power_{index}",
+            request=dict(tool_request),
+            quality_status="passed",
+            metrics={
+                "leakage_current_a": leakage,
+                "max_electric_field_v_per_cm": field,
+                "specific_on_resistance_ohm_cm2": 0.05,
+            },
+            csv_header="drain_voltage_v,off_current_a,electric_field_v_per_cm",
+            csv_rows=["0,1e-10,0", f"-10,{leakage},{field}"],
+            extra={"tcad_deck_mutations": tool_request.get("tcad_deck_mutations") or [mutation]},
+        )
+        return {"status": "completed", "state_path": str(refined_state)}
+
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Validate multi-round curve-guided field-plate refinement.",
+            agent_id="mutation_refinement_agent",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=max(request.agent_max_steps, 7),
+            source_state_path=str(mutation_state),
+            max_mutation_refinements=2,
+            allow_user_confirmation_actions=True,
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={
+            "extended_device_sweep": fake_extended_device,
+            "physical_benchmark": lambda tool_request: {"status": "completed", "benchmark_path": str(scenario_dir / "benchmark.json")},
+        },
+    )
+    values = [item.get("power_mos_field_plate_length_um") for item in tool_requests]
+    final_state = Path(str(state.final_state_path or state.latest_state_path))
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    artifacts = (final_payload.get("final_summary") or {}).get("artifacts") or {}
+    assertions = [
+        require(state.status == DevsimAgentStatus.COMPLETED, "agent completed after two mutation refinement rounds"),
+        require(state.checkpoint.get("mutation_refinement_runs") == 2, "two mutation refinement runs were executed"),
+        require(values == [2.25, 2.375], "curve evidence produced progressively finer field-plate values"),
+        require(bool(artifacts.get("baseline_mutation_overlay")), "final refined state contains overlay comparison artifact"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("baseline_state", baseline_state),
+            artifact("starting_mutation_state", mutation_state),
+            artifact("mutation_refinement_plan", state.checkpoint.get("mutation_refinement_plan_path")),
+            artifact("final_refined_state", final_state),
+            artifact("final_overlay", artifacts.get("baseline_mutation_overlay"), kind="svg"),
+        ],
+        {"agent_status": state.status, "refinement_values": values, "step_kinds": [step.kind.value for step in state.steps]},
+    )
+
+
+def scenario_queue_confirmation_resume(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    from tcad_agent.web_app import WebAppConfig, approve_item_confirmation
+
+    source_deck = scenario_dir / "queued_unmatched_deck.py"
+    source_deck.parent.mkdir(parents=True, exist_ok=True)
+    source_deck.write_text("solve(type='dc')\n", encoding="utf-8")
+    final_state = write_curve_state(
+        scenario_dir / "runs" / "queued_passed" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="queued_passed",
+        request={"run_id": "queued_passed"},
+        quality_status="passed",
+        metrics={"leakage_current_a": 1e-8, "max_electric_field_v_per_cm": 1.2e5},
+        csv_rows=["0,1e-10,0", "1,1e-8,1.2e5"],
+    )
+    tool_calls: list[dict[str, Any]] = []
+
+    def queued_agent_runner(tool_request: dict[str, Any]) -> dict[str, Any]:
+        agent_state = run_autonomous_devsim_agent(
+            AutonomousDevsimRequest.model_validate(tool_request),
+            runner_registry={
+                "extended_device_sweep": lambda nested_request: tool_calls.append(nested_request)
+                or {"status": "completed", "state_path": str(final_state)},
+                "physical_benchmark": lambda nested_request: {
+                    "status": "completed",
+                    "benchmark_path": str(scenario_dir / "queued_benchmark.json"),
+                },
+            },
+        )
+        return agent_state.model_dump(mode="json")
+
+    queue_id = "e2e_confirmation_resume"
+    enqueue_run(
+        queue_db,
+        queue_id=queue_id,
+        tool_name="autonomous_devsim_agent",
+        request={
+            "goal_text": "Queued agent should pause on unverified deck patch, then resume after approval.",
+            "agent_root": str(scenario_dir / "agents"),
+            "agent_id": "queued_confirmation_agent",
+            "execute": True,
+            "resume": False,
+            "use_llm": False,
+            "max_steps": max(request.agent_max_steps, 7),
+            "source_deck_path": str(source_deck),
+            "deck_patches": [
+                {
+                    "deck_path": "geometry.field_plate_length_um",
+                    "request_path": "power_mos_field_plate_length_um",
+                    "value": 2.0,
+                }
+            ],
+            "allow_user_confirmation_actions": True,
+            "allow_unverified_deck_patch_execution": False,
+            "initial_tool_name": "extended_device_sweep",
+            "generate_report": False,
+            "generate_dashboard": False,
+        },
+        priority=50,
+        tags=["long_run_validation", "confirmation"],
+        max_attempts=2,
+    )
+    first_worker = run_queue_worker(queue_db, owner="confirmation_worker", registry={"autonomous_devsim_agent": queued_agent_runner})
+    paused_item = get_item(queue_db, queue_id)
+    require(paused_item is not None, "paused queue item exists")
+    approved = approve_item_confirmation(WebAppConfig(root=scenario_dir, queue_db_path=queue_db), queue_id)
+    second_worker = run_queue_worker(queue_db, owner="confirmation_worker", registry={"autonomous_devsim_agent": queued_agent_runner})
+    completed_item = get_item(queue_db, queue_id)
+    require(completed_item is not None, "completed queue item exists")
+    assertions = [
+        require(first_worker.skipped == 1, "queue worker paused agent when it waited for user confirmation"),
+        require(paused_item.status == QueueStatus.PAUSED, "queue item status became paused"),
+        require(approved["status"] == QueueStatus.QUEUED, "approval resumed the paused queue item"),
+        require(second_worker.completed == 1, "queue worker completed the approved agent"),
+        require(completed_item.status == QueueStatus.COMPLETED, "approved queue item completed"),
+        require(bool(tool_calls), "approved run executed the patched deck tool"),
+        require(completed_item.request.get("allow_unverified_deck_patch_execution") is True, "approval opened unverified patch execution explicitly"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", scenario_dir / "agents" / "queued_confirmation_agent" / "autonomous_devsim_agent_state.json"),
+            artifact("heartbeat", scenario_dir / "agents" / "queued_confirmation_agent" / "heartbeat.json"),
+            artifact("final_state", final_state),
+        ],
+        {
+            "first_worker": first_worker.model_dump(mode="json"),
+            "second_worker": second_worker.model_dump(mode="json"),
+            "paused_status": paused_item.status,
+            "completed_status": completed_item.status,
+            "tool_calls": tool_calls,
+        },
+    )
+
+
+def scenario_queue_interruption_recovery(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del request
+    queue_id = "e2e_interruption_recovery"
+    result_state = write_curve_state(
+        scenario_dir / "runs" / "recovered" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="recovered",
+        request={"run_id": "recovered"},
+        quality_status="passed",
+        metrics={"leakage_current_a": 1e-9},
+    )
+    enqueue_run(
+        queue_db,
+        queue_id=queue_id,
+        tool_name="autonomous_devsim_agent",
+        request={"goal_text": "Recover a worker-owned long-run agent.", "execute": True},
+        priority=40,
+        tags=["long_run_validation", "recovery"],
+        max_attempts=2,
+    )
+    claimed = claim_next_items(queue_db, owner="dead_worker", limit=1, lease_seconds=3600)
+    recovery = recover_owner_running_items(queue_db, owner="dead_worker")
+    recovered_item = get_item(queue_db, queue_id)
+    worker = run_queue_worker(
+        queue_db,
+        owner="live_worker",
+        registry={
+            "autonomous_devsim_agent": lambda tool_request: {
+                "status": "completed",
+                "state_path": str(result_state),
+                "agent_dir": str(scenario_dir / "agents" / "recovered_agent"),
+            }
+        },
+    )
+    completed_item = get_item(queue_db, queue_id)
+    require(recovered_item is not None, "recovered queue item exists")
+    require(completed_item is not None, "completed recovered queue item exists")
+    assertions = [
+        require(len(claimed) == 1, "interrupted worker claimed one item"),
+        require(recovery["recovered"] == 1, "owner-scoped recovery requeued the interrupted item"),
+        require(recovered_item.status == QueueStatus.QUEUED, "interrupted item returned to queued state"),
+        require(worker.completed == 1, "live worker completed the recovered item"),
+        require(completed_item.status == QueueStatus.COMPLETED, "recovered queue item completed"),
+    ]
+    return (
+        assertions,
+        [artifact("result_state", result_state)],
+        {"recovery": recovery, "worker": worker.model_dump(mode="json")},
+    )
+
+
+def scenario_real_autonomous_agent(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    payload = {
+        "goal_text": "Run a real autonomous DEVSIM validation mission and produce durable evidence.",
+        "agent_id": "real_autonomous_agent",
+        "agent_root": scenario_dir / "agents",
+        "execute": True,
+        "use_llm": request.use_llm,
+        "allow_llm_fallback": request.allow_llm_fallback,
+        "max_steps": request.agent_max_steps,
+        "initial_tool_name": "extended_device_sweep",
+        "initial_request": {
+            "device_type": "power_mosfet_bv_ron",
+            "fidelity": "physics_1d",
+            "evidence_level": "tcad_executable",
+            "run_id": "real_long_run_power_mosfet",
+            "run_root": str(scenario_dir / "real_tools"),
+        },
+    }
+    payload.update(request.real_agent_request)
+    state = run_autonomous_devsim_agent(AutonomousDevsimRequest.model_validate(payload))
+    acceptable = {DevsimAgentStatus.COMPLETED, DevsimAgentStatus.WAITING_FOR_USER}
+    assertions = [
+        require(state.status in acceptable, "real autonomous agent completed or stopped at an explicit confirmation gate"),
+        require(Path(state.agent_dir, "autonomous_devsim_agent_state.json").exists(), "real agent state artifact exists"),
+        require(Path(str(state.heartbeat_path)).exists(), "real agent heartbeat exists"),
+        require(bool(state.steps) or state.status == DevsimAgentStatus.WAITING_FOR_USER, "real agent produced steps or a confirmation gate"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("heartbeat", state.heartbeat_path),
+            artifact("final_state", state.final_state_path or state.latest_state_path),
+            artifact("final_report", state.final_report_path, kind="markdown"),
+            artifact("final_dashboard", state.final_dashboard_path, kind="html"),
+        ],
+        {"agent_status": state.status, "step_kinds": [step.kind.value for step in state.steps], "failure_reason": state.failure_reason},
+    )
+
+
+ScenarioRunner = Callable[[Path, LongRunValidationRequest, Path], tuple[list[str], list[dict[str, Any]], dict[str, Any]]]
+
+
+SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
+    "agent_confirmation_pause": ("Agent pauses before executing unverified deck patch", scenario_agent_confirmation_pause),
+    "agent_cancel_boundary": ("Agent observes cancel token at step boundary", scenario_agent_cancel_boundary),
+    "agent_repair_report": ("Agent repairs suspicious curve and writes report", scenario_agent_repair_report),
+    "mutation_refinement_multiround": ("Agent performs multi-round mutation refinement", scenario_mutation_refinement_multiround),
+    "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
+    "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),
+    "real_autonomous_agent": ("Real LLM/DEVSIM autonomous agent run", scenario_real_autonomous_agent),
+}
+
+
+DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
+    "agent_confirmation_pause",
+    "agent_cancel_boundary",
+    "agent_repair_report",
+    "mutation_refinement_multiround",
+    "queue_confirmation_resume",
+    "queue_interruption_recovery",
+]
+
+
+def selected_scenario_ids(request: LongRunValidationRequest) -> list[str]:
+    if request.scenario_ids:
+        return request.scenario_ids
+    if request.suite not in {LongRunValidationSuite.AUTONOMOUS_E2E, LongRunValidationSuite.ALL}:
+        return []
+    selected = list(DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
+    if request.mode == LongRunValidationMode.REAL or request.real_agent_request:
+        selected.append("real_autonomous_agent")
+    return selected
+
+
+def run_scenario(
+    validation_dir: Path,
+    queue_db: Path,
+    request: LongRunValidationRequest,
+    scenario_id: str,
+) -> LongRunScenarioResult:
+    if scenario_id not in SCENARIO_REGISTRY:
+        now = utc_timestamp()
+        result = LongRunScenarioResult(
+            scenario_id=scenario_id,
+            title="unknown scenario",
+            status=LongRunValidationStatus.FAILED,
+            started_at=now,
+            completed_at=now,
+            duration_seconds=0.0,
+            failure_reason=f"unknown long-run validation scenario: {scenario_id}",
+        )
+        write_json(validation_dir / "scenarios" / scenario_id / "scenario_result.json", result.model_dump(mode="json"))
+        return result
+    title, runner = SCENARIO_REGISTRY[scenario_id]
+    scenario_dir = validation_dir / "scenarios" / scenario_id
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    started_at = utc_timestamp()
+    start = time.monotonic()
+    try:
+        assertions, artifacts, details = runner(scenario_dir, request, queue_db)
+        status = LongRunValidationStatus.COMPLETED
+        failure_reason = None
+    except Exception as exc:
+        assertions = []
+        artifacts = []
+        details = {}
+        status = LongRunValidationStatus.FAILED
+        failure_reason = str(exc)
+    result = LongRunScenarioResult(
+        scenario_id=scenario_id,
+        title=title,
+        status=status,
+        started_at=started_at,
+        completed_at=utc_timestamp(),
+        duration_seconds=round(time.monotonic() - start, 6),
+        assertions=assertions,
+        artifacts=artifacts,
+        details=details,
+        failure_reason=failure_reason,
+    )
+    result_path = scenario_dir / "scenario_result.json"
+    result.result_path = str(result_path.resolve())
+    write_json(result_path, result.model_dump(mode="json"))
+    return result
+
+
+def run_queue_smoke(
+    state: LongRunValidationState,
+    request: LongRunValidationRequest,
+    validation_dir: Path,
+    queue_db: Path,
+) -> None:
+    queue_goals = request.queue_goals or default_queue_goals(validation_dir)
+    for item in queue_goals:
+        queued = enqueue_run(
+            queue_db,
+            queue_id=item.get("queue_id"),
+            tool_name=item["tool_name"],
+            request=item.get("request") or {},
+            priority=int(item.get("priority") or 0),
+            max_attempts=int(item.get("max_attempts") or 1),
+            tags=item.get("tags") or ["long_run_validation"],
+        )
+        state.queued_items.append(queued.model_dump(mode="json"))
+
+    daemon = run_queue_daemon(
+        queue_db,
+        owner=f"{state.validation_id}_daemon",
+        concurrency=1,
+        poll_interval_seconds=request.poll_interval_seconds,
+        max_idle_loops=request.max_idle_loops,
+    )
+    state.daemon_result = daemon.model_dump(mode="json")
+
+    completed_items = []
+    for queued in state.queued_items:
+        item = get_item(queue_db, queued["queue_id"])
+        if item is None:
+            raise RuntimeError(f"queue item disappeared: {queued['queue_id']}")
+        completed_items.append(item.model_dump(mode="json"))
+        if item.status != "completed":
+            raise RuntimeError(f"queue item did not complete: {queued['queue_id']} status={item.status}")
+        if item.result_state_path:
+            benchmark = run_physical_benchmark(Path(item.result_state_path))
+            state.benchmark_results.append(benchmark.model_dump(mode="json"))
+    state.queued_items = completed_items
+
+    failed_benchmarks = [item for item in state.benchmark_results if item.get("status") == "failed"]
+    if failed_benchmarks:
+        raise RuntimeError(f"{len(failed_benchmarks)} benchmark(s) failed")
 
 
 def run_long_run_validation(request: LongRunValidationRequest) -> LongRunValidationState:
@@ -167,45 +928,20 @@ def run_long_run_validation(request: LongRunValidationRequest) -> LongRunValidat
     )
     write_state(state, state_path)
     try:
-        queue_goals = request.queue_goals or default_queue_goals(validation_dir)
-        for item in queue_goals:
-            queued = enqueue_run(
-                queue_db,
-                queue_id=item.get("queue_id"),
-                tool_name=item["tool_name"],
-                request=item.get("request") or {},
-                priority=int(item.get("priority") or 0),
-                max_attempts=int(item.get("max_attempts") or 1),
-                tags=item.get("tags") or ["long_run_validation"],
-            )
-            state.queued_items.append(queued.model_dump(mode="json"))
-        write_state(state, state_path)
+        if request.suite in {LongRunValidationSuite.QUEUE_SMOKE, LongRunValidationSuite.ALL}:
+            run_queue_smoke(state, request, validation_dir, queue_db)
+            write_state(state, state_path)
 
-        daemon = run_queue_daemon(
-            queue_db,
-            owner=f"{validation_id}_daemon",
-            concurrency=1,
-            poll_interval_seconds=request.poll_interval_seconds,
-            max_idle_loops=request.max_idle_loops,
-        )
-        state.daemon_result = daemon.model_dump(mode="json")
+        scenario_ids = selected_scenario_ids(request)
+        for scenario_id in scenario_ids:
+            scenario = run_scenario(validation_dir, queue_db, request, scenario_id)
+            state.scenario_results.append(scenario.model_dump(mode="json"))
+            write_state(state, state_path)
 
-        completed_items = []
-        for queued in state.queued_items:
-            item = get_item(queue_db, queued["queue_id"])
-            if item is None:
-                raise RuntimeError(f"queue item disappeared: {queued['queue_id']}")
-            completed_items.append(item.model_dump(mode="json"))
-            if item.status != "completed":
-                raise RuntimeError(f"queue item did not complete: {queued['queue_id']} status={item.status}")
-            if item.result_state_path:
-                benchmark = run_physical_benchmark(Path(item.result_state_path))
-                state.benchmark_results.append(benchmark.model_dump(mode="json"))
-        state.queued_items = completed_items
-
-        failed_benchmarks = [item for item in state.benchmark_results if item.get("status") == "failed"]
-        if failed_benchmarks:
-            raise RuntimeError(f"{len(failed_benchmarks)} benchmark(s) failed")
+        failed_scenarios = [item for item in state.scenario_results if item.get("status") == LongRunValidationStatus.FAILED]
+        if failed_scenarios:
+            names = ", ".join(str(item.get("scenario_id")) for item in failed_scenarios)
+            raise RuntimeError(f"long-run scenario(s) failed: {names}")
 
         index_db = validation_dir / "experiment_index.sqlite"
         state.index_summary = rebuild_index(validation_dir, index_db)

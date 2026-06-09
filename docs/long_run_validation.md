@@ -1,8 +1,8 @@
 # Long-Run Validation
 
-`tcad_agent.tools.long_run_validation` runs an unattended validation of the long-horizon execution stack.
+`tcad_agent.tools.long_run_validation` runs unattended validations of the long-horizon execution stack.
 
-It exercises:
+The original fast queue smoke suite exercises:
 
 - run queue enqueue;
 - queue daemon polling;
@@ -20,4 +20,54 @@ python3.11 -m tcad_agent.tools.long_run_validation \
 
 By default it queues Schottky/SBD, BJT Gummel/output, and power MOSFET/LDMOS extended-device runs aligned to the seven public TCAD source categories. BJT and power MOSFET/LDMOS use `fidelity=physics_1d`, so the unattended regression checks the upgraded executable coverage rather than only compact baselines. Custom queue items can be supplied with `--queue-goals-json`.
 
-This is not a substitute for multi-day production soak testing, but it is the fast regression harness that proves the long-running control path is wired end to end.
+## Autonomous E2E Suite
+
+The autonomous E2E suite validates the agent behavior contract around long-running DEVSIM work:
+
+- semantic deck patch confirmation before executing unverified source edits;
+- cancel-token handling at agent step boundaries;
+- suspicious curve observation, repair execution, benchmark, report, and dashboard output;
+- baseline-vs-mutation curve comparison followed by two finer mutation-refinement rounds;
+- queue pause, approval, resume, and explicit unverified-patch approval;
+- worker interruption recovery for queued long-run agent items.
+
+Run the deterministic E2E harness:
+
+```bash
+python3.11 -m tcad_agent.tools.long_run_validation \
+  --suite autonomous_e2e \
+  --validation-id autonomous_e2e
+```
+
+This mode uses lightweight local runners so it can run in CI while still asserting the same durable artifacts the production loop depends on: `autonomous_devsim_agent_state.json`, `heartbeat.json`, semantic deck diffs, report/dashboard files, mutation-refinement plans, overlays, queue rows, and `validation_state.json`.
+
+Run everything:
+
+```bash
+python3.11 -m tcad_agent.tools.long_run_validation \
+  --suite all \
+  --validation-id full_longrun_regression
+```
+
+## Real LLM/DEVSIM Soak
+
+For an overnight real-tool validation, pass a real autonomous-agent request. The request is merged into the default real scenario, so it can point at a real user deck, real run roots, objectives, constraints, and LLM settings.
+
+```bash
+python3.11 -m tcad_agent.tools.long_run_validation \
+  --suite autonomous_e2e \
+  --mode real \
+  --use-llm \
+  --agent-max-steps 40 \
+  --validation-id overnight_real_devsim \
+  --real-agent-request-json '{
+    "goal_text": "长时间自主操作真实 DEVSIM deck，修复收敛/物理质量问题并输出工程结论",
+    "source_deck_path": "/path/to/user_devsim_deck.py",
+    "deck_patches": [],
+    "allow_user_confirmation_actions": false,
+    "generate_report": true,
+    "generate_dashboard": true
+  }'
+```
+
+The real scenario is considered valid when the agent either completes or stops at an explicit confirmation gate. A failed/cancelled real run fails the validation and keeps the state, heartbeat, logs, and artifacts under `runs/long_run_validation/<validation_id>/`.
