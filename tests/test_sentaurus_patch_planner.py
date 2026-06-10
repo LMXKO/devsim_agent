@@ -196,6 +196,12 @@ Math {
         self.assertEqual(len(benchmark_sources), 1)
         self.assertTrue(Path(state.checkpoint["sentaurus_patch_plan_path"]).exists())
         self.assertEqual(state.checkpoint["executed_sentaurus_patch_candidates"], 1)
+        mutation_state = json.loads(Path(state.latest_state_path).read_text(encoding="utf-8"))
+        effect = mutation_state["sentaurus_mutation_effect_analysis"]
+        self.assertEqual(effect["decision"], "continue_refine")
+        self.assertEqual(effect["primary_metric"], "leakage_current_a")
+        self.assertTrue(effect["worth_continuing"])
+        self.assertEqual(state.checkpoint["latest_sentaurus_mutation_effect_analysis"]["decision"], "continue_refine")
 
 
 if __name__ == "__main__":

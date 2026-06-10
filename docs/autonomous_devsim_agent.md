@@ -122,7 +122,15 @@ For Sentaurus states, the same experiment-design budget first goes through `plan
 - `checkpoint.pending_sentaurus_patch_candidate` when a safe verified candidate is selected;
 - `checkpoint.blocked_sentaurus_patch_candidates` when only confirmation-gated candidates exist.
 
-If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. High-risk geometry/process/model changes still pause for confirmation.
+If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`.
+
+The next decision consumes that analysis:
+
+- `continue_refine` can trigger another Sentaurus patch-planning round when experiment budget remains;
+- `blocked_for_pareto_review` triggers configured objective/constraint evaluation or pauses for review;
+- `switch_target` and `reject_candidate` are recorded so the agent does not silently keep repeating the same direction.
+
+High-risk geometry/process/model changes still pause for confirmation.
 
 ## Hypothesis Tree
 

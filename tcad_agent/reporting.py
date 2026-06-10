@@ -209,6 +209,7 @@ def deck_lineage_rows(final_state: dict[str, Any] | None, base_dir: Path) -> lis
     active_mutation = request.get("active_deck_mutation") or {}
     repair_context = final_state.get("repair_context") or {}
     mutation_effect = final_state.get("mutation_effect_analysis") or {}
+    sentaurus_effect = final_state.get("sentaurus_mutation_effect_analysis") or {}
     artifacts = final_artifacts(final_state)
     agent_policy = repair_context.get("agent_policy") if isinstance(repair_context, dict) else {}
     if not isinstance(agent_policy, dict):
@@ -229,6 +230,14 @@ def deck_lineage_rows(final_state: dict[str, Any] | None, base_dir: Path) -> lis
         rows.append(["Primary metric", mutation_effect.get("primary_metric")])
         rows.append(["Improved metrics", mutation_effect.get("improved_metrics")])
         rows.append(["Regressed metrics", mutation_effect.get("regressed_metrics")])
+    if sentaurus_effect:
+        rows.append(["Sentaurus patch decision", sentaurus_effect.get("decision")])
+        rows.append(["Sentaurus patch rationale", sentaurus_effect.get("rationale")])
+        rows.append(["Sentaurus primary metric", sentaurus_effect.get("primary_metric")])
+        rows.append(["Sentaurus improved metrics", sentaurus_effect.get("improved_metrics")])
+        rows.append(["Sentaurus regressed metrics", sentaurus_effect.get("regressed_metrics")])
+        if sentaurus_effect.get("tradeoff_violations"):
+            rows.append(["Sentaurus tradeoffs", sentaurus_effect.get("tradeoff_violations")])
     observation = repair_context.get("agent_observation_summary") or agent_policy.get("observation_summary")
     hypothesis = repair_context.get("agent_hypothesis_zh") or agent_policy.get("hypothesis_zh")
     tool_plan = repair_context.get("agent_tool_plan") if isinstance(repair_context.get("agent_tool_plan"), list) else agent_policy.get("tool_plan")

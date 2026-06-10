@@ -156,7 +156,7 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
   --execute
 ```
 
-The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-design`, the next Sentaurus-specific planning step is `plan_sentaurus_patch`: it inspects the latest `sentaurus_state.json`, parses the configured deck files, generates verified semantic patch candidates, writes a JSON work package under `sentaurus_patch_plans/`, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`. High-risk geometry/process/model classes remain confirmation-gated.
+The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-design`, the next Sentaurus-specific planning step is `plan_sentaurus_patch`: it inspects the latest `sentaurus_state.json`, parses the configured deck files, generates verified semantic patch candidates, writes a JSON work package under `sentaurus_patch_plans/`, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`. After that patched run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched state and writes its decision back into the patched state. High-risk geometry/process/model classes and tradeoff regressions remain confirmation-gated.
 
 ## Patch Planner
 
@@ -178,6 +178,27 @@ The planner returns:
 - a selected candidate only when every patch verifies and the risk gate allows it.
 
 The current vocabulary recognizes continuation/Math controls, BV `Goal` voltage, drift doping, lifetime, trap density, field plate, guard ring, oxide thickness, implant dose, junction depth, trench corner radius, and region-specific lifetime variables when those variables already exist in the deck. It does not invent proprietary process syntax; unsupported targets stay as unselected or confirmation-gated candidates until real project evidence or public/official documentation justifies a schema.
+
+## Mutation Effect Analyzer
+
+Use the analyzer directly to compare a baseline run against a patched run:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_mutation_effect \
+  --baseline /tmp/sentaurus_base/sentaurus_state.json \
+  --mutation /tmp/sentaurus_patch/sentaurus_state.json \
+  --goal "降低漏电，同时不要牺牲 BV/Ron/field peak" \
+  --candidate-json '{"candidate_id":"device.cmd:lifetime:LIFETIME_SCALE"}' \
+  --output /tmp/sentaurus_mutation_effect.json
+```
+
+The analyzer reads `quality_report.metrics`, `final_summary.artifacts.sentaurus_curve_csv`, and curve shape metadata. It reports primary metric movement, improved/regressed metrics, BV bracket movement, leakage interval, field peak value/location, overlay SVG path, Pareto summary, and a decision:
+
+- `continue_refine`: primary metric or run quality improved without blocking tradeoffs;
+- `blocked_for_pareto_review`: primary direction helped but BV/Ron/field/leakage constraints regressed beyond tolerance;
+- `switch_target`: primary metric did not improve;
+- `reject_candidate`: patched run regressed quality/status;
+- `insufficient_evidence`: comparable metrics or CSV evidence are missing.
 
 ## Test Boundary
 

@@ -19,6 +19,7 @@ from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.repair_executor import run_repair_executor
+from tcad_agent.sentaurus_mutation_effect import SentaurusMutationEffectRequest, analyze_sentaurus_mutation_effect
 from tcad_agent.task_planner import parse_json_object
 from tcad_agent.task_spec import PROJECT_ROOT
 
@@ -469,6 +470,7 @@ def observe_state(path_value: str | None) -> dict[str, Any]:
         "benchmark_context": benchmark,
         "repair_context": state_data.get("repair_context"),
         "mutation_effect_analysis": state_data.get("mutation_effect_analysis"),
+        "sentaurus_mutation_effect_analysis": state_data.get("sentaurus_mutation_effect_analysis"),
     }
 
 
@@ -720,6 +722,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
+            "如果 sentaurus_mutation_effect_analysis 显示 patch 有效，可以继续细化；如果出现 tradeoff，必须进行约束/Pareto 复核或等待确认。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
             "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
@@ -908,6 +911,7 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
     if (
         isinstance(latest_analysis, dict)
         and latest_analysis
+        and observation.get("tool_name") != "sentaurus_run"
         and mutation_refinement_runs < request.max_mutation_refinements
         and state.checkpoint.get("mutation_refinement_plan_source_path") != state.latest_state_path
     ):
@@ -916,6 +920,38 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             source_state_path=state.latest_state_path,
             reason="Latest state contains baseline-vs-mutation curve evidence; generate the next finer deck/request patch before continuing.",
         )
+    sentaurus_effect = observation.get("sentaurus_mutation_effect_analysis")
+    if isinstance(sentaurus_effect, dict) and observation.get("tool_name") == "sentaurus_run":
+        decision = str(sentaurus_effect.get("decision") or "")
+        if (
+            decision == "blocked_for_pareto_review"
+            and state.checkpoint.get("sentaurus_tradeoff_review_source_path") != state.latest_state_path
+        ):
+            if request.objectives or request.constraints:
+                return DevsimAgentAction(
+                    kind=DevsimAgentActionKind.EVALUATE_OBJECTIVES,
+                    source_state_path=state.latest_state_path,
+                    request={
+                        "objectives": [item.model_dump(mode="json") for item in request.objectives],
+                        "constraints": [item.model_dump(mode="json") for item in request.constraints],
+                    },
+                    reason="Sentaurus patch improved one direction but introduced tradeoffs; evaluate configured constraints before continuing.",
+                )
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.ASK_USER,
+                source_state_path=state.latest_state_path,
+                request={
+                    "question": "Sentaurus patch introduced tradeoff regressions. Review Pareto/constraints before the agent continues.",
+                    "sentaurus_mutation_effect_analysis": sentaurus_effect,
+                },
+                reason="Sentaurus patch introduced tradeoff regressions; pause for Pareto/constraint review.",
+            )
+        if (
+            decision in {"reject_candidate", "switch_target"}
+            and state.checkpoint.get("sentaurus_rejected_patch_source_path") != state.latest_state_path
+        ):
+            state.checkpoint["sentaurus_rejected_patch_source_path"] = state.latest_state_path
+            state.checkpoint["sentaurus_rejected_patch_analysis"] = sentaurus_effect
     sentaurus_patch_runs = int(state.checkpoint.get("sentaurus_patch_plan_runs") or 0)
     if (
         request.enable_experiment_design
@@ -1374,6 +1410,61 @@ def augment_mutation_refinement_result(
     return diagnostic_data
 
 
+def augment_sentaurus_patch_result(
+    *,
+    baseline_state_path: str | None,
+    result_state_path: str | None,
+    candidate: dict[str, Any],
+    goal_text: str,
+) -> dict[str, Any] | None:
+    if not baseline_state_path or not result_state_path:
+        return None
+    baseline = Path(str(baseline_state_path))
+    result_path = Path(str(result_state_path))
+    if not baseline.exists() or not result_path.exists():
+        return None
+    output_path = result_path.parent / "sentaurus_mutation_effect.json"
+    analysis = analyze_sentaurus_mutation_effect(
+        SentaurusMutationEffectRequest(
+            baseline_state_path=baseline,
+            mutation_state_path=result_path,
+            candidate=candidate,
+            goal_text=goal_text,
+            output_path=output_path,
+            overlay_output_path=result_path.parent / "sentaurus_baseline_mutation_overlay.svg",
+        )
+    )
+    analysis_data = analysis.model_dump(mode="json")
+    result_state = load_final_state(str(result_path))
+    if not result_state:
+        return analysis_data
+    result_state["sentaurus_mutation_effect_analysis"] = analysis_data
+    raw_context = result_state.get("repair_context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    context.update(
+        {
+            "schema_version": "actsoft.tcad.repair_context.v1",
+            "baseline_state_path": str(baseline),
+            "parent_state_path": str(result_path),
+            "action_name": "sentaurus_patch_candidate",
+            "sentaurus_patch_candidate_id": candidate.get("candidate_id"),
+            "sentaurus_mutation_effect_decision": analysis.decision,
+            "sentaurus_recommended_next_target": analysis.recommended_next_target,
+            "worth_continuing_sentaurus_patch": analysis.worth_continuing,
+        }
+    )
+    result_state["repair_context"] = context
+    summary = result_state.get("final_summary") if isinstance(result_state.get("final_summary"), dict) else {}
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    artifacts["sentaurus_mutation_effect"] = str(output_path.resolve())
+    if analysis.overlay_svg_path:
+        artifacts["sentaurus_baseline_mutation_overlay"] = analysis.overlay_svg_path
+    summary["artifacts"] = artifacts
+    result_state["final_summary"] = summary
+    write_json(result_path, result_state)
+    return analysis_data
+
+
 def execute_action(
     state: AutonomousDevsimAgentState,
     request: AutonomousDevsimRequest,
@@ -1467,11 +1558,22 @@ def execute_action(
         if tool_request.get("sentaurus_patch_candidate_id"):
             pending = state.checkpoint.get("pending_sentaurus_patch_candidate")
             pending_patches = pending.get("patches") if isinstance(pending, dict) and isinstance(pending.get("patches"), list) else []
+            candidate_for_analysis = dict(pending) if isinstance(pending, dict) else {"candidate_id": tool_request.get("sentaurus_patch_candidate_id")}
+            baseline = tool_request.get("repair_baseline_state_path") or state.latest_state_path
+            analysis = augment_sentaurus_patch_result(
+                baseline_state_path=str(baseline) if baseline else None,
+                result_state_path=result_state_path,
+                candidate=candidate_for_analysis,
+                goal_text=state.goal_text,
+            )
+            if analysis:
+                result["sentaurus_mutation_effect_analysis"] = analysis
             if isinstance(pending, dict):
                 state.checkpoint["pending_sentaurus_patch_candidate"] = {
                     **pending,
                     "executed": True,
                     "result_state_path": result_state_path,
+                    "sentaurus_mutation_effect_analysis": analysis,
                 }
             history = state.checkpoint.get("sentaurus_patch_history")
             history_items = list(history) if isinstance(history, list) else []
@@ -1480,9 +1582,11 @@ def execute_action(
                     "candidate_id": tool_request.get("sentaurus_patch_candidate_id"),
                     "patches": pending_patches,
                     "result_state_path": result_state_path,
+                    "sentaurus_mutation_effect_analysis": analysis,
                 }
             )
             state.checkpoint["sentaurus_patch_history"] = history_items
+            state.checkpoint["latest_sentaurus_mutation_effect_analysis"] = analysis
             state.checkpoint["executed_sentaurus_patch_candidates"] = int(
                 state.checkpoint.get("executed_sentaurus_patch_candidates") or 0
             ) + 1
@@ -1536,6 +1640,9 @@ def execute_action(
         state.checkpoint["engineering_objectives_path"] = result.get("output_path")
         state.checkpoint["pareto_front"] = result.get("pareto_front") or []
         state.checkpoint["best_candidate"] = result.get("best_candidate")
+        if "Sentaurus patch" in action.reason:
+            state.checkpoint["sentaurus_tradeoff_review_source_path"] = source
+            state.checkpoint["sentaurus_tradeoff_review"] = result
         return result, source
     if action.kind == DevsimAgentActionKind.INGEST_DECK:
         raw_source = action.request.get("source_deck_path") or request.source_deck_path
