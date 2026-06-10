@@ -4,7 +4,7 @@ ActSoft TCAD Agent is a research prototype for natural-language driven TCAD work
 
 > A TCAD simulation engineer describes the task in natural language; an agent plans, runs, diagnoses, repairs, resumes, and finally summarizes the TCAD work over a long horizon.
 
-The current public version focuses on open-source DEVSIM workflows. It does not include proprietary TCAD software, unlicensed software, private model gateways, API keys, or local run artifacts.
+The current public version focuses on open-source DEVSIM workflows and a local adapter for user-owned Sentaurus installations. It does not include proprietary TCAD software, unlicensed software, private model gateways, API keys, licenses, PDKs, commercial model files, private decks, or local run artifacts.
 
 ## What It Does
 
@@ -14,6 +14,7 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Decomposes natural-language goals into durable mission steps.
 - Runs an agent-first long-horizon observe/diagnose/plan/act policy with a risk ledger, replan budget, and missing-evidence tracking.
 - Provides a long-running `autonomous_devsim_agent` runtime that repeatedly chooses tools, runs DEVSIM-backed tasks, inspects state/metrics/artifacts/logs/curves/deck diffs, repairs suspicious results, benchmarks evidence, evaluates objectives, and writes conclusions.
+- Provides a `sentaurus_run` external runner that can clone a user-owned Sentaurus project into a controlled run workspace, apply verified semantic file patches, execute configured local commands, parse logs, ingest extracted CSV curves, benchmark the result, and hand the state back to the autonomous agent.
 - Supports cooperative long-run control with agent heartbeat files, cancel tokens, subprocess termination, queue pause/resume, user-confirmation approval, and autonomous run timeline dashboards.
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
@@ -56,14 +57,14 @@ Executable templates also expose `tcad_fidelity` and `signoff_workflow`. Current
 
 ```text
 Natural-language task
-  -> autonomous DEVSIM agent runtime
+  -> autonomous TCAD agent runtime
   -> agent-first goal decomposer
   -> engineering-intent parser
   -> mission agent
   -> long-horizon control policy
   -> run queue / worker
   -> agent-first supervisor
-  -> TCAD tool runner
+  -> TCAD tool runner / local Sentaurus adapter
   -> quality, metrics, curve diagnostics, convergence, repair
   -> deck IR / semantic patch / mutation overlay
   -> physical credibility assessment
@@ -104,6 +105,93 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirement
 ```
 
 DEVSIM is installed through Python dependencies. No Sentaurus, Silvaco, or other proprietary simulator is bundled.
+
+## Local Sentaurus Adapter
+
+The Sentaurus path is an adapter for a licensed installation that already exists on your machine or cluster. The repository never stores Synopsys binaries, license strings, commercial PDKs, process decks, calibrated model files, or private simulation outputs.
+
+What the adapter does:
+
+- reads a local runtime profile JSON outside the repository;
+- copies the selected project into `runs/sentaurus/<run_id>/project`;
+- applies explicit, verifiable text/regex/JSON patches and writes `sentaurus_patch.diff`;
+- executes configured flow steps such as `sdevice`, `svisual`, `inspect`, or a site wrapper script;
+- captures stdout/stderr, scans logs for license/convergence/mesh/fatal issues, collects `.log`, `.plt`, `.tdr`, and `.csv` artifacts, and extracts metrics from CSV curves;
+- writes `sentaurus_state.json` so the same autonomous benchmark, objective/Pareto, report, and next-action logic can continue.
+
+The public sources used to set this boundary are conservative: Synopsys describes Sentaurus Device, Workbench, and Visual as device simulation, workflow/execution, and visualization/xy-data tools; public training mirrors show command-file execution and extraction patterns. If a real project needs a new operation or parser, add it from real project evidence or public/official documentation first rather than guessing.
+
+Reference links used for this adapter boundary:
+
+- [Synopsys TCAD](https://www.synopsys.com/manufacturing/tcad.html)
+- [Sentaurus Device training mirror](https://ghzphy.github.io/Sentaurus_Training/sd/sd_1.html)
+- [Sentaurus quasistationary sweep training mirror](https://ghzphy.github.io/Sentaurus_Training/sd/sd_8.html)
+- [Sentaurus Visual batch/Python training mirror](https://ghzphy.github.io/Sentaurus_Training/sv/sv_6.html)
+
+Example profile, saved outside git such as `~/.actsoft/sentaurus_profile.json`:
+
+```json
+{
+  "profile_id": "local_sentaurus",
+  "sentaurus_home": "/opt/synopsys/sentaurus",
+  "commands": {
+    "sdevice": "/opt/synopsys/sentaurus/bin/sdevice",
+    "svisual": "/opt/synopsys/sentaurus/bin/svisual"
+  },
+  "allowed_project_roots": ["/Users/me/tcad_projects"],
+  "run_root": "/Users/me/tcad_runs/actsoft_sentaurus",
+  "env": {
+    "STROOT": "/opt/synopsys/sentaurus"
+  },
+  "default_flow": ["sdevice"],
+  "curve_globs": ["*.csv", "*_extract.csv", "*_iv.csv"],
+  "artifact_globs": ["*.log", "*_des.log", "*.plt", "*_des.plt", "*.tdr", "*_des.tdr", "*.csv"]
+}
+```
+
+Keep license variables in your shell, site module, keychain, or private profile outside this repo. `runtime_profile` stored in state files records only profile id, command names, allowed roots, and environment variable keys, not their values.
+
+Run one Sentaurus baseline directly:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_run \
+  --goal "Run BV baseline and extract IV/field curve" \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --profile ~/.actsoft/sentaurus_profile.json \
+  --flow sdevice \
+  --deck-file device.cmd \
+  --timeout-seconds 7200
+```
+
+Run the long-horizon agent with natural language plus Sentaurus context:
+
+```bash
+python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+  --goal "用 Sentaurus 跑这个 LDMOS 项目，降低漏电，同时不要牺牲 BV/Ron，必要时提出下一轮 deck patch" \
+  --sentaurus-project-path /Users/me/tcad_projects/ldmos_case \
+  --sentaurus-profile-path ~/.actsoft/sentaurus_profile.json \
+  --sentaurus-request-json '{"flow":["sdevice"],"deck_files":["device.cmd"],"timeout_seconds":7200}' \
+  --enable-experiment-design \
+  --execute
+```
+
+For curve-aware diagnosis, configure your Sentaurus Visual/Inspect or site wrapper to export a numeric CSV into the copied project. Recommended columns are explicit and unit-bearing, for example `voltage_v,current_a,electric_field_v_per_cm`. Without a CSV, the run can still capture logs/artifacts, but benchmark status remains limited because the agent cannot inspect curve shape, BV brackets, leakage interval, or field peak.
+
+Patch format is deliberately explicit:
+
+```json
+[
+  {
+    "file": "device.cmd",
+    "operation": "replace_text",
+    "pattern": "set DRIFT_DOPING 1e15",
+    "replacement": "set DRIFT_DOPING 8e14",
+    "reason": "test lower drift doping as a BV/leakage direction"
+  }
+]
+```
+
+Unsupported or unmatched patches are recorded as unverified and should not be executed as trusted mutations. Geometry/process/model edits should remain behind user confirmation unless you have a validated site-specific patch schema.
 
 ## Start The Web UI
 

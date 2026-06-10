@@ -623,6 +623,7 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
             "supervisor_state.json",
             "mission_state.json",
             "autonomous_devsim_agent_state.json",
+            "sentaurus_state.json",
             "sweep_state.json",
             "optimization_state.json",
         ]:
@@ -649,6 +650,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.dashboard import generate_experiment_dashboard
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
+    from tcad_agent.sentaurus import SentaurusRunRequest, run_sentaurus
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
@@ -834,6 +836,9 @@ def default_runner_registry() -> dict[str, Runner]:
         "experiment_report": experiment_report_runner,
         "experiment_dashboard": experiment_dashboard_runner,
         "experiment_conclusion": experiment_conclusion_runner,
+        "sentaurus_run": lambda request: result_to_dict(
+            run_sentaurus(SentaurusRunRequest.model_validate(request))
+        ),
         "user_deck_execution": lambda request: run_user_deck(UserDeckRunRequest.model_validate(request)),
     }
     registry["autonomous_devsim_agent"] = lambda request: run_autonomous_devsim_agent(

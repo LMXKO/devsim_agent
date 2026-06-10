@@ -108,6 +108,9 @@ class AutonomousDevsimRequest(BaseModel):
     source_deck_path: str | None = None
     deck_patches: list[dict[str, Any]] = Field(default_factory=list)
     allow_unverified_deck_patch_execution: bool = False
+    sentaurus_project_path: Path | None = None
+    sentaurus_profile_path: Path | None = None
+    sentaurus_request: dict[str, Any] = Field(default_factory=dict)
     objectives: list[EngineeringObjective] = Field(default_factory=list)
     constraints: list[EngineeringConstraint] = Field(default_factory=list)
     cancel_file: Path | None = None
@@ -334,7 +337,14 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
             return path
     run_dir = result.get("run_dir") or result.get("convergence_dir") or result.get("supervisor_dir") or result.get("mission_dir")
     if run_dir:
-        for name in ["state.json", "supervisor_state.json", "mission_state.json", "sweep_state.json", "optimization_state.json"]:
+        for name in [
+            "state.json",
+            "supervisor_state.json",
+            "mission_state.json",
+            "sentaurus_state.json",
+            "sweep_state.json",
+            "optimization_state.json",
+        ]:
             candidate = Path(str(run_dir)) / name
             if candidate.exists():
                 return str(candidate.resolve())
@@ -654,6 +664,9 @@ def build_agent_context(
         "source_deck_path": request.source_deck_path,
         "deck_patches": request.deck_patches,
         "allow_unverified_deck_patch_execution": request.allow_unverified_deck_patch_execution,
+        "sentaurus_project_path": str(request.sentaurus_project_path) if request.sentaurus_project_path else None,
+        "sentaurus_profile_path": str(request.sentaurus_profile_path) if request.sentaurus_profile_path else None,
+        "sentaurus_request": request.sentaurus_request,
         "objectives": [item.model_dump(mode="json") for item in request.objectives],
         "constraints": [item.model_dump(mode="json") for item in request.constraints],
         "require_capability_audit": request.require_capability_audit,
@@ -743,6 +756,17 @@ def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_pat
     )
 
 
+def sentaurus_tool_request(request: AutonomousDevsimRequest) -> dict[str, Any]:
+    if not request.sentaurus_project_path:
+        raise ValueError("sentaurus_project_path is required for Sentaurus execution")
+    payload = dict(request.sentaurus_request)
+    payload.setdefault("goal_text", request.goal_text)
+    payload.setdefault("project_path", str(request.sentaurus_project_path))
+    if request.sentaurus_profile_path:
+        payload.setdefault("profile_path", str(request.sentaurus_profile_path))
+    return payload
+
+
 def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> DevsimAgentAction:
     observation = observe_state(state.latest_state_path)
     quality_status = observation.get("quality_status")
@@ -780,6 +804,8 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
         )
     if request.initial_tool_name and not state.checkpoint.get("initial_tool_done"):
         tool_request = dict(request.initial_request)
+        if request.initial_tool_name == "sentaurus_run" and request.sentaurus_project_path:
+            tool_request = {**sentaurus_tool_request(request), **tool_request}
         if state.checkpoint.get("patched_source_deck"):
             tool_request.setdefault("source_deck_path", state.checkpoint["patched_source_deck"])
         elif request.source_deck_path:
@@ -789,6 +815,13 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             tool_name=request.initial_tool_name,
             request=tool_request,
             reason="Run the requested initial DEVSIM tool after any deck ingest or semantic patch setup.",
+        )
+    if request.sentaurus_project_path and not state.checkpoint.get("sentaurus_initial_run_done"):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_TOOL,
+            tool_name="sentaurus_run",
+            request=sentaurus_tool_request(request),
+            reason="Sentaurus project context was provided; run the external Sentaurus baseline before repair, benchmark, or patch planning.",
         )
     if request.source_deck_path and not request.initial_tool_name and not state.checkpoint.get("user_deck_done"):
         deck_path = state.checkpoint.get("patched_source_deck") or request.source_deck_path
@@ -1655,6 +1688,8 @@ def run_autonomous_devsim_agent(
             update_agent_hypothesis_tree(state, step, decision, result=result, result_state_path=result_state_path or state.latest_state_path)
             if action.kind == DevsimAgentActionKind.RUN_TOOL and action.tool_name == request.initial_tool_name:
                 state.checkpoint["initial_tool_done"] = True
+            if action.kind == DevsimAgentActionKind.RUN_TOOL and action.tool_name == "sentaurus_run" and request.sentaurus_project_path:
+                state.checkpoint["sentaurus_initial_run_done"] = True
             if state.status not in {DevsimAgentStatus.COMPLETED, DevsimAgentStatus.WAITING_FOR_USER}:
                 state.status = DevsimAgentStatus.RUNNING
             step.status = DevsimAgentStepStatus.COMPLETED

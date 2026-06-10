@@ -1576,6 +1576,93 @@ def benchmark_aggregate(state: dict[str, Any], source_path: Path) -> list[Benchm
     return checks
 
 
+def benchmark_sentaurus(metrics: dict[str, Any], params: dict[str, Any]) -> list[BenchmarkCheck]:
+    checks: list[BenchmarkCheck] = []
+    if metrics.get("solver_backend") == "sentaurus" and metrics.get("tcad_solver_invoked"):
+        checks.append(
+            pass_check(
+                "sentaurus_external_solver_invoked",
+                "Sentaurus run records an external TCAD solver invocation.",
+                {"solver_backend": metrics.get("solver_backend"), "sentaurus_steps": metrics.get("sentaurus_steps")},
+            )
+        )
+    else:
+        checks.append(
+            warn_check(
+                "sentaurus_external_solver_not_confirmed",
+                "Sentaurus state does not prove that an external solver command was invoked.",
+                {"solver_backend": metrics.get("solver_backend"), "tcad_solver_invoked": metrics.get("tcad_solver_invoked")},
+            )
+        )
+    points = float_or_none(metrics.get("curve_points"))
+    if points is None:
+        checks.append(
+            warn_check(
+                "sentaurus_curve_not_extracted",
+                "No CSV curve extraction was found; configure Sentaurus Visual/Inspect extraction before engineering curve review.",
+                {"curve_path": metrics.get("curve_path")},
+            )
+        )
+    elif points >= 2:
+        checks.append(
+            pass_check(
+                "sentaurus_curve_extracted",
+                "Sentaurus run produced a numeric CSV curve suitable for shape diagnostics.",
+                {
+                    "curve_points": points,
+                    "curve_x_key": metrics.get("curve_x_key"),
+                    "curve_y_key": metrics.get("curve_y_key"),
+                },
+            )
+        )
+    else:
+        checks.append(
+            warn_check(
+                "sentaurus_curve_too_short",
+                "CSV curve extraction has too few points for shape or breakdown diagnostics.",
+                {"curve_points": points, "curve_path": metrics.get("curve_path")},
+            )
+        )
+    if float_or_none(metrics.get("sentaurus_patches_requested")):
+        requested = float_or_none(metrics.get("sentaurus_patches_requested")) or 0.0
+        verified = float_or_none(metrics.get("sentaurus_patches_verified")) or 0.0
+        if verified >= requested:
+            checks.append(
+                pass_check(
+                    "sentaurus_patches_verified",
+                    "All requested Sentaurus semantic patches were verified against copied project files.",
+                    {"requested": requested, "verified": verified},
+                )
+            )
+        else:
+            checks.append(
+                warn_check(
+                    "sentaurus_patches_not_fully_verified",
+                    "Some requested Sentaurus patches were not verified; do not use the run as a trusted mutation result.",
+                    {"requested": requested, "verified": verified},
+                )
+            )
+    if metrics.get("curve_shape"):
+        shape = metrics.get("curve_shape") if isinstance(metrics.get("curve_shape"), dict) else {}
+        if shape.get("threshold_bracket_x"):
+            checks.append(
+                pass_check(
+                    "sentaurus_breakdown_bracket_present",
+                    "Curve diagnostics found a threshold bracket for breakdown-style review.",
+                    {"threshold_bracket_x": shape.get("threshold_bracket_x")},
+                )
+            )
+        if shape.get("field_peak_x") is not None:
+            checks.append(
+                pass_check(
+                    "sentaurus_field_peak_extracted",
+                    "Curve diagnostics found a field peak position from extracted data.",
+                    {"field_peak_x": shape.get("field_peak_x"), "field_peak_value": shape.get("field_peak_value")},
+                )
+            )
+    return checks
+
+
 def benchmark_state(state: dict[str, Any], source_path: Path) -> list[BenchmarkCheck]:
     tool_name = str(state.get("tool_name") or "")
     metrics = merged_metrics(state)
@@ -1597,6 +1684,8 @@ def benchmark_state(state: dict[str, Any], source_path: Path) -> list[BenchmarkC
         checks.extend(benchmark_schottky_calibration(metrics, params))
     elif tool_name == "golden_curve_comparison":
         checks.extend(benchmark_golden_curve_comparison(metrics, params))
+    elif tool_name == "sentaurus_run":
+        checks.extend(benchmark_sentaurus(metrics, params))
     elif tool_name in {"mesh_convergence", "tool_convergence"}:
         checks.extend(benchmark_convergence(metrics))
     elif tool_name in {"adaptive_optimizer", "multidim_optimizer", "parameter_sweep"}:

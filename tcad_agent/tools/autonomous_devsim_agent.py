@@ -26,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-deck-path", default=None)
     parser.add_argument("--deck-patches-json", default=None, help="JSON list of semantic deck patches.")
     parser.add_argument("--allow-unverified-deck-patch-execution", action="store_true")
+    parser.add_argument("--sentaurus-project-path", type=Path, default=None)
+    parser.add_argument("--sentaurus-profile-path", type=Path, default=None)
+    parser.add_argument("--sentaurus-request-json", default=None, help="JSON object passed to the sentaurus_run tool.")
     parser.add_argument("--objectives-json", default=None, help="JSON list of engineering objectives.")
     parser.add_argument("--constraints-json", default=None, help="JSON list of engineering constraints.")
     parser.add_argument("--cancel-file", type=Path, default=None)
@@ -60,6 +63,12 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         if not isinstance(parsed, list):
             raise ValueError("--deck-patches-json must decode to a JSON list")
         deck_patches = parsed
+    sentaurus_request = {}
+    if args.sentaurus_request_json:
+        parsed = json.loads(args.sentaurus_request_json)
+        if not isinstance(parsed, dict):
+            raise ValueError("--sentaurus-request-json must decode to a JSON object")
+        sentaurus_request = parsed
     objectives = []
     if args.objectives_json:
         parsed = json.loads(args.objectives_json)
@@ -85,6 +94,9 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         source_deck_path=args.source_deck_path,
         deck_patches=deck_patches,
         allow_unverified_deck_patch_execution=args.allow_unverified_deck_patch_execution,
+        sentaurus_project_path=args.sentaurus_project_path,
+        sentaurus_profile_path=args.sentaurus_profile_path,
+        sentaurus_request=sentaurus_request,
         objectives=objectives,
         constraints=constraints,
         cancel_file=args.cancel_file,

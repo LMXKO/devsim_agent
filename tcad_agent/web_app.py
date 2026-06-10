@@ -343,6 +343,8 @@ def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "initial_tool_name",
         "source_state_path",
         "source_deck_path",
+        "sentaurus_project_path",
+        "sentaurus_profile_path",
     ]:
         if payload.get(key):
             request[key] = payload[key]
@@ -350,6 +352,8 @@ def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         request["initial_request"] = payload["initial_request"]
     if isinstance(payload.get("deck_patches"), list):
         request["deck_patches"] = payload["deck_patches"]
+    if isinstance(payload.get("sentaurus_request"), dict):
+        request["sentaurus_request"] = payload["sentaurus_request"]
     if "allow_unverified_deck_patch_execution" in payload:
         request["allow_unverified_deck_patch_execution"] = bool_from_payload(payload, "allow_unverified_deck_patch_execution", False)
     if isinstance(payload.get("objectives"), list):
