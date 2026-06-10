@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from tcad_agent.curve_diagnostics import curve_shape_diagnostic, finite_float, infer_x_y_keys, load_curve_rows
 from tcad_agent.process_control import run_cancellable
+from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text, parse_sentaurus_deck_file
 from tcad_agent.task_spec import PROJECT_ROOT
 
 
@@ -68,6 +69,12 @@ class SentaurusPatch(BaseModel):
     replacement: str | None = None
     regex: bool = False
     json_path: str | None = None
+    section_path: list[str] | str | None = None
+    selector: dict[str, Any] = Field(default_factory=dict)
+    parameter: str | None = None
+    variable: str | None = None
+    model: str | None = None
+    insert_if_missing: bool = False
     value: Any = None
     reason: str | None = None
     required: bool = True
@@ -233,7 +240,25 @@ def apply_one_patch(project_copy: Path, patch: SentaurusPatch) -> dict[str, Any]
     before = target.read_text(encoding="utf-8", errors="replace")
     after = before
     try:
-        if patch.operation == "json_set" or patch.json_path:
+        if patch.operation.startswith("sentaurus_"):
+            after, semantic_record, ir = apply_sentaurus_semantic_patch_text(
+                before,
+                patch.model_dump(mode="json"),
+                source_path=patch.file,
+            )
+            record.update(
+                {
+                    key: value
+                    for key, value in semantic_record.items()
+                    if key not in {"applied", "verified", "diff"}
+                }
+            )
+            record["ir_sections"] = len(ir.sections)
+            record["ir_assignments"] = len(ir.assignments)
+            if not semantic_record.get("applied"):
+                record["error"] = semantic_record.get("error") or "semantic patch was not applied"
+                return record
+        elif patch.operation == "json_set" or patch.json_path:
             data = json.loads(before)
             if not isinstance(data, dict):
                 raise ValueError("JSON patch target must be an object")
@@ -261,7 +286,7 @@ def apply_one_patch(project_copy: Path, patch: SentaurusPatch) -> dict[str, Any]
     except Exception as exc:
         record["error"] = str(exc)
         return record
-    if after == before:
+    if after == before and not record.get("already_present"):
         record["error"] = "patch produced no content change"
         return record
     target.write_text(after, encoding="utf-8")
@@ -286,6 +311,54 @@ def apply_sentaurus_patches(project_copy: Path, raw_patches: list[SentaurusPatch
     if diff_text:
         (run_dir / "sentaurus_patch.diff").write_text(diff_text + "\n", encoding="utf-8")
     return records
+
+
+def sentaurus_deck_artifact_candidates(
+    project_copy: Path,
+    deck_files: list[str],
+    raw_patches: list[SentaurusPatch | dict[str, Any]],
+) -> list[Path]:
+    candidates: dict[Path, None] = {}
+    for raw in deck_files:
+        try:
+            path = project_relative_path(project_copy, raw)
+        except ValueError:
+            continue
+        if path.exists() and path.is_file():
+            candidates[path.resolve()] = None
+    for raw_patch in raw_patches:
+        patch = raw_patch if isinstance(raw_patch, SentaurusPatch) else SentaurusPatch.model_validate(raw_patch)
+        try:
+            path = project_relative_path(project_copy, patch.file)
+        except ValueError:
+            continue
+        if path.exists() and path.is_file():
+            candidates[path.resolve()] = None
+    if not candidates:
+        for pattern in ["*.cmd", "*.des", "*.par"]:
+            for path in project_copy.rglob(pattern):
+                if path.is_file():
+                    candidates[path.resolve()] = None
+    return sorted(candidates, key=lambda path: str(path))
+
+
+def write_sentaurus_deck_ir_artifacts(
+    project_copy: Path,
+    run_dir: Path,
+    *,
+    deck_files: list[str],
+    patches: list[SentaurusPatch | dict[str, Any]],
+) -> dict[str, str]:
+    artifacts: dict[str, str] = {}
+    for index, path in enumerate(sentaurus_deck_artifact_candidates(project_copy, deck_files, patches), start=1):
+        try:
+            ir = parse_sentaurus_deck_file(path)
+        except Exception:
+            continue
+        output_path = run_dir / f"sentaurus_deck_ir_{index:02d}_{path.stem}.json"
+        write_json(output_path, ir.model_dump(mode="json"))
+        artifacts[f"sentaurus_deck_ir_{path.name}".replace(" ", "_")] = str(output_path)
+    return artifacts
 
 
 def collect_files(root: Path, globs: list[str]) -> list[Path]:
@@ -499,6 +572,12 @@ def run_sentaurus(request: SentaurusRunRequest) -> SentaurusRunState:
     project_copy = clone_project(project_path, run_dir)
     flow = request.flow or profile.default_flow
     patches = apply_sentaurus_patches(project_copy, request.patches, run_dir) if request.patches else []
+    deck_ir_artifacts = write_sentaurus_deck_ir_artifacts(
+        project_copy,
+        run_dir,
+        deck_files=request.deck_files,
+        patches=request.patches,
+    )
     commands: list[SentaurusStepResult] = []
     env = {**os.environ, **profile.env}
     status = "completed"
@@ -560,6 +639,7 @@ def run_sentaurus(request: SentaurusRunRequest) -> SentaurusRunState:
 
     artifacts: dict[str, str] = {
         "project_copy": str(project_copy),
+        **deck_ir_artifacts,
     }
     patch_diff = run_dir / "sentaurus_patch.diff"
     if patch_diff.exists():
@@ -580,6 +660,7 @@ def run_sentaurus(request: SentaurusRunRequest) -> SentaurusRunState:
         "sentaurus_patches_requested": len(request.patches),
         "sentaurus_patches_applied": sum(1 for patch in patches if patch.get("applied")),
         "sentaurus_patches_verified": sum(1 for patch in patches if patch.get("verified")),
+        "sentaurus_deck_ir_files": len(deck_ir_artifacts),
         "tcad_solver_invoked": bool(request.execute and commands),
         "solver_backend": "sentaurus",
         "fidelity": "external_tcad",

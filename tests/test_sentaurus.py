@@ -9,6 +9,7 @@ from pathlib import Path
 from tcad_agent.autonomous_devsim_agent import AutonomousDevsimRequest, DevsimAgentActionKind, DevsimAgentStatus, run_autonomous_devsim_agent
 from tcad_agent.physical_benchmark import BenchmarkStatus, run_physical_benchmark
 from tcad_agent.sentaurus import SentaurusRunRequest, SentaurusRuntimeProfile, run_sentaurus
+from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text, parse_sentaurus_deck_text
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -34,6 +35,94 @@ class SentaurusRunnerTest(unittest.TestCase):
         project.mkdir()
         (project / "device.cmd").write_text("set DRIFT_DOPING 1e15\n", encoding="utf-8")
         return project
+
+    def write_structured_project(self) -> Path:
+        project = self.root / "structured_project"
+        project.mkdir()
+        (project / "device.cmd").write_text(
+            """
+set DRIFT_DOPING 1e15
+File {
+  Grid="@tdr@"
+  Plot="@tdrdat@"
+}
+Electrode {
+  { Name="source" Voltage=0.0 }
+  { Name="drain" Voltage=0.0 }
+}
+Physics {
+  Mobility( DopingDep HighFieldSaturation )
+  Recombination( SRH )
+}
+Math {
+  Iterations=20
+}
+Solve {
+  Coupled { Poisson Electron Hole }
+}
+""".lstrip(),
+            encoding="utf-8",
+        )
+        return project
+
+    def test_sentaurus_deck_ir_and_semantic_patch_update_common_sections(self) -> None:
+        deck = (self.write_structured_project() / "device.cmd").read_text(encoding="utf-8")
+        ir = parse_sentaurus_deck_text(deck, source_path="device.cmd")
+
+        self.assertIn("Electrode", [section.name for section in ir.sections])
+        self.assertIn("Math", [section.name for section in ir.sections])
+        self.assertIn("DRIFT_DOPING", [variable.key for variable in ir.set_variables])
+
+        updated, record, _ = apply_sentaurus_semantic_patch_text(
+            deck,
+            {"operation": "sentaurus_set_variable", "variable": "DRIFT_DOPING", "value": "2e15"},
+            source_path="device.cmd",
+        )
+        self.assertTrue(record["verified"])
+        self.assertIn("set DRIFT_DOPING 2e15", updated)
+
+        updated, record, _ = apply_sentaurus_semantic_patch_text(
+            updated,
+            {
+                "operation": "sentaurus_update_assignment",
+                "section_path": ["Electrode"],
+                "selector": {"Name": "drain"},
+                "parameter": "Voltage",
+                "value": -20,
+            },
+            source_path="device.cmd",
+        )
+        self.assertTrue(record["verified"])
+        self.assertIn('{ Name="drain" Voltage=-20 }', updated)
+
+        updated, record, _ = apply_sentaurus_semantic_patch_text(
+            updated,
+            {
+                "operation": "sentaurus_upsert_assignment",
+                "section_path": ["Math"],
+                "parameter": "Digits",
+                "value": 5,
+            },
+            source_path="device.cmd",
+        )
+        self.assertTrue(record["verified"])
+        self.assertIn("Digits=5", updated)
+
+        quasi = 'Solve { Quasistationary( InitialStep=1e-3 Goal { Name="drain" Voltage=5.0 } ) { Coupled { Poisson Electron Hole } } }\n'
+        quasi_ir = parse_sentaurus_deck_text(quasi, source_path="quasi.cmd")
+        self.assertIn("Quasistationary", [section.name for section in quasi_ir.sections])
+        updated, record, _ = apply_sentaurus_semantic_patch_text(
+            quasi,
+            {
+                "operation": "sentaurus_update_assignment",
+                "section_path": ["Solve", "Quasistationary"],
+                "parameter": "InitialStep",
+                "value": "1e-4",
+            },
+            source_path="quasi.cmd",
+        )
+        self.assertTrue(record["verified"])
+        self.assertIn("InitialStep=1e-4", updated)
 
     def test_sentaurus_runner_executes_configured_command_applies_patch_and_extracts_curve(self) -> None:
         project = self.write_project()
@@ -100,6 +189,84 @@ print("finished")
         self.assertIn("sentaurus_external_solver_invoked", codes)
         self.assertIn("sentaurus_curve_extracted", codes)
         self.assertIn("sentaurus_patches_verified", codes)
+
+    def test_sentaurus_runner_applies_semantic_deck_patches_and_writes_ir(self) -> None:
+        project = self.write_structured_project()
+        script = self.write_fake_script(
+            "fake_semantic_sdevice.py",
+            """
+import pathlib
+import sys
+
+deck = pathlib.Path("device.cmd").read_text(encoding="utf-8")
+required = ["set DRIFT_DOPING 2e15", '{ Name="drain" Voltage=-20 }', "Iterations=40", "Digits=5"]
+missing = [item for item in required if item not in deck]
+if missing:
+    print("missing semantic edits: " + ",".join(missing), file=sys.stderr)
+    raise SystemExit(5)
+pathlib.Path("sentaurus_extract.csv").write_text(
+    "voltage_v,current_a,electric_field_v_per_cm\\n"
+    "0,1e-12,1e4\\n"
+    "-10,1e-9,2e5\\n"
+    "-20,1e-6,8e5\\n",
+    encoding="utf-8",
+)
+""".lstrip(),
+        )
+        profile = SentaurusRuntimeProfile(
+            profile_id="unit_semantic_fake",
+            commands={"sdevice": sys.executable},
+            allowed_project_roots=[self.root],
+            run_root=self.root / "runs",
+        )
+
+        state = run_sentaurus(
+            SentaurusRunRequest(
+                goal_text="用语义 patch 改 Sentaurus deck 中的漂移区掺杂、漏极偏压和 Math 精度",
+                project_path=project,
+                profile=profile,
+                deck_files=["device.cmd"],
+                command_args={"sdevice": [str(script)]},
+                patches=[
+                    {
+                        "file": "device.cmd",
+                        "operation": "sentaurus_set_variable",
+                        "variable": "DRIFT_DOPING",
+                        "value": "2e15",
+                    },
+                    {
+                        "file": "device.cmd",
+                        "operation": "sentaurus_update_assignment",
+                        "section_path": ["Electrode"],
+                        "selector": {"Name": "drain"},
+                        "parameter": "Voltage",
+                        "value": -20,
+                    },
+                    {
+                        "file": "device.cmd",
+                        "operation": "sentaurus_update_assignment",
+                        "section_path": ["Math"],
+                        "parameter": "Iterations",
+                        "value": 40,
+                    },
+                    {
+                        "file": "device.cmd",
+                        "operation": "sentaurus_upsert_assignment",
+                        "section_path": ["Math"],
+                        "parameter": "Digits",
+                        "value": 5,
+                    },
+                ],
+                timeout_seconds=10,
+            )
+        )
+
+        metrics = state.quality_report["metrics"]
+        self.assertEqual(state.status, "completed")
+        self.assertEqual(state.quality_report["status"], "passed")
+        self.assertEqual(metrics["sentaurus_patches_verified"], 4)
+        self.assertEqual(metrics["sentaurus_deck_ir_files"], 1)
+        self.assertTrue(any(key.startswith("sentaurus_deck_ir_") for key in state.artifacts))
 
     def test_sentaurus_runner_classifies_convergence_failure_from_realistic_log_text(self) -> None:
         project = self.write_project()

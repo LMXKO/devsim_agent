@@ -45,6 +45,7 @@ Each run writes:
 - `sentaurus_state.json`: durable state consumed by autonomous agent, queue, benchmark, reports, and objective evaluation;
 - `project/`: controlled copy of the input project;
 - `sentaurus_patch.diff`: unified diff when patches apply;
+- `sentaurus_deck_ir_*.json`: parsed command-file IR for supported deck files;
 - `*_stdout.log` and `*_stderr.log`: captured command output;
 - copied-project artifacts matching `artifact_globs`.
 
@@ -69,7 +70,56 @@ voltage_v,current_a,electric_field_v_per_cm
 
 With CSV present, the state records curve points, inferred x/y/field columns, leakage interval, breakdown threshold bracket, knee/shape features, field peak, and solver provenance.
 
-## Semantic Patches
+## Deck IR And Semantic Patches
+
+`tcad_agent.sentaurus_deck` parses common Sentaurus command-file structure into a conservative IR. The parser is based on public command-file examples and recognizes:
+
+- top-level sections and nested blocks such as `File`, `Electrode`, `Physics`, `Plot`, `Math`, `Solve`, `Goal`, `Coupled`, and `Quasistationary`;
+- anonymous records such as `{ Name="drain" Voltage=0.0 }` inside `Electrode`;
+- assignments such as `Iterations=20`, `Grid="@tdr@"`, and `Voltage=0.0`;
+- `set NAME value` and `#define NAME value` variables.
+
+The IR keeps line numbers, block paths, assignments, variables, and warnings. It is not a complete proprietary Sentaurus grammar and must fail loud when it cannot verify a requested edit.
+
+Supported semantic operations:
+
+- `sentaurus_set_variable`: update a `set` or `#define` variable;
+- `sentaurus_update_assignment`: update an existing assignment inside a section/block;
+- `sentaurus_upsert_assignment`: update an assignment or insert it before the target block closes;
+- `sentaurus_add_model`: insert a model line into a target section when absent.
+
+Example semantic patch:
+
+```json
+[
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_set_variable",
+    "variable": "DRIFT_DOPING",
+    "value": "8e14",
+    "reason": "lower drift doping as a BV/leakage experiment"
+  },
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_update_assignment",
+    "section_path": ["Electrode"],
+    "selector": {"Name": "drain"},
+    "parameter": "Voltage",
+    "value": -1200,
+    "reason": "move the drain reverse-bias target"
+  },
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_upsert_assignment",
+    "section_path": ["Math"],
+    "parameter": "Iterations",
+    "value": 80,
+    "reason": "allow more Newton iterations for a hard bias ramp"
+  }
+]
+```
+
+Raw compatibility patch operations are still available:
 
 Patch operations are explicit and verified against the copied project:
 
@@ -111,4 +161,3 @@ The first autonomous action becomes `sentaurus_run`. The resulting state then fl
 ## Test Boundary
 
 Unit tests use fake external commands to validate process control, patching, logs, CSV ingestion, benchmark integration, and autonomous routing. Fake commands do not represent real Sentaurus physics. New simulated scenarios should be grounded in official/public documentation or user-provided real project evidence before being encoded.
-

@@ -114,7 +114,7 @@ What the adapter does:
 
 - reads a local runtime profile JSON outside the repository;
 - copies the selected project into `runs/sentaurus/<run_id>/project`;
-- applies explicit, verifiable text/regex/JSON patches and writes `sentaurus_patch.diff`;
+- parses common Sentaurus command-file blocks into a deck IR, applies explicit text/regex/JSON or semantic deck patches, and writes `sentaurus_patch.diff`;
 - executes configured flow steps such as `sdevice`, `svisual`, `inspect`, or a site wrapper script;
 - captures stdout/stderr, scans logs for license/convergence/mesh/fatal issues, collects `.log`, `.plt`, `.tdr`, and `.csv` artifacts, and extracts metrics from CSV curves;
 - writes `sentaurus_state.json` so the same autonomous benchmark, objective/Pareto, report, and next-action logic can continue.
@@ -177,7 +177,7 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
 
 For curve-aware diagnosis, configure your Sentaurus Visual/Inspect or site wrapper to export a numeric CSV into the copied project. Recommended columns are explicit and unit-bearing, for example `voltage_v,current_a,electric_field_v_per_cm`. Without a CSV, the run can still capture logs/artifacts, but benchmark status remains limited because the agent cannot inspect curve shape, BV brackets, leakage interval, or field peak.
 
-Patch format is deliberately explicit:
+Patch format is deliberately explicit. For raw text compatibility:
 
 ```json
 [
@@ -191,7 +191,35 @@ Patch format is deliberately explicit:
 ]
 ```
 
-Unsupported or unmatched patches are recorded as unverified and should not be executed as trusted mutations. Geometry/process/model edits should remain behind user confirmation unless you have a validated site-specific patch schema.
+For common Sentaurus command files, semantic patch v1 can target `set`/`#define` variables, assignments inside blocks such as `File`, `Electrode`, `Physics`, `Math`, `Solve`, selector-matched records such as an electrode with `Name="drain"`, and model-line insertion:
+
+```json
+[
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_set_variable",
+    "variable": "DRIFT_DOPING",
+    "value": "8e14"
+  },
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_update_assignment",
+    "section_path": ["Electrode"],
+    "selector": {"Name": "drain"},
+    "parameter": "Voltage",
+    "value": -1200
+  },
+  {
+    "file": "device.cmd",
+    "operation": "sentaurus_upsert_assignment",
+    "section_path": ["Math"],
+    "parameter": "Iterations",
+    "value": 80
+  }
+]
+```
+
+Each parsed deck emits a `sentaurus_deck_ir_*.json` artifact with sections, assignments, variables, and warnings. Unsupported or unmatched patches are recorded as unverified and should not be executed as trusted mutations. Geometry/process/model edits should remain behind user confirmation unless you have a validated site-specific patch schema.
 
 ## Start The Web UI
 
