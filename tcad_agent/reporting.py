@@ -258,6 +258,9 @@ def deck_lineage_rows(final_state: dict[str, Any] | None, base_dir: Path) -> lis
         "patched_source_deck",
         "tcad_deck_artifact",
         "baseline_mutation_overlay",
+        "sentaurus_mutation_effect",
+        "sentaurus_baseline_mutation_overlay",
+        "sentaurus_lineage_archive",
     ]:
         if artifacts.get(key):
             rows.append([key, markdown_link(Path(artifacts[key]).name, artifacts[key], base_dir)])

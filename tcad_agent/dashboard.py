@@ -71,6 +71,7 @@ class DashboardPoint(BaseModel):
     deck_patch_history_path: str | None = None
     semantic_deck_diff_path: str | None = None
     baseline_mutation_overlay_path: str | None = None
+    sentaurus_lineage_archive_path: str | None = None
     agent_observation_summary: str | None = None
     agent_hypothesis_zh: str | None = None
     agent_tool_plan: list[dict[str, Any]] | None = None
@@ -141,6 +142,7 @@ def point_from_item(item: dict[str, Any], axis_name: str | None, rank: int | Non
     request = (final_state or {}).get("request") or {}
     active_mutation = request.get("active_deck_mutation") if isinstance(request.get("active_deck_mutation"), dict) else {}
     mutation_effect = (final_state or {}).get("mutation_effect_analysis") or {}
+    sentaurus_effect = (final_state or {}).get("sentaurus_mutation_effect_analysis") or {}
     repair_context = (final_state or {}).get("repair_context") or {}
     agent_policy = repair_context.get("agent_policy") if isinstance(repair_context, dict) else {}
     if not isinstance(agent_policy, dict):
@@ -179,16 +181,31 @@ def point_from_item(item: dict[str, Any], axis_name: str | None, rank: int | Non
         if metrics.get("differential_resistance_last_ohm") is not None
         else None,
         active_deck_mutation=(active_mutation.get("target") or active_mutation.get("name")) if active_mutation else None,
-        deck_patch_decision=mutation_effect.get("decision") if isinstance(mutation_effect, dict) else None,
-        deck_patch_rationale=mutation_effect.get("rationale") if isinstance(mutation_effect, dict) else None,
+        deck_patch_decision=(
+            mutation_effect.get("decision")
+            if isinstance(mutation_effect, dict) and mutation_effect
+            else sentaurus_effect.get("decision")
+            if isinstance(sentaurus_effect, dict)
+            else None
+        ),
+        deck_patch_rationale=(
+            mutation_effect.get("rationale")
+            if isinstance(mutation_effect, dict) and mutation_effect
+            else sentaurus_effect.get("rationale")
+            if isinstance(sentaurus_effect, dict)
+            else None
+        ),
         recommended_next_target=(
             repair_context.get("recommended_next_target")
+            or repair_context.get("sentaurus_recommended_next_target")
+            or sentaurus_effect.get("recommended_next_target")
             if isinstance(repair_context, dict)
             else None
         ),
         deck_patch_history_path=artifacts.get("deck_patch_history"),
         semantic_deck_diff_path=artifacts.get("semantic_deck_diff"),
-        baseline_mutation_overlay_path=artifacts.get("baseline_mutation_overlay"),
+        baseline_mutation_overlay_path=artifacts.get("baseline_mutation_overlay") or artifacts.get("sentaurus_baseline_mutation_overlay"),
+        sentaurus_lineage_archive_path=artifacts.get("sentaurus_lineage_archive"),
         agent_observation_summary=(
             repair_context.get("agent_observation_summary")
             or agent_policy.get("observation_summary")
@@ -577,7 +594,7 @@ def best_plot(point: DashboardPoint | None, base_dir: Path) -> str:
 
 
 def deck_lineage_panel(point: DashboardPoint | None, base_dir: Path) -> str:
-    if not point or not any([point.active_deck_mutation, point.deck_patch_decision, point.deck_patch_history_path]):
+    if not point or not any([point.active_deck_mutation, point.deck_patch_decision, point.deck_patch_history_path, point.sentaurus_lineage_archive_path]):
         return ""
     tool_plan_items = []
     for item in (point.agent_tool_plan or [])[:4]:
@@ -599,6 +616,7 @@ def deck_lineage_panel(point: DashboardPoint | None, base_dir: Path) -> str:
             link("patch history", point.deck_patch_history_path, base_dir, "pill-link"),
             link("semantic diff", point.semantic_deck_diff_path, base_dir, "pill-link"),
             link("curve overlay", point.baseline_mutation_overlay_path, base_dir, "pill-link"),
+            link("sentaurus lineage", point.sentaurus_lineage_archive_path, base_dir, "pill-link"),
         ]
         if item
     )

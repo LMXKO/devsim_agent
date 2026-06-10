@@ -156,7 +156,9 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
   --execute
 ```
 
-The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-design`, the next Sentaurus-specific planning step is `plan_sentaurus_patch`: it inspects the latest `sentaurus_state.json`, parses the configured deck files, generates verified semantic patch candidates, writes a JSON work package under `sentaurus_patch_plans/`, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`. After that patched run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched state and writes its decision back into the patched state. High-risk geometry/process/model classes and tradeoff regressions remain confirmation-gated.
+The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-design`, the next Sentaurus-specific planning step is `plan_sentaurus_patch`: it inspects the latest `sentaurus_state.json`, parses the configured deck files, generates verified semantic patch candidates, writes a JSON work package under `sentaurus_patch_plans/`, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`.
+
+After that patched run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched state and writes its decision back into the patched state. If experiment budget remains, `sentaurus_patch_refiner` consumes that decision: useful directions become smaller verified follow-up patches, failed directions switch to a different verified target, and Pareto tradeoffs pause for review. Every patched Sentaurus state also writes `sentaurus_lineage_archive.json` with the multi-run patch/effect/metric trail, Pareto front, and best entry. High-risk geometry/process/model classes and tradeoff regressions remain confirmation-gated.
 
 ## Patch Planner
 
@@ -199,6 +201,29 @@ The analyzer reads `quality_report.metrics`, `final_summary.artifacts.sentaurus_
 - `switch_target`: primary metric did not improve;
 - `reject_candidate`: patched run regressed quality/status;
 - `insufficient_evidence`: comparable metrics or CSV evidence are missing.
+
+## Patch Refiner And Lineage
+
+Use the refiner after an analyzer result has been written into a patched state:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_patch_refiner \
+  --state /tmp/sentaurus_patch/sentaurus_state.json \
+  --goal "继续降低漏电，同时不要牺牲 BV/Ron/field peak" \
+  --output /tmp/sentaurus_patch_refinement.json
+```
+
+The refiner never guesses proprietary syntax. It reuses the semantic patch schema and validates the next candidate against the current copied deck. For `continue_refine`, numeric variable/assignment edits are advanced by a half step beyond the last verified old-to-new movement. For `switch_target` or `reject_candidate`, it asks the planner for alternative verified candidates and filters out the repeated patch.
+
+Build the lineage archive directly when debugging a multi-run chain:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_lineage \
+  --state /tmp/sentaurus_patch/sentaurus_state.json \
+  --output /tmp/sentaurus_lineage_archive.json
+```
+
+The archive follows `repair_context.baseline_state_path`, records compact metrics, candidate patches, analyzer decisions, overlays, Pareto front membership, and the current best entry.
 
 ## Test Boundary
 

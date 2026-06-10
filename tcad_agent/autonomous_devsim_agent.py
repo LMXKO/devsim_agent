@@ -19,7 +19,9 @@ from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.repair_executor import run_repair_executor
+from tcad_agent.sentaurus_lineage import SentaurusLineageArchiveRequest, build_sentaurus_lineage_archive
 from tcad_agent.sentaurus_mutation_effect import SentaurusMutationEffectRequest, analyze_sentaurus_mutation_effect
+from tcad_agent.sentaurus_patch_refiner import SentaurusPatchRefinerRequest, build_sentaurus_patch_refinement_plan
 from tcad_agent.task_planner import parse_json_object
 from tcad_agent.task_spec import PROJECT_ROOT
 
@@ -89,6 +91,7 @@ class DevsimAgentActionKind(str, Enum):
     RUN_USER_DECK = "run_user_deck"
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
     PLAN_SENTAURUS_PATCH = "plan_sentaurus_patch"
+    PLAN_SENTAURUS_REFINEMENT = "plan_sentaurus_refinement"
     PLAN_EXPERIMENT_DESIGN = "plan_experiment_design"
     GENERATE_REPORT = "generate_report"
     GENERATE_DASHBOARD = "generate_dashboard"
@@ -471,6 +474,7 @@ def observe_state(path_value: str | None) -> dict[str, Any]:
         "repair_context": state_data.get("repair_context"),
         "mutation_effect_analysis": state_data.get("mutation_effect_analysis"),
         "sentaurus_mutation_effect_analysis": state_data.get("sentaurus_mutation_effect_analysis"),
+        "sentaurus_lineage_archive": state_data.get("sentaurus_lineage_archive"),
     }
 
 
@@ -588,6 +592,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             name=DevsimAgentActionKind.PLAN_SENTAURUS_PATCH.value,
             action_kind=DevsimAgentActionKind.PLAN_SENTAURUS_PATCH.value,
             description="Plan verified Sentaurus semantic deck patches from the latest Sentaurus state and natural-language goal.",
+            parameters=object_schema({"source_state_path": {"type": "string"}}),
+        ),
+        AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT.value,
+            action_kind=DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT.value,
+            description="Use Sentaurus baseline-vs-mutation curve evidence to refine the same patch direction or switch to a better verified target.",
             parameters=object_schema({"source_state_path": {"type": "string"}}),
         ),
         AgentToolSpec(
@@ -952,10 +962,25 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
         ):
             state.checkpoint["sentaurus_rejected_patch_source_path"] = state.latest_state_path
             state.checkpoint["sentaurus_rejected_patch_analysis"] = sentaurus_effect
+        sentaurus_experiment_runs = int(state.checkpoint.get("experiment_design_runs") or 0)
+        if (
+            request.enable_experiment_design
+            and request.sentaurus_project_path
+            and decision in {"continue_refine", "switch_target", "reject_candidate"}
+            and sentaurus_experiment_runs < request.max_experiment_design_rounds
+            and state.checkpoint.get("sentaurus_refinement_plan_source_path") != state.latest_state_path
+        ):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT,
+                source_state_path=state.latest_state_path,
+                request={"allow_high_risk": request.allow_user_confirmation_actions},
+                reason="Latest Sentaurus patch has baseline-vs-mutation curve evidence; refine the same verified direction or switch targets before generic planning.",
+            )
     sentaurus_patch_runs = int(state.checkpoint.get("sentaurus_patch_plan_runs") or 0)
     if (
         request.enable_experiment_design
         and observation.get("tool_name") == "sentaurus_run"
+        and not isinstance(sentaurus_effect, dict)
         and sentaurus_patch_runs < request.max_experiment_design_rounds
         and state.checkpoint.get("sentaurus_patch_plan_source_path") != state.latest_state_path
     ):
@@ -1462,6 +1487,22 @@ def augment_sentaurus_patch_result(
     summary["artifacts"] = artifacts
     result_state["final_summary"] = summary
     write_json(result_path, result_state)
+    archive_output_path = result_path.parent / "sentaurus_lineage_archive.json"
+    archive = build_sentaurus_lineage_archive(
+        SentaurusLineageArchiveRequest(
+            source_state_path=result_path,
+            output_path=archive_output_path,
+        )
+    )
+    archive_data = archive.model_dump(mode="json")
+    result_state = load_final_state(str(result_path)) or result_state
+    result_state["sentaurus_lineage_archive"] = archive_data
+    summary = result_state.get("final_summary") if isinstance(result_state.get("final_summary"), dict) else {}
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    artifacts["sentaurus_lineage_archive"] = str(archive_output_path.resolve())
+    summary["artifacts"] = artifacts
+    result_state["final_summary"] = summary
+    write_json(result_path, result_state)
     return analysis_data
 
 
@@ -1587,6 +1628,10 @@ def execute_action(
             )
             state.checkpoint["sentaurus_patch_history"] = history_items
             state.checkpoint["latest_sentaurus_mutation_effect_analysis"] = analysis
+            if result_state_path:
+                patched_state = load_final_state(result_state_path)
+                if patched_state and patched_state.get("sentaurus_lineage_archive"):
+                    state.checkpoint["latest_sentaurus_lineage_archive"] = patched_state.get("sentaurus_lineage_archive")
             state.checkpoint["executed_sentaurus_patch_candidates"] = int(
                 state.checkpoint.get("executed_sentaurus_patch_candidates") or 0
             ) + 1
@@ -1738,6 +1783,40 @@ def execute_action(
             state.checkpoint["blocked_sentaurus_patch_candidates"] = result.get("candidates") or []
         else:
             state.checkpoint["sentaurus_patch_planner_exhausted"] = result
+        return result, source
+    if action.kind == DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("Sentaurus refinement action requires a source state")
+        output_dir = Path(state.agent_dir) / "sentaurus_patch_refinements"
+        output_path = output_dir / f"sentaurus_patch_refinement_{int(state.checkpoint.get('sentaurus_refinement_plan_count') or 0) + 1:03d}.json"
+        runner = runner_registry.get("sentaurus_patch_refiner")
+        payload = {
+            "source_state_path": source,
+            "goal_text": state.goal_text,
+            "output_path": str(output_path),
+            "allow_high_risk": bool(action.request.get("allow_high_risk", False)),
+        }
+        if runner is None:
+            result = build_sentaurus_patch_refinement_plan(SentaurusPatchRefinerRequest.model_validate(payload)).model_dump(mode="json")
+        else:
+            result = runner(payload)
+        state.checkpoint["sentaurus_refinement_plan_count"] = int(state.checkpoint.get("sentaurus_refinement_plan_count") or 0) + 1
+        state.checkpoint["sentaurus_refinement_runs"] = int(state.checkpoint.get("sentaurus_refinement_runs") or 0) + 1
+        state.checkpoint["experiment_design_runs"] = int(state.checkpoint.get("experiment_design_runs") or 0) + 1
+        state.checkpoint["sentaurus_refinement_plan_path"] = result.get("output_path")
+        state.checkpoint["sentaurus_refinement_plan_source_path"] = source
+        state.checkpoint["experiment_design_source_path"] = source
+        state.checkpoint["sentaurus_refinement_candidates"] = result.get("candidates") or []
+        selected = result.get("selected_candidate")
+        if isinstance(selected, dict):
+            state.checkpoint["pending_sentaurus_patch_candidate"] = selected
+        elif result.get("status") == "blocked_for_user_confirmation":
+            state.checkpoint["blocked_sentaurus_refinement_candidates"] = result.get("candidates") or []
+        elif result.get("status") == "blocked_for_pareto_review":
+            state.checkpoint["blocked_sentaurus_refinement"] = result
+        else:
+            state.checkpoint["sentaurus_refinement_exhausted"] = result
         return result, source
     if action.kind == DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN:
         source = action.source_state_path or state.latest_state_path

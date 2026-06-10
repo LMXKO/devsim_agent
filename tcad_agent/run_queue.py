@@ -651,8 +651,10 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
     from tcad_agent.sentaurus import SentaurusRunRequest, run_sentaurus
+    from tcad_agent.sentaurus_lineage import SentaurusLineageArchiveRequest, build_sentaurus_lineage_archive
     from tcad_agent.sentaurus_mutation_effect import SentaurusMutationEffectRequest, analyze_sentaurus_mutation_effect
     from tcad_agent.sentaurus_patch_planner import SentaurusPatchPlannerRequest, plan_sentaurus_patches
+    from tcad_agent.sentaurus_patch_refiner import SentaurusPatchRefinerRequest, build_sentaurus_patch_refinement_plan
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
@@ -846,6 +848,12 @@ def default_runner_registry() -> dict[str, Runner]:
         ),
         "sentaurus_patch_planner": lambda request: result_to_dict(
             plan_sentaurus_patches(SentaurusPatchPlannerRequest.model_validate(request))
+        ),
+        "sentaurus_patch_refiner": lambda request: result_to_dict(
+            build_sentaurus_patch_refinement_plan(SentaurusPatchRefinerRequest.model_validate(request))
+        ),
+        "sentaurus_lineage_archive": lambda request: result_to_dict(
+            build_sentaurus_lineage_archive(SentaurusLineageArchiveRequest.model_validate(request))
         ),
         "user_deck_execution": lambda request: run_user_deck(UserDeckRunRequest.model_validate(request)),
     }

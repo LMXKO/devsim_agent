@@ -122,13 +122,15 @@ For Sentaurus states, the same experiment-design budget first goes through `plan
 - `checkpoint.pending_sentaurus_patch_candidate` when a safe verified candidate is selected;
 - `checkpoint.blocked_sentaurus_patch_candidates` when only confirmation-gated candidates exist.
 
-If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`.
+If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`. The same state also receives `sentaurus_lineage_archive.json`, which compactly records the multi-run patch trail, key metrics, Pareto front, and best entry.
 
 The next decision consumes that analysis:
 
-- `continue_refine` can trigger another Sentaurus patch-planning round when experiment budget remains;
+- `continue_refine` triggers `plan_sentaurus_refinement` when experiment budget remains; the refiner takes a smaller verified follow-up step from the prior patch value instead of restarting from generic rules;
 - `blocked_for_pareto_review` triggers configured objective/constraint evaluation or pauses for review;
-- `switch_target` and `reject_candidate` are recorded so the agent does not silently keep repeating the same direction.
+- `switch_target` and `reject_candidate` trigger `plan_sentaurus_refinement` to ask the planner for a different verified target and filter out the repeated patch direction.
+
+Refinement work packages are written under `sentaurus_patch_refinements/` and selected candidates are stored in `checkpoint.pending_sentaurus_patch_candidate`, so the normal Sentaurus execution path and confirmation gates still apply.
 
 High-risk geometry/process/model changes still pause for confirmation.
 

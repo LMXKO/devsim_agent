@@ -6,9 +6,11 @@ import unittest
 from pathlib import Path
 
 from tcad_agent.autonomous_devsim_agent import (
+    AutonomousDevsimAgentState,
     AutonomousDevsimRequest,
     DevsimAgentActionKind,
     DevsimAgentStatus,
+    deterministic_action,
     observe_state,
     run_autonomous_devsim_agent,
 )
@@ -613,6 +615,75 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         refined = json.loads(refined_state.read_text(encoding="utf-8"))
         self.assertIn("mutation_effect_analysis", refined)
         self.assertIn("baseline_mutation_overlay", refined["final_summary"]["artifacts"])
+
+    def test_sentaurus_effect_triggers_refinement_before_generic_patch_planning(self) -> None:
+        project = self.root / "sentaurus_project"
+        project.mkdir()
+        (project / "device.cmd").write_text("set LIFETIME_SCALE 2.0\n", encoding="utf-8")
+        sentaurus_state = self.root / "sentaurus" / "sentaurus_state.json"
+        write_json(
+            sentaurus_state,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": "sentaurus_patch",
+                "project_copy_path": str(project),
+                "request": {"goal_text": "Reduce leakage.", "deck_files": ["device.cmd"]},
+                "quality_report": {"status": "passed", "metrics": {"leakage_abs_current_at_target_a": 4e-10}},
+                "final_summary": {
+                    "artifacts": {"project_copy": str(project)},
+                    "parameters": {"deck_files": ["device.cmd"]},
+                    "metrics": {"solver_backend": "sentaurus"},
+                },
+                "sentaurus_mutation_effect_analysis": {
+                    "decision": "continue_refine",
+                    "candidate_id": "device.cmd:lifetime:LIFETIME_SCALE",
+                    "candidate": {
+                        "candidate_id": "device.cmd:lifetime:LIFETIME_SCALE",
+                        "patches": [{"file": "device.cmd", "operation": "sentaurus_set_variable", "variable": "LIFETIME_SCALE", "value": "2"}],
+                        "validation_records": [
+                            {
+                                "file": "device.cmd",
+                                "operation": "sentaurus_set_variable",
+                                "variable": "LIFETIME_SCALE",
+                                "verified": True,
+                                "old_value": "1.0",
+                                "value": "2",
+                            }
+                        ],
+                    },
+                },
+            },
+        )
+        request = AutonomousDevsimRequest(
+            goal_text="Reduce leakage.",
+            agent_id="agent_sentaurus_refine",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=False,
+            sentaurus_project_path=project,
+            enable_experiment_design=True,
+            max_experiment_design_rounds=2,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_sentaurus_refine",
+            agent_dir=str(self.root / "agents" / "agent_sentaurus_refine"),
+            goal_text=request.goal_text,
+            created_at="2026-06-10T00:00:00Z",
+            updated_at="2026-06-10T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            latest_state_path=str(sentaurus_state),
+            checkpoint={"sentaurus_initial_run_done": True, "experiment_design_runs": 1},
+        )
+
+        action = deterministic_action(state, request)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT)
+        self.assertEqual(action.source_state_path, str(sentaurus_state))
 
 
 if __name__ == "__main__":

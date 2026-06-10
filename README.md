@@ -90,6 +90,8 @@ The long-running DEVSIM agent and repair loop are designed around structured age
 - When enabled, `autonomous_devsim_agent` can also run `plan_experiment_design`, which ranks convergence, golden/measured correlation, repair, and mutation candidates from the latest evidence instead of following a single fixed rule.
 - For Sentaurus states, enabled experiment design first runs `sentaurus_patch_planner`: it reads the copied/user deck, maps the natural-language goal to verified semantic patch candidates, records validation diffs, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`.
 - After a Sentaurus patch run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched metrics/curves, flags BV/Ron/field/leakage tradeoffs, writes overlay artifacts, and decides whether to continue, switch direction, or pause for Pareto/constraint review.
+- `sentaurus_patch_refiner` consumes that decision: `continue_refine` becomes a smaller verified follow-up patch, while `switch_target`/`reject_candidate` ask the planner for a different verified target instead of repeating the same edit.
+- Each patched Sentaurus state writes `sentaurus_lineage_archive.json`, a compact multi-run trail with patch fields, effect decisions, key metrics, overlays, Pareto front, and best entry.
 - Every autonomous step updates `checkpoint.agent_hypothesis_tree` with the current hypothesis, expected observation, stop condition, evidence used, verdict, and fallback alternatives.
 - High-risk geometry/process/model changes require confirmation unless explicitly allowed.
 
@@ -198,6 +200,23 @@ python3.11 -m tcad_agent.tools.sentaurus_mutation_effect \
   --goal "降低漏电，同时不要牺牲 BV/Ron/field peak" \
   --candidate-json '{"candidate_id":"device.cmd:lifetime:LIFETIME_SCALE"}' \
   --output /tmp/sentaurus_mutation_effect.json
+```
+
+Refine the next Sentaurus patch from that effect evidence:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_patch_refiner \
+  --state /tmp/sentaurus_patch/sentaurus_state.json \
+  --goal "继续降低漏电，但不要牺牲 BV/Ron/field peak" \
+  --output /tmp/sentaurus_patch_refinement.json
+```
+
+Archive multi-run Sentaurus patch lineage and Pareto status:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_lineage \
+  --state /tmp/sentaurus_patch/sentaurus_state.json \
+  --output /tmp/sentaurus_lineage_archive.json
 ```
 
 For curve-aware diagnosis, configure your Sentaurus Visual/Inspect or site wrapper to export a numeric CSV into the copied project. Recommended columns are explicit and unit-bearing, for example `voltage_v,current_a,electric_field_v_per_cm`. Without a CSV, the run can still capture logs/artifacts, but benchmark status remains limited because the agent cannot inspect curve shape, BV brackets, leakage interval, or field peak.
