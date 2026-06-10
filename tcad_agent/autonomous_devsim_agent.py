@@ -87,6 +87,7 @@ class DevsimAgentActionKind(str, Enum):
     APPLY_DECK_PATCH = "apply_deck_patch"
     RUN_USER_DECK = "run_user_deck"
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
+    PLAN_SENTAURUS_PATCH = "plan_sentaurus_patch"
     PLAN_EXPERIMENT_DESIGN = "plan_experiment_design"
     GENERATE_REPORT = "generate_report"
     GENERATE_DASHBOARD = "generate_dashboard"
@@ -582,6 +583,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"source_state_path": {"type": "string"}}),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_SENTAURUS_PATCH.value,
+            action_kind=DevsimAgentActionKind.PLAN_SENTAURUS_PATCH.value,
+            description="Plan verified Sentaurus semantic deck patches from the latest Sentaurus state and natural-language goal.",
+            parameters=object_schema({"source_state_path": {"type": "string"}}),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.GENERATE_DASHBOARD.value,
             action_kind=DevsimAgentActionKind.GENERATE_DASHBOARD.value,
             description="Generate an HTML dashboard for sweep/optimization/autonomous timeline states.",
@@ -712,6 +719,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "一次只选择一个下一步 action。",
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
+            "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
             "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
@@ -753,6 +761,36 @@ def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_pat
         request=request,
         reason=reason,
         user_confirmation_required=requires_confirmation,
+    )
+
+
+def action_from_sentaurus_patch_candidate(
+    candidate: dict[str, Any],
+    request: AutonomousDevsimRequest,
+    state: AutonomousDevsimAgentState,
+) -> DevsimAgentAction:
+    tool_request = sentaurus_tool_request(request)
+    existing_patches = tool_request.get("patches") if isinstance(tool_request.get("patches"), list) else []
+    history = state.checkpoint.get("sentaurus_patch_history")
+    lineage_patches: list[dict[str, Any]] = []
+    if isinstance(history, list):
+        for item in history:
+            if isinstance(item, dict) and isinstance(item.get("patches"), list):
+                lineage_patches.extend(patch for patch in item["patches"] if isinstance(patch, dict))
+    tool_request["patches"] = [*existing_patches, *lineage_patches, *(candidate.get("patches") or [])]
+    tool_request["sentaurus_patch_candidate_id"] = candidate.get("candidate_id")
+    if state.latest_state_path:
+        tool_request["repair_baseline_state_path"] = state.latest_state_path
+    if not tool_request.get("run_id"):
+        safe_id = safe_tool_name(str(candidate.get("candidate_id") or "sentaurus_patch"))[:80]
+        tool_request["run_id"] = f"{request.agent_id or 'agent'}_{safe_id}"
+    return DevsimAgentAction(
+        kind=DevsimAgentActionKind.RUN_TOOL,
+        tool_name="sentaurus_run",
+        source_state_path=state.latest_state_path,
+        request=tool_request,
+        reason=str(candidate.get("hypothesis") or "Execute the selected verified Sentaurus semantic patch candidate."),
+        user_confirmation_required=bool(candidate.get("requires_user_confirmation") or candidate.get("risk_level") == "high"),
     )
 
 
@@ -851,6 +889,14 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
         and not pending_experiment.get("executed")
     ):
         return action_from_experiment_candidate(pending_experiment, state.latest_state_path)
+    pending_sentaurus_patch = state.checkpoint.get("pending_sentaurus_patch_candidate")
+    if (
+        request.auto_execute_experiment_design
+        and request.sentaurus_project_path
+        and isinstance(pending_sentaurus_patch, dict)
+        and not pending_sentaurus_patch.get("executed")
+    ):
+        return action_from_sentaurus_patch_candidate(pending_sentaurus_patch, request, state)
     if not state.latest_state_path:
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_SUPERVISOR,
@@ -869,6 +915,19 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
             source_state_path=state.latest_state_path,
             reason="Latest state contains baseline-vs-mutation curve evidence; generate the next finer deck/request patch before continuing.",
+        )
+    sentaurus_patch_runs = int(state.checkpoint.get("sentaurus_patch_plan_runs") or 0)
+    if (
+        request.enable_experiment_design
+        and observation.get("tool_name") == "sentaurus_run"
+        and sentaurus_patch_runs < request.max_experiment_design_rounds
+        and state.checkpoint.get("sentaurus_patch_plan_source_path") != state.latest_state_path
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_SENTAURUS_PATCH,
+            source_state_path=state.latest_state_path,
+            request={"allow_high_risk": request.allow_user_confirmation_actions},
+            reason="Latest state is a Sentaurus run; plan verified semantic deck patches from the natural-language goal before generic repair/reporting.",
         )
     if quality_status in {"failed", "suspicious"}:
         return DevsimAgentAction(
@@ -1405,6 +1464,28 @@ def execute_action(
             if diagnostic:
                 result["mutation_effect_analysis"] = diagnostic
             state.checkpoint["pending_mutation_refinement"] = {**pending, "executed": True} if isinstance(pending, dict) else {"executed": True}
+        if tool_request.get("sentaurus_patch_candidate_id"):
+            pending = state.checkpoint.get("pending_sentaurus_patch_candidate")
+            pending_patches = pending.get("patches") if isinstance(pending, dict) and isinstance(pending.get("patches"), list) else []
+            if isinstance(pending, dict):
+                state.checkpoint["pending_sentaurus_patch_candidate"] = {
+                    **pending,
+                    "executed": True,
+                    "result_state_path": result_state_path,
+                }
+            history = state.checkpoint.get("sentaurus_patch_history")
+            history_items = list(history) if isinstance(history, list) else []
+            history_items.append(
+                {
+                    "candidate_id": tool_request.get("sentaurus_patch_candidate_id"),
+                    "patches": pending_patches,
+                    "result_state_path": result_state_path,
+                }
+            )
+            state.checkpoint["sentaurus_patch_history"] = history_items
+            state.checkpoint["executed_sentaurus_patch_candidates"] = int(
+                state.checkpoint.get("executed_sentaurus_patch_candidates") or 0
+            ) + 1
         return result, result_state_path
     if action.kind == DevsimAgentActionKind.RUN_REPAIR_EXECUTOR:
         source = action.source_state_path or state.latest_state_path
@@ -1513,6 +1594,43 @@ def execute_action(
             state.checkpoint["blocked_mutation_refinement"] = result
         else:
             state.checkpoint["failed_mutation_refinement"] = result
+        return result, source
+    if action.kind == DevsimAgentActionKind.PLAN_SENTAURUS_PATCH:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("Sentaurus patch planning action requires a source state")
+        output_dir = Path(state.agent_dir) / "sentaurus_patch_plans"
+        output_path = output_dir / f"sentaurus_patch_plan_{int(state.checkpoint.get('sentaurus_patch_plan_count') or 0) + 1:03d}.json"
+        runner = runner_registry.get("sentaurus_patch_planner")
+        payload = {
+            "goal_text": state.goal_text,
+            "source_state_path": source,
+            "output_path": str(output_path),
+            "allow_high_risk": bool(action.request.get("allow_high_risk", False)),
+        }
+        deck_files = request.sentaurus_request.get("deck_files") if isinstance(request.sentaurus_request.get("deck_files"), list) else []
+        if deck_files:
+            payload["deck_files"] = deck_files
+        if runner is None:
+            from tcad_agent.sentaurus_patch_planner import SentaurusPatchPlannerRequest, plan_sentaurus_patches
+
+            result = plan_sentaurus_patches(SentaurusPatchPlannerRequest.model_validate(payload)).model_dump(mode="json")
+        else:
+            result = runner(payload)
+        state.checkpoint["sentaurus_patch_plan_count"] = int(state.checkpoint.get("sentaurus_patch_plan_count") or 0) + 1
+        state.checkpoint["sentaurus_patch_plan_runs"] = int(state.checkpoint.get("sentaurus_patch_plan_runs") or 0) + 1
+        state.checkpoint["experiment_design_runs"] = int(state.checkpoint.get("experiment_design_runs") or 0) + 1
+        state.checkpoint["sentaurus_patch_plan_path"] = result.get("output_path")
+        state.checkpoint["sentaurus_patch_plan_source_path"] = source
+        state.checkpoint["experiment_design_source_path"] = source
+        state.checkpoint["sentaurus_patch_candidates"] = result.get("candidates") or []
+        selected = result.get("selected_candidate")
+        if isinstance(selected, dict):
+            state.checkpoint["pending_sentaurus_patch_candidate"] = selected
+        elif result.get("status") == "blocked_for_user_confirmation":
+            state.checkpoint["blocked_sentaurus_patch_candidates"] = result.get("candidates") or []
+        else:
+            state.checkpoint["sentaurus_patch_planner_exhausted"] = result
         return result, source
     if action.kind == DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN:
         source = action.source_state_path or state.latest_state_path

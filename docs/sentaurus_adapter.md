@@ -156,7 +156,28 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
   --execute
 ```
 
-The first autonomous action becomes `sentaurus_run`. The resulting state then flows through physical benchmark, objective/Pareto evaluation, report generation, and agent experiment design.
+The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-design`, the next Sentaurus-specific planning step is `plan_sentaurus_patch`: it inspects the latest `sentaurus_state.json`, parses the configured deck files, generates verified semantic patch candidates, writes a JSON work package under `sentaurus_patch_plans/`, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`. High-risk geometry/process/model classes remain confirmation-gated.
+
+## Patch Planner
+
+Use the patch planner directly when Sentaurus is unavailable or when you want a reviewable work package before running:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_patch_planner \
+  --goal "Ramp reverse BV to 1200V, reduce step size if convergence is difficult" \
+  --project tcad_agent/examples/sentaurus_fixtures/power_diode_bv \
+  --deck-file device.cmd \
+  --output /tmp/sentaurus_patch_plan.json
+```
+
+The planner returns:
+
+- candidate hypotheses, expected observations, stop conditions, and fallback alternatives;
+- semantic patches using the same `sentaurus_set_variable`, `sentaurus_update_assignment`, and `sentaurus_upsert_assignment` schema as `sentaurus_run`;
+- validation records and diffs from applying each patch to the current deck in memory;
+- a selected candidate only when every patch verifies and the risk gate allows it.
+
+The current vocabulary recognizes continuation/Math controls, BV `Goal` voltage, drift doping, lifetime, trap density, field plate, guard ring, oxide thickness, implant dose, junction depth, trench corner radius, and region-specific lifetime variables when those variables already exist in the deck. It does not invent proprietary process syntax; unsupported targets stay as unselected or confirmation-gated candidates until real project evidence or public/official documentation justifies a schema.
 
 ## Test Boundary
 

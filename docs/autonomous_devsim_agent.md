@@ -116,6 +116,14 @@ The runtime is agent-first, but not unrestricted:
 
 The selected candidate is stored in `checkpoint.pending_agent_experiment_candidate`, the full candidate set is stored in `checkpoint.agent_experiment_candidates`, and the JSON work package is written under `experiment_design/` in the agent directory.
 
+For Sentaurus states, the same experiment-design budget first goes through `plan_sentaurus_patch`. That planner reads the latest Sentaurus state/project copy, parses deck IR, maps the natural-language goal to verified semantic patch candidates, writes `sentaurus_patch_plans/sentaurus_patch_plan_*.json`, and stores:
+
+- `checkpoint.sentaurus_patch_candidates`;
+- `checkpoint.pending_sentaurus_patch_candidate` when a safe verified candidate is selected;
+- `checkpoint.blocked_sentaurus_patch_candidates` when only confirmation-gated candidates exist.
+
+If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. High-risk geometry/process/model changes still pause for confirmation.
+
 ## Hypothesis Tree
 
 The autonomous runtime now keeps a compact research trail in `checkpoint.agent_hypothesis_tree`. Each executed or planned step appends one node with:

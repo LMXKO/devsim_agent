@@ -1435,6 +1435,7 @@ ACTION_KIND_LABELS_ZH = {
     "apply_deck_patch": "应用 deck patch",
     "run_user_deck": "运行用户 deck",
     "plan_mutation_refinement": "规划 mutation refinement",
+    "plan_sentaurus_patch": "规划 Sentaurus patch",
     "plan_experiment_design": "规划下一实验",
     "generate_dashboard": "生成仪表盘",
     "stop_success": "完成",

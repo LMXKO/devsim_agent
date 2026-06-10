@@ -651,6 +651,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
     from tcad_agent.sentaurus import SentaurusRunRequest, run_sentaurus
+    from tcad_agent.sentaurus_patch_planner import SentaurusPatchPlannerRequest, plan_sentaurus_patches
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
@@ -838,6 +839,9 @@ def default_runner_registry() -> dict[str, Runner]:
         "experiment_conclusion": experiment_conclusion_runner,
         "sentaurus_run": lambda request: result_to_dict(
             run_sentaurus(SentaurusRunRequest.model_validate(request))
+        ),
+        "sentaurus_patch_planner": lambda request: result_to_dict(
+            plan_sentaurus_patches(SentaurusPatchPlannerRequest.model_validate(request))
         ),
         "user_deck_execution": lambda request: run_user_deck(UserDeckRunRequest.model_validate(request)),
     }
