@@ -1,0 +1,64 @@
+{
+  "case_id": "mosfet_idvg",
+  "description": "Minimal public-syntax Sentaurus command-file fixture for Id-Vg contract checks.",
+  "deck_files": ["device.cmd"],
+  "public_reference_urls": [
+    "https://ghzphy.github.io/Sentaurus_Training/sd/sd_1.html",
+    "https://ghzphy.github.io/Sentaurus_Training/sd/sd_8.html"
+  ],
+  "expected_sections": [
+    "File",
+    "Electrode",
+    "Physics",
+    "Plot",
+    "Math",
+    "Solve",
+    "Solve.Quasistationary",
+    "Solve.Quasistationary.Goal"
+  ],
+  "expected_variables": ["GATE_STOP", "DRAIN_BIAS"],
+  "expected_assignments": [
+    {"section_path": "Electrode.{record}", "key": "Name", "value": "gate"},
+    {"section_path": "Math", "key": "Digits", "value": "5"},
+    {"section_path": "Solve.Quasistationary", "key": "MaxStep", "value": "0.05"},
+    {"section_path": "Solve.Quasistationary.Goal", "key": "Name", "value": "gate"}
+  ],
+  "semantic_patch_smoke": [
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_set_variable",
+      "variable": "DRAIN_BIAS",
+      "value": "0.1",
+      "expected_contains": "set DRAIN_BIAS 0.1"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_update_assignment",
+      "section_path": ["Electrode"],
+      "selector": {"Name": "gate"},
+      "parameter": "Voltage",
+      "value": 0.2,
+      "expected_contains": "{ Name=\"gate\" Voltage=0.2 }"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_upsert_assignment",
+      "section_path": ["Math"],
+      "parameter": "NotDamped",
+      "value": 100,
+      "expected_contains": "NotDamped=100"
+    }
+  ],
+  "required_curve_columns": ["gate_voltage_v", "drain_current_a"],
+  "fake_backend": {
+    "csv_name": "mosfet_idvg_extract.csv",
+    "log_name": "mosfet_idvg_des.log",
+    "plt_name": "mosfet_idvg_des.plt",
+    "curve_rows": [
+      {"gate_voltage_v": "0", "drain_current_a": "1e-12"},
+      {"gate_voltage_v": "0.6", "drain_current_a": "1e-8"},
+      {"gate_voltage_v": "1.2", "drain_current_a": "1e-4"}
+    ]
+  }
+}
+

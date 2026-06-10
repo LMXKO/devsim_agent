@@ -1,0 +1,62 @@
+{
+  "case_id": "mixed_mode_transient",
+  "description": "Minimal public-syntax Sentaurus command-file fixture for mixed-mode transient contract checks.",
+  "deck_files": ["device.cmd"],
+  "public_reference_urls": [
+    "https://ghzphy.github.io/Sentaurus_Training/sd/sd_1.html",
+    "https://ghzphy.github.io/Sentaurus_Training/sv/sv_6.html"
+  ],
+  "expected_sections": [
+    "Device",
+    "Device.File",
+    "Device.Electrode",
+    "Device.Physics",
+    "System",
+    "Math",
+    "Solve",
+    "Solve.Transient"
+  ],
+  "expected_variables": [],
+  "expected_assignments": [
+    {"section_path": "Math", "key": "Method", "value": "Blocked"},
+    {"section_path": "Math", "key": "SubMethod", "value": "ParDiSo"},
+    {"section_path": "Solve.Transient", "key": "FinalTime", "value": "1e-9"}
+  ],
+  "semantic_patch_smoke": [
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_update_assignment",
+      "section_path": ["Solve", "Transient"],
+      "parameter": "MaxStep",
+      "value": "5e-11",
+      "expected_contains": "MaxStep=5e-11"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_update_assignment",
+      "section_path": ["Math"],
+      "parameter": "Iterations",
+      "value": 40,
+      "expected_contains": "Iterations=40"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_add_model",
+      "section_path": ["Device", "Physics"],
+      "model": "Temperature=300",
+      "expected_contains": "Temperature=300"
+    }
+  ],
+  "required_curve_columns": ["time_s", "drain_current_a"],
+  "fake_backend": {
+    "csv_name": "mixed_mode_transient_extract.csv",
+    "log_name": "mixed_mode_transient_des.log",
+    "plt_name": "mixed_mode_transient_des.plt",
+    "curve_rows": [
+      {"time_s": "0", "drain_current_a": "0"},
+      {"time_s": "5e-10", "drain_current_a": "1e-6"},
+      {"time_s": "1e-9", "drain_current_a": "2e-6"}
+    ]
+  }
+}
+

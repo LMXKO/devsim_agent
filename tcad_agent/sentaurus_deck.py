@@ -70,6 +70,28 @@ def unquoted_brace_events(line: str) -> list[tuple[int, str]]:
     return events
 
 
+def count_unquoted_char(value: str, char: str) -> int:
+    count = 0
+    in_quote: str | None = None
+    escaped = False
+    for token in value:
+        if escaped:
+            escaped = False
+            continue
+        if token == "\\":
+            escaped = True
+            continue
+        if token in {"'", '"'}:
+            if in_quote == token:
+                in_quote = None
+            elif in_quote is None:
+                in_quote = token
+            continue
+        if token == char and in_quote is None:
+            count += 1
+    return count
+
+
 def matching_open_paren(text: str, close_index: int) -> int | None:
     depth = 0
     in_quote: str | None = None
@@ -99,22 +121,23 @@ def matching_open_paren(text: str, close_index: int) -> int | None:
     return None
 
 
-def block_header_before_open(line: str, brace_index: int) -> tuple[str, str]:
-    left = line[:brace_index].rstrip()
+def block_header_before_open(prefix: str) -> tuple[str, str]:
+    left = prefix.rstrip()
     if not left:
         return "{record}", ""
     if left.endswith(")"):
         open_index = matching_open_paren(left, len(left) - 1)
         if open_index is not None:
             prefix = left[:open_index].rstrip()
-            match = re.search(r"([A-Za-z_][\w:.-]*)\s*$", prefix)
-            if match:
-                start = match.start(1)
-                return match.group(1), left[start:]
-    match = re.search(r"([A-Za-z_][\w:.-]*)\s*$", left)
-    if match:
-        start = match.start(1)
-        return match.group(1), left[start:]
+            name, prefix_header = parse_block_header(prefix)
+            if name != "{record}":
+                suffix = left[open_index:].strip()
+                header = " ".join(part for part in [prefix_header, suffix] if part)
+                return name, header
+    if count_unquoted_char(left, "(") > count_unquoted_char(left, ")"):
+        match = re.search(r"([A-Za-z_][\w:.-]*)\s*$", left)
+        if match:
+            return match.group(1), left[match.start(1) :].strip()
     return parse_block_header(left)
 
 
@@ -123,6 +146,7 @@ ASSIGNMENT_RE = re.compile(
 )
 SET_RE = re.compile(r"^\s*set\s+(?P<key>[A-Za-z_][\w:.-]*)\s+(?P<value>.+?)\s*(?:#.*)?$")
 DEFINE_RE = re.compile(r"^\s*#\s*define\s+(?P<key>[A-Za-z_][\w:.-]*)\s+(?P<value>.+?)\s*$")
+FLOW_CALL_RE = re.compile(r"^\s*(?P<name>Quasistationary|Transient|ACCoupled)\s*\(", re.IGNORECASE)
 
 
 def parse_assignments(raw: str, line_number: int, path: list[str], block_index: int | None) -> list[SentaurusDeckAssignment]:
@@ -150,6 +174,13 @@ def parse_sentaurus_deck_text(text: str, *, source_path: str = "") -> SentaurusD
     warnings: list[str] = []
 
     for line_index, line in enumerate(lines, start=1):
+        opened_logical_flow = False
+        flow_match = FLOW_CALL_RE.match(line)
+        if flow_match and not any(token == "{" for _, token in unquoted_brace_events(line)):
+            name = flow_match.group("name")
+            open_logical_flow_block(sections, stack, name=name, header=line.strip(), line_index=line_index)
+            opened_logical_flow = True
+
         set_match = SET_RE.match(line)
         define_match = DEFINE_RE.match(line)
         if set_match or define_match:
@@ -183,7 +214,30 @@ def parse_sentaurus_deck_text(text: str, *, source_path: str = "") -> SentaurusD
                 last_index = brace_index + 1
                 continue
 
-            name, header = block_header_before_open(line, brace_index)
+            segment = line[last_index:brace_index]
+            inline_flow = FLOW_CALL_RE.search(segment)
+            if inline_flow and not (stack and same_token(sections[stack[-1]].name, inline_flow.group("name"))):
+                flow_block = open_logical_flow_block(
+                    sections,
+                    stack,
+                    name=inline_flow.group("name"),
+                    header=segment[inline_flow.start() :].strip(),
+                    line_index=line_index,
+                )
+                flow_assignments = parse_assignments(
+                    segment[inline_flow.start() :],
+                    line_index,
+                    flow_block.path,
+                    flow_block.index,
+                )
+                if flow_assignments:
+                    assignments.extend(flow_assignments)
+                    flow_block.assignments.extend(flow_assignments)
+
+            name, header = block_header_before_open(segment)
+            if name == "{record}" and stack and sections[stack[-1]].name.lower() in {"quasistationary", "transient", "accoupled"}:
+                last_index = brace_index + 1
+                continue
             parent_path = sections[stack[-1]].path if stack else []
             block = SentaurusDeckBlock(
                 index=len(sections),
@@ -209,6 +263,10 @@ def parse_sentaurus_deck_text(text: str, *, source_path: str = "") -> SentaurusD
             assignments.extend(line_assignments)
             if current_index is not None:
                 sections[current_index].assignments.extend(line_assignments)
+        if opened_logical_flow and stack and sections[stack[-1]].start_line == line_index:
+            sections[stack[-1]].assignments.extend(
+                parse_assignments(line, line_index, sections[stack[-1]].path, stack[-1])
+            )
 
     for block_index in stack:
         sections[block_index].end_line = len(lines)
@@ -225,6 +283,29 @@ def parse_sentaurus_deck_text(text: str, *, source_path: str = "") -> SentaurusD
 
 def parse_sentaurus_deck_file(path: Path) -> SentaurusDeckIR:
     return parse_sentaurus_deck_text(path.read_text(encoding="utf-8", errors="replace"), source_path=str(path))
+
+
+def open_logical_flow_block(
+    sections: list[SentaurusDeckBlock],
+    stack: list[int],
+    *,
+    name: str,
+    header: str,
+    line_index: int,
+) -> SentaurusDeckBlock:
+    parent_path = sections[stack[-1]].path if stack else []
+    block = SentaurusDeckBlock(
+        index=len(sections),
+        name=name,
+        header=header.strip(),
+        start_line=line_index,
+        end_line=line_index,
+        depth=len(stack),
+        path=[*parent_path, name],
+    )
+    sections.append(block)
+    stack.append(block.index)
+    return block
 
 
 def normalize_path(path: list[str] | str | None) -> list[str]:

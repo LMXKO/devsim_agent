@@ -161,3 +161,28 @@ The first autonomous action becomes `sentaurus_run`. The resulting state then fl
 ## Test Boundary
 
 Unit tests use fake external commands to validate process control, patching, logs, CSV ingestion, benchmark integration, and autonomous routing. Fake commands do not represent real Sentaurus physics. New simulated scenarios should be grounded in official/public documentation or user-provided real project evidence before being encoded.
+
+## Offline Contract Harness
+
+When a real Sentaurus installation is unavailable, use the contract harness instead of inventing solver behavior:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_contract \
+  --all-fixtures \
+  --fixtures-root tcad_agent/examples/sentaurus_fixtures
+
+python3.11 -m tcad_agent.tools.sentaurus_contract \
+  --project tcad_agent/examples/sentaurus_fixtures/power_diode_bv \
+  --run-fake-e2e \
+  --output-root /tmp/actsoft_sentaurus_contract_smoke
+```
+
+The fixture corpus lives under `tcad_agent/examples/sentaurus_fixtures/` and currently covers:
+
+- `power_diode_bv`: `File`, `Electrode`, `Physics`, `Plot`, `Math`, `Solve`, `Quasistationary`, and `Goal`;
+- `mosfet_idvg`: MOS-style electrode records, `Plot(Collected)`, gate-bias ramp, and Math upsert patches;
+- `mixed_mode_transient`: `Device`, `System`, mixed-mode style voltage sources, `Math(Method=Blocked)`, and `Transient`.
+
+Each fixture has an `actsoft_sentaurus_contract.json` manifest that declares required section paths, variables, assignments, semantic patch smoke tests, required CSV columns, and optional fake-backend interface outputs. The fake backend writes logs, a placeholder `.plt`, and a CSV with manifest-declared columns; it is marked `interface_contract_only` and exists only to validate agent IO and state lineage.
+
+This harness is the recommended way to keep building the Sentaurus agent without Sentaurus installed: strengthen parsing, patch planning, artifact lineage, and long-horizon control now, then swap the fake backend for a real `sentaurus_profile.json` later.

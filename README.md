@@ -221,6 +221,21 @@ For common Sentaurus command files, semantic patch v1 can target `set`/`#define`
 
 Each parsed deck emits a `sentaurus_deck_ir_*.json` artifact with sections, assignments, variables, and warnings. Unsupported or unmatched patches are recorded as unverified and should not be executed as trusted mutations. Geometry/process/model edits should remain behind user confirmation unless you have a validated site-specific patch schema.
 
+When Sentaurus is not installed, validate the agent-side contract against the public-syntax fixture corpus:
+
+```bash
+python3.11 -m tcad_agent.tools.sentaurus_contract \
+  --all-fixtures \
+  --fixtures-root tcad_agent/examples/sentaurus_fixtures
+
+python3.11 -m tcad_agent.tools.sentaurus_contract \
+  --project tcad_agent/examples/sentaurus_fixtures/power_diode_bv \
+  --run-fake-e2e \
+  --output-root /tmp/actsoft_sentaurus_contract_smoke
+```
+
+The fake backend in this contract harness only validates process control, artifact collection, log parsing, deck IR, semantic patches, and CSV schema. It is explicitly marked `interface_contract_only` and is not a Sentaurus physics substitute.
+
 ## Start The Web UI
 
 ```bash

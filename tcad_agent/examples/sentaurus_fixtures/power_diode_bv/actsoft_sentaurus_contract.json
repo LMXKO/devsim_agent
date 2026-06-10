@@ -1,0 +1,64 @@
+{
+  "case_id": "power_diode_bv",
+  "description": "Minimal public-syntax Sentaurus command-file fixture for reverse-bias BV contract checks.",
+  "deck_files": ["device.cmd"],
+  "public_reference_urls": [
+    "https://ghzphy.github.io/Sentaurus_Training/sd/sd_1.html",
+    "https://ghzphy.github.io/Sentaurus_Training/sd/sd_8.html"
+  ],
+  "expected_sections": [
+    "File",
+    "Electrode",
+    "Physics",
+    "Plot",
+    "Math",
+    "Solve",
+    "Solve.Quasistationary",
+    "Solve.Quasistationary.Goal"
+  ],
+  "expected_variables": ["DRIFT_DOPING", "LIFETIME_SCALE"],
+  "expected_assignments": [
+    {"section_path": "Electrode.{record}", "key": "Name", "value": "cathode"},
+    {"section_path": "Math", "key": "Iterations", "value": "20"},
+    {"section_path": "Solve.Quasistationary", "key": "InitialStep", "value": "1e-3"},
+    {"section_path": "Solve.Quasistationary.Goal", "key": "Voltage", "value": "-100.0"}
+  ],
+  "semantic_patch_smoke": [
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_set_variable",
+      "variable": "DRIFT_DOPING",
+      "value": "8e14",
+      "expected_contains": "set DRIFT_DOPING 8e14"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_update_assignment",
+      "section_path": ["Electrode"],
+      "selector": {"Name": "cathode"},
+      "parameter": "Voltage",
+      "value": -10,
+      "expected_contains": "{ Name=\"cathode\" Voltage=-10 }"
+    },
+    {
+      "file": "device.cmd",
+      "operation": "sentaurus_update_assignment",
+      "section_path": ["Solve", "Quasistationary"],
+      "parameter": "InitialStep",
+      "value": "1e-4",
+      "expected_contains": "InitialStep=1e-4"
+    }
+  ],
+  "required_curve_columns": ["voltage_v", "current_a", "electric_field_v_per_cm"],
+  "fake_backend": {
+    "csv_name": "power_diode_bv_extract.csv",
+    "log_name": "power_diode_bv_des.log",
+    "plt_name": "power_diode_bv_des.plt",
+    "curve_rows": [
+      {"voltage_v": "0", "current_a": "1e-12", "electric_field_v_per_cm": "1e4"},
+      {"voltage_v": "-20", "current_a": "1e-10", "electric_field_v_per_cm": "2e5"},
+      {"voltage_v": "-100", "current_a": "1e-6", "electric_field_v_per_cm": "1e6"}
+    ]
+  }
+}
+
