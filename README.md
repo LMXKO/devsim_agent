@@ -18,11 +18,12 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, mutation-effect overlays, and deterministic fallback actions.
-- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies semantic deck patches, marks verified vs unverified edits, emits diffs, and can execute the patched/user deck directly.
+- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies path-aware semantic deck patches, preserves common unit-wrapper calls, marks verified vs unverified edits, emits diffs, and can execute the patched/user deck directly.
 - Compares baseline and mutation curves with shape features, leakage/BV brackets, field peaks, tradeoff checks, and overlay artifacts.
 - Supports deck mutation schemas for field plates, drift doping, lifetime, guard rings, junction depth, oxide thickness, implant dose, trench corner radius, trap density, and region-specific lifetime.
 - Scores physical credibility with unit, curve-shape, model-coupling, convergence, and golden/measured evidence checks.
 - Builds a signoff evidence pack that gates quality, artifacts, structured deck/spec, benchmark, convergence, golden/measured comparison, and capability boundary.
+- Generates ranked agent experiment-design candidates from signoff gaps, curve evidence, benchmark warnings, and deck mutations, then can execute the highest-value next experiment.
 - Displays process logs, plots, metrics, quality checks, deck patch lineage, agent reasoning, replanning decisions, and engineering conclusions in the page.
 - Supports queue/worker recovery so long runs can be resumed after interruption.
 
@@ -69,7 +70,7 @@ Natural-language task
   -> web UI
 ```
 
-The default control path is agent-first where an LLM is configured, with deterministic planners and validators used as safety fallbacks. Without an LLM, the same checkpoints, schemas, quality gates, and deterministic fallback actions still run. With an OpenAI-compatible model configured, the agent can use it for freer goal decomposition, diagnosis, repair-action selection, replanning, and conclusion summarization.
+The default control path is agent-first where an LLM is configured, with deterministic planners and validators used as safety fallbacks. Without an LLM, the same checkpoints, schemas, quality gates, candidate-experiment planning, and deterministic fallback actions still run. With an OpenAI-compatible model configured, the agent can use it for freer goal decomposition, diagnosis, experiment design, repair-action selection, replanning, and conclusion summarization.
 
 ### Agent-Driven Repair Loop
 
@@ -83,6 +84,7 @@ The long-running DEVSIM agent and repair loop are designed around structured age
 - `repair_agent` observes the run state, quality issues, metrics, curve diagnostics, deck mutations, physical benchmark context, and recent repair case memory before choosing one next action.
 - `repair_executor` applies the selected request/deck patch, records the agent observation, hypothesis, tool plan, safety review, benchmark result, mutation-effect analysis, and next target.
 - `autonomous_devsim_agent` can turn a successful baseline-vs-mutation overlay into the next finer request/deck patch and execute it within the configured refinement budget.
+- When enabled, `autonomous_devsim_agent` can also run `plan_experiment_design`, which ranks convergence, golden/measured correlation, repair, and mutation candidates from the latest evidence instead of following a single fixed rule.
 - High-risk geometry/process/model changes require confirmation unless explicitly allowed.
 
 Each repair attempt can produce `deck_patch_history.json`, `tcad_deck_ir.json`, semantic patch diffs, patched source decks, `baseline_mutation_overlay.svg`, physical benchmark evidence, and a case-memory record for future agent context.
@@ -289,8 +291,8 @@ This project is released under the MIT License. See [LICENSE](LICENSE).
 
 ## Roadmap
 
-- Promote physics_1d industrial evidence to mesh-resolved runners with measured/golden correlation.
-- Continue improving agent repair playbooks with richer measured/golden-curve grounding and stricter Pareto policies.
+- Run real overnight soak tests with private user decks, configured LLMs, and DEVSIM to harden the new experiment-design loop.
+- Promote remaining `physics_1d` first-pass evidence into mesh-resolved public runners where open examples are available.
 - Add richer experiment search, comparison, and repair-case retrieval across long-running missions.
 - Add adapters for user-provided licensed commercial TCAD installations without bundling proprietary content.
 - Improve conclusion generation so final reports are concise, evidence-linked, and useful to device engineers.

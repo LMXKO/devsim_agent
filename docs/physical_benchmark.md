@@ -58,3 +58,14 @@ The summary also includes `signoff_evidence_pack`. This pack gates:
 - golden/measured comparison when requested;
 - capability boundary, including compact baseline and planned-runner blocks.
 - physics_1d promotion gates, including mesh/model convergence and measured/golden correlation before strong signoff.
+
+## Promotion Into Next Experiments
+
+`tcad_agent.agent_experiment_design` turns the benchmark/signoff gaps into ranked agent candidates. This is the handoff from "metric warning" to "next autonomous action":
+
+- missing convergence evidence becomes a concrete `tool_convergence` request;
+- a measured/golden curve path becomes a `golden_curve_comparison` request;
+- failed or suspicious quality/benchmark evidence becomes a repair-executor candidate;
+- available `tcad_deck_mutations` become explicit mutation probes.
+
+The autonomous agent can opt into this with `--enable-experiment-design`. The selected candidate is executed through the same tool registry and confirmation gates as any other agent action.

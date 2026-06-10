@@ -261,6 +261,11 @@ def patch_candidates(patch: dict[str, Any]) -> set[str]:
     parts = [part for part in re.split(r"[.\[\]]+", path) if part]
     candidates = {normalized_name(part) for part in parts}
     if parts:
+        candidates.add(normalized_name(".".join(parts)))
+        candidates.add(normalized_name("_".join(parts)))
+        for index in range(len(parts)):
+            candidates.add(normalized_name("_".join(parts[index:])))
+    if parts:
         candidates.add(normalized_name(parts[-1]))
     for key in ["name", "target", "source_mutation"]:
         if patch.get(key):
@@ -353,6 +358,73 @@ def python_literal(value: Any) -> str:
     return repr(value)
 
 
+def literal_numeric_value(node: ast.AST) -> float | None:
+    value = literal_value(node)
+    if isinstance(value, bool):
+        return None
+    return finite_float(value)
+
+
+def operation_name(patch: dict[str, Any]) -> str:
+    return str(patch.get("operation") or patch.get("op") or "set").strip().lower().replace("-", "_")
+
+
+def patch_numeric_value(original: float | None, patch: dict[str, Any]) -> Any:
+    operation = operation_name(patch)
+    raw_value = patch.get("value")
+    numeric_value = finite_float(raw_value)
+    if operation in {"set", "replace"}:
+        return raw_value
+    if original is None or numeric_value is None:
+        return raw_value
+    if operation in {"scale", "multiply", "mul"}:
+        return original * numeric_value
+    if operation in {"add", "offset", "delta"}:
+        return original + numeric_value
+    if operation in {"subtract", "sub"}:
+        return original - numeric_value
+    if operation in {"percent", "pct", "relative_percent"}:
+        return original * (1.0 + numeric_value / 100.0)
+    return raw_value
+
+
+def replacement_for_node(source: str, node: ast.AST, patch: dict[str, Any]) -> tuple[str, str, str | None]:
+    """Return replacement text, original text, and optional inner replacement reason."""
+    span = node_span(source, node)
+    original = source[span[0] : span[1]] if span else ""
+    direct_numeric = literal_numeric_value(node)
+    if direct_numeric is not None or operation_name(patch) in {"set", "replace"}:
+        if not isinstance(node, ast.Call):
+            return python_literal(patch_numeric_value(direct_numeric, patch)), original, None
+
+    if isinstance(node, ast.Call):
+        numeric_children: list[ast.AST] = [
+            arg for arg in node.args if literal_numeric_value(arg) is not None
+        ]
+        numeric_children.extend(
+            keyword.value
+            for keyword in node.keywords
+            if keyword.arg not in {"name", "parameter", "model", "region", "device"}
+            and literal_numeric_value(keyword.value) is not None
+        )
+        if numeric_children:
+            child = numeric_children[0]
+            child_span = node_span(source, child)
+            if span and child_span:
+                child_original = source[child_span[0] : child_span[1]]
+                child_numeric = literal_numeric_value(child)
+                child_replacement = python_literal(patch_numeric_value(child_numeric, patch))
+                relative_start = child_span[0] - span[0]
+                relative_end = child_span[1] - span[0]
+                return (
+                    original[:relative_start] + child_replacement + original[relative_end:],
+                    original,
+                    f"preserved_call_wrapper:{child_original}->{child_replacement}",
+                )
+
+    return python_literal(patch.get("value")), original, None
+
+
 def match_name(name: str, candidates: set[str]) -> bool:
     normalized = normalized_name(name)
     return normalized in candidates or any(normalized.endswith(f"_{candidate}") for candidate in candidates)
@@ -366,8 +438,10 @@ class _PatchLocator(ast.NodeVisitor):
         path = str(patch.get("deck_path") or patch.get("request_path") or patch.get("path") or "")
         parts = [part for part in re.split(r"[.\[\]]+", path) if part]
         self.leaf_candidate = normalized_name(parts[-1]) if parts else ""
+        self.full_path_candidate = normalized_name("_".join(parts)) if parts else ""
         self.preferred_section = patch_section(patch)
         self.matches: list[tuple[int, ast.AST, str]] = []
+        self.path_stack: list[str] = []
 
     def score(self, node: ast.AST, names: list[str], reason: str) -> None:
         if not any(match_name(name, self.candidates) for name in names):
@@ -379,6 +453,8 @@ class _PatchLocator(ast.NodeVisitor):
         priority = 0
         if self.preferred_section and section == self.preferred_section:
             priority += 20
+        if self.full_path_candidate and any(normalized_name(name) == self.full_path_candidate for name in names):
+            priority += 80
         if self.leaf_candidate and any(match_name(name, {self.leaf_candidate}) for name in names):
             priority += 30
         priority += 10 if reason in {"assignment", "dict_key", "call_keyword"} else 0
@@ -389,18 +465,35 @@ class _PatchLocator(ast.NodeVisitor):
         for target in node.targets:
             names.extend(target_names(target))
         self.score(node.value, names, "assignment")
-        self.generic_visit(node)
+        if isinstance(node.value, ast.Dict) and names:
+            self.path_stack.append(names[0])
+            self.visit(node.value)
+            self.path_stack.pop()
+        else:
+            self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.score(node.value, target_names(node.target), "assignment")
-        self.generic_visit(node)
+        names = target_names(node.target)
+        self.score(node.value, names, "assignment")
+        if isinstance(node.value, ast.Dict) and names:
+            self.path_stack.append(names[0])
+            self.visit(node.value)
+            self.path_stack.pop()
+        else:
+            self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
         for key_node, value_node in zip(node.keys, node.values):
             key = literal_value(key_node) if key_node is not None else None
             if isinstance(key, str):
-                self.score(value_node, [key], "dict_key")
-        self.generic_visit(node)
+                self.path_stack.append(key)
+                path_name = ".".join(self.path_stack)
+                names = [key, path_name, "_".join(self.path_stack)]
+                self.score(value_node, names, "dict_key")
+                self.visit(value_node)
+                self.path_stack.pop()
+            else:
+                self.visit(value_node)
 
     def visit_Call(self, node: ast.Call) -> None:
         for keyword in node.keywords:
@@ -465,7 +558,8 @@ def apply_semantic_deck_patch(
             unapplied.append({**patch, "reason": "matched_symbol_without_source_span"})
             continue
         occupied.add(span)
-        replacements.append((span[0], span[1], python_literal(patch.get("value")), patch, reason))
+        replacement, _original, inner_reason = replacement_for_node(source, node, patch)
+        replacements.append((span[0], span[1], replacement, patch, reason if inner_reason is None else f"{reason}:{inner_reason}"))
 
     patched = source
     applied: list[dict[str, Any]] = []

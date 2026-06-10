@@ -205,6 +205,31 @@ class TCADDeckSpecTest(unittest.TestCase):
         self.assertIn("name='NetDoping', value=8e+15", result.patched_source)
         self.assertIn("name='taun', value=2e-06", result.patched_source)
 
+    def test_semantic_patch_preserves_unit_wrappers_and_supports_scale(self) -> None:
+        source = "\n".join(
+            [
+                "def um(value):",
+                "    return value * 1e-4",
+                "geometry = {'source': {'length_um': 0.5}, 'field_plate': {'length_um': um(1.5)}}",
+                "mesh = {'junction_spacing_um': um(0.02)}",
+            ]
+        )
+
+        result = semantic_patch_tcad_deck_source(
+            source,
+            [
+                {"deck_path": "geometry.field_plate.length_um", "request_path": "power_mos_field_plate_length_um", "value": 2.0},
+                {"deck_path": "mesh.junction_spacing_um", "request_path": "power_mos_junction_mesh_spacing_um", "operation": "scale", "value": 0.5},
+            ],
+            source_path="unit_wrapped_deck.py",
+        )
+
+        self.assertTrue(result.all_patches_verified)
+        self.assertIn("'field_plate': {'length_um': um(2)}", result.patched_source)
+        self.assertIn("'junction_spacing_um': um(0.01)", result.patched_source)
+        reasons = {item["reason"] for item in result.verified_patches}
+        self.assertTrue(any("preserved_call_wrapper" in reason for reason in reasons))
+
     def test_semantic_patch_marks_fallback_append_unverified(self) -> None:
         result = semantic_patch_tcad_deck_source(
             "solve(type='dc')\n",

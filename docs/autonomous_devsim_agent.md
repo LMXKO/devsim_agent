@@ -29,6 +29,7 @@ Supported actions:
 - `apply_deck_patch`: apply semantic deck patches and emit patched source plus unified diff;
 - `run_user_deck`: execute a user-provided or patched DEVSIM Python deck directly and capture stdout/stderr/state;
 - `plan_mutation_refinement`: read baseline-vs-mutation curve diagnostics and generate the next finer request/deck patch;
+- `plan_experiment_design`: rank next experiments from signoff gaps, benchmark warnings, curve diagnostics, golden/measured availability, and deck mutations;
 - `generate_report`: create a sweep/optimization report, or fall back to an engineering conclusion for single-run states;
 - `generate_dashboard`: create a dashboard for a sweep, optimization, or autonomous timeline;
 - `stop_success`: finish when enough evidence and artifacts exist;
@@ -71,6 +72,9 @@ Useful options:
 - `--objectives-json` and `--constraints-json`: add objective/Pareto gates to the loop;
 - `--max-mutation-refinements`: limit automatic curve-guided follow-up patches;
 - `--no-auto-mutation-refinement`: write the refinement work package without executing it;
+- `--enable-experiment-design`: after benchmark, generate ranked convergence/golden/repair/mutation candidates and execute the highest-value candidate;
+- `--max-experiment-design-rounds`: cap automatic experiment-design rounds;
+- `--no-auto-experiment-design`: write the experiment-design work package without executing the selected candidate;
 - `--cancel-file` and `--heartbeat-path`: cooperate with external long-run controls;
 - `--require-capability-audit`: record executable/fidelity/signoff coverage before running;
 - `--resume --agent-id ...`: resume an existing agent state.
@@ -100,3 +104,14 @@ The runtime is agent-first, but not unrestricted:
 - queued confirmation pauses can be approved or rejected through the web API;
 - deterministic fallback remains available unless disabled;
 - compact/planned evidence is still blocked by physical benchmark and signoff evidence gates.
+
+## Agent Experiment Design
+
+`plan_experiment_design` is the stronger agent loop for signoff-oriented work. It does not hard-code one repair rule. It builds a ranked candidate set:
+
+- `tool_convergence` when mesh/model/bias convergence is missing;
+- `golden_curve_comparison` when a measured or golden curve path is available;
+- `run_repair_executor` when quality or benchmark checks are failed/suspicious;
+- mutation probes when the state exposes `tcad_deck_mutations`.
+
+The selected candidate is stored in `checkpoint.pending_agent_experiment_candidate`, the full candidate set is stored in `checkpoint.agent_experiment_candidates`, and the JSON work package is written under `experiment_design/` in the agent directory.

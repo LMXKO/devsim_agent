@@ -356,6 +356,12 @@ def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         request["objectives"] = payload["objectives"]
     if isinstance(payload.get("constraints"), list):
         request["constraints"] = payload["constraints"]
+    if "enable_experiment_design" in payload:
+        request["enable_experiment_design"] = bool_from_payload(payload, "enable_experiment_design", False)
+    if "max_experiment_design_rounds" in payload:
+        request["max_experiment_design_rounds"] = int_from_payload(payload, "max_experiment_design_rounds", 1, minimum=0)
+    if "auto_execute_experiment_design" in payload:
+        request["auto_execute_experiment_design"] = bool_from_payload(payload, "auto_execute_experiment_design", True)
     return request
 
 

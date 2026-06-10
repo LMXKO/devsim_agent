@@ -14,6 +14,7 @@ from tcad_agent.curve_diagnostics import compare_state_mutation_effect, curve_sh
 from tcad_agent.deck_ir import parse_devsim_deck_file, write_semantic_deck_patch_artifacts
 from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
+from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
@@ -86,6 +87,7 @@ class DevsimAgentActionKind(str, Enum):
     APPLY_DECK_PATCH = "apply_deck_patch"
     RUN_USER_DECK = "run_user_deck"
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
+    PLAN_EXPERIMENT_DESIGN = "plan_experiment_design"
     GENERATE_REPORT = "generate_report"
     GENERATE_DASHBOARD = "generate_dashboard"
     STOP_SUCCESS = "stop_success"
@@ -118,6 +120,9 @@ class AutonomousDevsimRequest(BaseModel):
     repair_max_rounds: int = Field(default=3, ge=1)
     max_mutation_refinements: int = Field(default=1, ge=0)
     auto_execute_mutation_refinements: bool = True
+    enable_experiment_design: bool = False
+    max_experiment_design_rounds: int = Field(default=1, ge=0)
+    auto_execute_experiment_design: bool = True
     generate_report: bool = True
     generate_dashboard: bool = True
     require_capability_audit: bool = False
@@ -555,6 +560,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"source_state_path": {"type": "string"}}, required=["source_state_path"]),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN.value,
+            action_kind=DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN.value,
+            description="Generate ranked next experiments from benchmark/signoff gaps, curve diagnostics, and deck mutations.",
+            parameters=object_schema({"source_state_path": {"type": "string"}}, required=["source_state_path"]),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.GENERATE_REPORT.value,
             action_kind=DevsimAgentActionKind.GENERATE_REPORT.value,
             description="Generate an engineer-readable Markdown report or conclusion.",
@@ -647,6 +658,9 @@ def build_agent_context(
         "require_capability_audit": request.require_capability_audit,
         "max_mutation_refinements": request.max_mutation_refinements,
         "auto_execute_mutation_refinements": request.auto_execute_mutation_refinements,
+        "enable_experiment_design": request.enable_experiment_design,
+        "max_experiment_design_rounds": request.max_experiment_design_rounds,
+        "auto_execute_experiment_design": request.auto_execute_experiment_design,
         "toolbelt": toolbelt_summary(specs),
         "supported_action_kinds": [kind.value for kind in DevsimAgentActionKind],
     }
@@ -678,6 +692,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "一次只选择一个下一步 action。",
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
+            "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
             "compact/planned evidence 不能 stop_success 为签核结论。",
             "如果没有 state 且没有 initial tool，先 run_supervisor。",
@@ -685,6 +700,39 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
         "context": context,
     }
     return system, json.dumps(user, ensure_ascii=False, indent=2)
+
+
+def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_path: str | None) -> DevsimAgentAction:
+    kind = str(candidate.get("action_kind") or "")
+    request = dict(candidate.get("request") or {})
+    request["agent_experiment_candidate_id"] = candidate.get("candidate_id")
+    source_state_path = str(candidate.get("source_state_path") or latest_state_path or "") or None
+    reason = str(candidate.get("reason") or "Execute the highest-ranked agent experiment design candidate.")
+    requires_confirmation = bool(candidate.get("requires_user_confirmation"))
+    if kind == DevsimAgentActionKind.RUN_REPAIR_EXECUTOR.value:
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
+            source_state_path=source_state_path,
+            request=request,
+            reason=reason,
+            user_confirmation_required=requires_confirmation,
+        )
+    if kind == DevsimAgentActionKind.ASK_USER.value:
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.ASK_USER,
+            source_state_path=source_state_path,
+            request=request,
+            reason=reason,
+            user_confirmation_required=requires_confirmation,
+        )
+    return DevsimAgentAction(
+        kind=DevsimAgentActionKind.RUN_TOOL,
+        tool_name=str(candidate.get("tool_name") or ""),
+        source_state_path=source_state_path,
+        request=request,
+        reason=reason,
+        user_confirmation_required=requires_confirmation,
+    )
 
 
 def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> DevsimAgentAction:
@@ -755,6 +803,13 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             reason=str(pending_refinement.get("reason") or "Execute the curve-guided mutation refinement patch."),
             user_confirmation_required=bool(pending_refinement.get("requires_user_confirmation")),
         )
+    pending_experiment = state.checkpoint.get("pending_agent_experiment_candidate")
+    if (
+        request.auto_execute_experiment_design
+        and isinstance(pending_experiment, dict)
+        and not pending_experiment.get("executed")
+    ):
+        return action_from_experiment_candidate(pending_experiment, state.latest_state_path)
     if not state.latest_state_path:
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_SUPERVISOR,
@@ -785,6 +840,17 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             kind=DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK,
             source_state_path=state.latest_state_path,
             reason="Latest state is not failed; run physical benchmark before conclusion.",
+        )
+    experiment_design_runs = int(state.checkpoint.get("experiment_design_runs") or 0)
+    if (
+        request.enable_experiment_design
+        and experiment_design_runs < request.max_experiment_design_rounds
+        and state.checkpoint.get("experiment_design_source_path") != state.latest_state_path
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN,
+            source_state_path=state.latest_state_path,
+            reason="Use benchmark/signoff gaps, curve diagnostics, and deck mutations to rank the next autonomous experiment.",
         )
     if (request.objectives or request.constraints) and not state.checkpoint.get("objectives_done"):
         return DevsimAgentAction(
@@ -1180,6 +1246,17 @@ def execute_action(
         with temporary_cancel_env(state.cancel_file):
             result = runner(tool_request)
         result_state_path = infer_result_state_path(result)
+        if tool_request.get("agent_experiment_candidate_id"):
+            pending = state.checkpoint.get("pending_agent_experiment_candidate")
+            if isinstance(pending, dict):
+                state.checkpoint["pending_agent_experiment_candidate"] = {
+                    **pending,
+                    "executed": True,
+                    "result_state_path": result_state_path,
+                }
+            state.checkpoint["executed_agent_experiment_candidates"] = int(
+                state.checkpoint.get("executed_agent_experiment_candidates") or 0
+            ) + 1
         if tool_request.get("mutation_refinement_id"):
             state.checkpoint["mutation_refinement_runs"] = int(state.checkpoint.get("mutation_refinement_runs") or 0) + 1
             state.checkpoint["last_mutation_refinement_id"] = tool_request.get("mutation_refinement_id")
@@ -1209,6 +1286,17 @@ def execute_action(
                     use_agent_policy=request.use_agent_policy,
                 )
             )
+        if action.request.get("agent_experiment_candidate_id"):
+            pending = state.checkpoint.get("pending_agent_experiment_candidate")
+            if isinstance(pending, dict):
+                state.checkpoint["pending_agent_experiment_candidate"] = {
+                    **pending,
+                    "executed": True,
+                    "result_state_path": infer_result_state_path(result) or result.get("final_state_path") or result.get("current_state_path"),
+                }
+            state.checkpoint["executed_agent_experiment_candidates"] = int(
+                state.checkpoint.get("executed_agent_experiment_candidates") or 0
+            ) + 1
         return result, infer_result_state_path(result) or result.get("final_state_path") or result.get("current_state_path")
     if action.kind == DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK:
         source = action.source_state_path or state.latest_state_path
@@ -1292,6 +1380,29 @@ def execute_action(
         else:
             state.checkpoint["failed_mutation_refinement"] = result
         return result, source
+    if action.kind == DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("experiment design action requires a source state")
+        output_dir = Path(state.agent_dir) / "experiment_design"
+        output_path = output_dir / f"experiment_design_{int(state.checkpoint.get('experiment_design_plans') or 0) + 1:03d}.json"
+        benchmark_path = state.checkpoint.get("physical_benchmark_path")
+        plan = build_agent_experiment_design_plan(
+            Path(source),
+            benchmark_path=Path(str(benchmark_path)) if benchmark_path else None,
+            output_path=output_path,
+        )
+        result = plan.model_dump(mode="json")
+        state.checkpoint["experiment_design_plans"] = int(state.checkpoint.get("experiment_design_plans") or 0) + 1
+        state.checkpoint["experiment_design_runs"] = int(state.checkpoint.get("experiment_design_runs") or 0) + 1
+        state.checkpoint["experiment_design_plan_path"] = result.get("output_path")
+        state.checkpoint["experiment_design_source_path"] = source
+        state.checkpoint["agent_experiment_candidates"] = result.get("candidates") or []
+        if plan.selected_candidate:
+            state.checkpoint["pending_agent_experiment_candidate"] = plan.selected_candidate.model_dump(mode="json")
+        else:
+            state.checkpoint["agent_experiment_design_exhausted"] = result
+        return result, source
     if action.kind == DevsimAgentActionKind.GENERATE_REPORT:
         source = action.source_state_path or state.latest_state_path
         if not source:
@@ -1347,6 +1458,29 @@ def append_step(
     state.steps.append(step)
     state.next_action = action.kind.value
     return step
+
+
+def invalidate_state_dependent_signoff(state: AutonomousDevsimAgentState, previous_state_path: str | None, next_state_path: str | None) -> None:
+    if not next_state_path or next_state_path == previous_state_path:
+        return
+    for key in (
+        "physical_benchmark_done",
+        "physical_benchmark_path",
+        "objectives_done",
+        "engineering_objectives_path",
+        "pareto_front",
+        "best_candidate",
+        "report_done",
+        "dashboard_done",
+    ):
+        state.checkpoint.pop(key, None)
+    state.final_report_path = None
+    state.final_dashboard_path = None
+    state.checkpoint["state_dependent_signoff_invalidated"] = {
+        "previous_state_path": previous_state_path,
+        "next_state_path": next_state_path,
+        "at": utc_timestamp(),
+    }
 
 
 def run_autonomous_devsim_agent(
@@ -1412,8 +1546,10 @@ def run_autonomous_devsim_agent(
             step.result = result
             state.checkpoint["last_process"] = process_metadata_from_result(result)
             step.result_state_path = result_state_path
+            previous_state_path = state.latest_state_path
             if result_state_path:
                 state.latest_state_path = result_state_path
+                invalidate_state_dependent_signoff(state, previous_state_path, result_state_path)
             if action.kind == DevsimAgentActionKind.RUN_TOOL and action.tool_name == request.initial_tool_name:
                 state.checkpoint["initial_tool_done"] = True
             if state.status not in {DevsimAgentStatus.COMPLETED, DevsimAgentStatus.WAITING_FOR_USER}:

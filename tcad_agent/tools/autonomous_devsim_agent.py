@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-max-rounds", type=int, default=3)
     parser.add_argument("--max-mutation-refinements", type=int, default=1)
     parser.add_argument("--no-auto-mutation-refinement", action="store_true")
+    parser.add_argument("--enable-experiment-design", action="store_true")
+    parser.add_argument("--max-experiment-design-rounds", type=int, default=1)
+    parser.add_argument("--no-auto-experiment-design", action="store_true")
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--no-dashboard", action="store_true")
     parser.add_argument("--require-capability-audit", action="store_true")
@@ -94,6 +97,9 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         repair_max_rounds=args.repair_max_rounds,
         max_mutation_refinements=args.max_mutation_refinements,
         auto_execute_mutation_refinements=not args.no_auto_mutation_refinement,
+        enable_experiment_design=args.enable_experiment_design,
+        max_experiment_design_rounds=args.max_experiment_design_rounds,
+        auto_execute_experiment_design=not args.no_auto_experiment_design,
         generate_report=not args.no_report,
         generate_dashboard=not args.no_dashboard,
         require_capability_audit=args.require_capability_audit,
