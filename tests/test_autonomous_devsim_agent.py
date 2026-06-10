@@ -180,6 +180,12 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
                     },
                     "observation_summary": "还没有 state。",
                     "hypothesis_zh": "先建立 baseline。",
+                    "hypothesis_tree_update": {
+                        "hypothesis_zh": "MOS C-V baseline 可以暴露氧化层/固定电荷的一阶异常。",
+                        "expected_observation": "得到 C-V 曲线和 Cox 附近 sanity check。",
+                        "stop_condition": "quality passed 且 benchmark 没有硬错误。",
+                        "next_alternatives": ["如果 C 明显超 Cox，优先检查 oxide thickness。"],
+                    },
                     "evidence_used": ["goal_text", "toolbelt"],
                 }
             )
@@ -198,6 +204,9 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(state.steps[0].kind, DevsimAgentActionKind.RUN_TOOL)
         self.assertEqual(state.steps[0].action["tool_name"], "mos_capacitor_cv_sweep")
         self.assertFalse(state.checkpoint["last_agent_decision"]["fallback_used"])
+        tree = state.checkpoint["agent_hypothesis_tree"]
+        self.assertEqual(tree["nodes"][0]["hypothesis_zh"], "MOS C-V baseline 可以暴露氧化层/固定电荷的一阶异常。")
+        self.assertEqual(tree["nodes"][0]["verdict"], "planned")
         self.assertEqual(len(client.calls), 1)
 
     def test_agent_cannot_call_itself_as_nested_tool(self) -> None:

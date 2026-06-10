@@ -230,6 +230,40 @@ class TCADDeckSpecTest(unittest.TestCase):
         reasons = {item["reason"] for item in result.verified_patches}
         self.assertTrue(any("preserved_call_wrapper" in reason for reason in reasons))
 
+    def test_deck_ir_tracks_functions_import_aliases_control_flow_and_patches_defaults(self) -> None:
+        source = "\n".join(
+            [
+                "import devsim as ds",
+                "from process_defaults import DEFAULT_DOSE",
+                "def build_device(tox_nm=50, drain_stop=20):",
+                "    geometry = {'oxide_thickness_nm': tox_nm}",
+                "    for vd in [0, drain_stop]:",
+                "        ds.set_parameter(name='oxide_thickness_nm', value=tox_nm)",
+                "        ds.solve(type='dc', drain_voltage=vd)",
+                "    if DEFAULT_DOSE:",
+                "        ds.set_parameter(name='implant_dose_cm2', value=DEFAULT_DOSE)",
+            ]
+        )
+
+        ir = parse_tcad_deck_source(source, source_path="alias_function_deck.py")
+
+        self.assertEqual(ir.imports[0].alias, "ds")
+        self.assertEqual(ir.functions[0].name, "build_device")
+        self.assertIn("for", ir.functions[0].control_flow)
+        self.assertIn("if", ir.functions[0].control_flow)
+        self.assertIn("devsim.set_parameter", {call.resolved_function for call in ir.calls})
+        self.assertIn("named_devsim_parameter", {binding.source_kind for binding in ir.semantic_bindings})
+
+        result = semantic_patch_tcad_deck_source(
+            source,
+            {"deck_path": "geometry.oxide_thickness_nm", "request_path": "power_mos_gate_oxide_thickness_nm", "value": 45},
+            source_path="alias_function_deck.py",
+        )
+
+        self.assertTrue(result.all_patches_verified)
+        self.assertIn("def build_device(tox_nm=45, drain_stop=20):", result.patched_source)
+        self.assertEqual(result.verified_patches[0]["reason"], "function_default")
+
     def test_semantic_patch_marks_fallback_append_unverified(self) -> None:
         result = semantic_patch_tcad_deck_source(
             "solve(type='dc')\n",

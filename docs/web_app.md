@@ -16,6 +16,7 @@ The composer uses a Codex-like single action button: `Send` enqueues the mission
 
 The transcript shows:
 
+- a minimal autonomous-agent cockpit with the active hypothesis, pending candidate experiment, deck patch diff, and golden/measured calibration summary;
 - queue item status, attempts, result state path, and failures;
 - mission decomposition steps;
 - mission step outputs;

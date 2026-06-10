@@ -69,3 +69,5 @@ The summary also includes `signoff_evidence_pack`. This pack gates:
 - available `tcad_deck_mutations` become explicit mutation probes.
 
 The autonomous agent can opt into this with `--enable-experiment-design`. The selected candidate is executed through the same tool registry and confirmation gates as any other agent action.
+
+Golden/measured comparison artifacts include unit-normalized and interpolated aligned points plus a calibration recommendation JSON. Benchmark status records the comparison as evidence, but high RMSE, sign mismatch, or missing matched points still block strong signoff.

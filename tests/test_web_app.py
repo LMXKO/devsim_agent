@@ -719,6 +719,95 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(risk_event["output"]["agent_decision"]["action_label"], "带风险继续")
         self.assertIn("带风险说明", risk_event["detail"])
 
+    def test_autonomous_agent_activity_includes_minimal_cockpit(self) -> None:
+        with tempfile.TemporaryDirectory(dir=PROJECT_ROOT / "runs") as tmp:
+            root = Path(tmp)
+            latest_state_path = root / "golden_state.json"
+            latest_state_path.write_text(
+                json.dumps(
+                    {
+                        "tool_name": "golden_curve_comparison",
+                        "status": "completed",
+                        "final_summary": {
+                            "calibration": {
+                                "source_to_reference_y_scale": 0.82,
+                                "rmse_log_dec": 0.11,
+                                "rmse_after_y_scale_fit_log_dec": 0.04,
+                                "recommendations": ["accept_curve_alignment_for_current_signoff_gate"],
+                            },
+                            "artifacts": {},
+                        },
+                        "quality_report": {"status": "passed", "metrics": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            agent_state_path = root / "agent_state.json"
+            agent_state_path.write_text(
+                json.dumps(
+                    {
+                        "tool_name": "autonomous_devsim_agent",
+                        "status": "running",
+                        "agent_id": "agent_ui",
+                        "created_at": "2026-06-10T00:00:00Z",
+                        "updated_at": "2026-06-10T00:01:00Z",
+                        "latest_state_path": str(latest_state_path),
+                        "next_action": "plan_experiment_design",
+                        "checkpoint": {
+                            "semantic_deck_diff": str(root / "patch.diff"),
+                            "deck_patch_verified": True,
+                            "pending_agent_experiment_candidate": {
+                                "candidate_id": "collect_convergence_evidence",
+                                "reason": "补齐收敛证据",
+                                "tool_name": "tool_convergence",
+                            },
+                            "agent_hypothesis_tree": {
+                                "nodes": [
+                                    {
+                                        "id": "h001",
+                                        "step_index": 1,
+                                        "action_kind": "run_tool",
+                                        "hypothesis_zh": "field peak 由终端结构主导。",
+                                        "verdict": "supported",
+                                    }
+                                ],
+                                "last_hypothesis": {
+                                    "id": "h001",
+                                    "step_index": 1,
+                                    "action_kind": "run_tool",
+                                    "hypothesis_zh": "field peak 由终端结构主导。",
+                                    "verdict": "supported",
+                                },
+                            },
+                        },
+                        "steps": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            activity = collect_execution_activity(
+                [
+                    {
+                        "queue_id": "q_agent",
+                        "tool_name": "autonomous_devsim_agent",
+                        "status": "running",
+                        "request": {"goal_text": "autonomous"},
+                        "attempts": 1,
+                        "max_attempts": 1,
+                        "created_at": "2026-06-10T00:00:00Z",
+                        "updated_at": "2026-06-10T00:01:00Z",
+                        "result_state_path": str(agent_state_path),
+                    }
+                ]
+            )
+
+            cockpit = next(event for event in activity if event["title"] == "Agent cockpit")
+            self.assertEqual(cockpit["output"]["cockpit"]["hypothesis"]["last"]["hypothesis_zh"], "field peak 由终端结构主导。")
+            self.assertEqual(cockpit["output"]["cockpit"]["calibration"]["rmse_log_dec"], 0.11)
+            self.assertIn("cockpitBlock", render_app_html())
+
     def test_collect_execution_activity_includes_conclusion_summary_on_goal_step(self) -> None:
         with tempfile.TemporaryDirectory(dir=PROJECT_ROOT / "runs") as tmp:
             root = Path(tmp)

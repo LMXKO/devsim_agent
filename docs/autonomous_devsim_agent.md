@@ -115,3 +115,14 @@ The runtime is agent-first, but not unrestricted:
 - mutation probes when the state exposes `tcad_deck_mutations`.
 
 The selected candidate is stored in `checkpoint.pending_agent_experiment_candidate`, the full candidate set is stored in `checkpoint.agent_experiment_candidates`, and the JSON work package is written under `experiment_design/` in the agent directory.
+
+## Hypothesis Tree
+
+The autonomous runtime now keeps a compact research trail in `checkpoint.agent_hypothesis_tree`. Each executed or planned step appends one node with:
+
+- the physics/numerics hypothesis being tested;
+- the expected observation and stop condition when an LLM provides them;
+- the action kind, tool name, evidence keys, result state, and verdict;
+- fallback alternatives when the hypothesis fails or remains suspicious.
+
+This lets a resumed multi-hour run continue from an explicit hypothesis history instead of treating each tool call as an isolated rule. The same summary is exposed to the web cockpit and included in compact checkpoint output.

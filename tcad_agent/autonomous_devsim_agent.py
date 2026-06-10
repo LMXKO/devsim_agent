@@ -645,6 +645,7 @@ def build_agent_context(
         "max_steps": state.max_steps,
         "completed_steps": len(state.steps),
         "latest_observation": observe_state(state.latest_state_path),
+        "agent_hypothesis_tree": state.checkpoint.get("agent_hypothesis_tree"),
         "checkpoint": state.checkpoint,
         "recent_steps": compact_steps(state),
         "initial_tool_name": request.initial_tool_name,
@@ -686,6 +687,12 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             },
             "observation_summary": "中文，当前看到的结果和风险",
             "hypothesis_zh": "中文，下一步背后的工程假设",
+            "hypothesis_tree_update": {
+                "hypothesis_zh": "当前要验证的具体物理/数值假设",
+                "expected_observation": "如果假设正确，下一轮曲线/指标/日志应出现什么",
+                "stop_condition": "什么证据足以停止或转向",
+                "next_alternatives": ["如果失败，下一批候选假设或实验"],
+            },
             "evidence_used": ["actual context keys used"],
         },
         "guardrails": [
@@ -693,6 +700,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
+            "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
             "compact/planned evidence 不能 stop_success 为签核结论。",
             "如果没有 state 且没有 initial tool，先 run_supervisor。",
@@ -999,10 +1007,103 @@ def decide_next_action(
             "action": action.model_dump(mode="json"),
             "observation_summary": parsed.get("observation_summary"),
             "hypothesis_zh": parsed.get("hypothesis_zh"),
+            "hypothesis_tree_update": parsed.get("hypothesis_tree_update") if isinstance(parsed.get("hypothesis_tree_update"), dict) else None,
             "evidence_used": parsed.get("evidence_used") or [],
         }
     )
     return action, decision
+
+
+def result_verdict(result: dict[str, Any] | None, error: str | None = None) -> str:
+    if error:
+        return "failed"
+    if not isinstance(result, dict):
+        return "planned"
+    quality = result.get("quality_report") if isinstance(result.get("quality_report"), dict) else {}
+    status = str(result.get("status") or quality.get("status") or "").lower()
+    quality_status = str(quality.get("status") or "").lower()
+    if status == "failed" or quality_status == "failed" or result.get("failure_reason"):
+        return "failed"
+    if status == "suspicious" or quality_status == "suspicious":
+        return "suspicious"
+    if status in {"completed", "passed"} or quality_status == "passed":
+        return "supported"
+    return status or "observed"
+
+
+def update_agent_hypothesis_tree(
+    state: AutonomousDevsimAgentState,
+    step: DevsimAgentStep,
+    decision: dict[str, Any],
+    *,
+    result: dict[str, Any] | None = None,
+    result_state_path: str | None = None,
+    error: str | None = None,
+) -> None:
+    tree = state.checkpoint.get("agent_hypothesis_tree")
+    if not isinstance(tree, dict):
+        tree = {
+            "schema_version": "actsoft.tcad.agent_hypothesis_tree.v1",
+            "goal_text": state.goal_text,
+            "nodes": [],
+            "open_questions": [],
+        }
+    nodes = tree.get("nodes")
+    if not isinstance(nodes, list):
+        nodes = []
+        tree["nodes"] = nodes
+    parsed = decision.get("parsed_response") if isinstance(decision.get("parsed_response"), dict) else {}
+    update = decision.get("hypothesis_tree_update") if isinstance(decision.get("hypothesis_tree_update"), dict) else {}
+    if not update and isinstance(parsed, dict):
+        update = parsed.get("hypothesis_tree_update") if isinstance(parsed.get("hypothesis_tree_update"), dict) else {}
+    action = step.action or {}
+    hypothesis = (
+        update.get("hypothesis_zh")
+        or decision.get("hypothesis_zh")
+        or step.reason
+        or "执行下一步以补齐 TCAD 证据。"
+    )
+    parent_id = update.get("parent_id") or (nodes[-1].get("id") if nodes and isinstance(nodes[-1], dict) else None)
+    node = {
+        "id": update.get("id") or f"h{len(nodes) + 1:03d}",
+        "parent_id": parent_id,
+        "step_index": step.index,
+        "action_kind": action.get("kind"),
+        "tool_name": action.get("tool_name"),
+        "hypothesis_zh": hypothesis,
+        "expected_observation": update.get("expected_observation"),
+        "stop_condition": update.get("stop_condition"),
+        "next_alternatives": update.get("next_alternatives") if isinstance(update.get("next_alternatives"), list) else [],
+        "evidence_used": decision.get("evidence_used") or [],
+        "verdict": result_verdict(result, error),
+        "result_state_path": result_state_path,
+        "error": error,
+        "created_at": step.started_at,
+        "updated_at": utc_timestamp(),
+    }
+    if isinstance(result, dict):
+        quality = result.get("quality_report") if isinstance(result.get("quality_report"), dict) else {}
+        node["observed_status"] = result.get("status")
+        node["observed_quality"] = quality.get("status")
+        if result.get("failure_reason"):
+            node["failure_reason"] = result.get("failure_reason")
+        metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+        if metrics:
+            node["metric_keys"] = list(metrics)[:8]
+    nodes.append(node)
+    tree["nodes"] = nodes[-40:]
+    open_questions: list[str] = []
+    for item in reversed(tree["nodes"]):
+        if not isinstance(item, dict):
+            continue
+        if item.get("verdict") in {"failed", "suspicious"}:
+            open_questions.extend(str(value) for value in item.get("next_alternatives") or [] if value)
+        if len(open_questions) >= 5:
+            break
+    tree["open_questions"] = open_questions[:5]
+    tree["last_hypothesis"] = node
+    tree["updated_at"] = node["updated_at"]
+    state.checkpoint["agent_hypothesis_tree"] = tree
 
 
 def default_runner_registry() -> dict[str, Runner]:
@@ -1530,6 +1631,7 @@ def run_autonomous_devsim_agent(
         if not request.execute:
             state.status = DevsimAgentStatus.PLANNED
             state.checkpoint["planned_action"] = action.model_dump(mode="json")
+            update_agent_hypothesis_tree(state, step, decision, result=None, result_state_path=state.latest_state_path)
             state.active_process = None
             write_state(state, path)
             write_heartbeat(state, active_action=action, step_index=step.index, note="planned action recorded")
@@ -1550,6 +1652,7 @@ def run_autonomous_devsim_agent(
             if result_state_path:
                 state.latest_state_path = result_state_path
                 invalidate_state_dependent_signoff(state, previous_state_path, result_state_path)
+            update_agent_hypothesis_tree(state, step, decision, result=result, result_state_path=result_state_path or state.latest_state_path)
             if action.kind == DevsimAgentActionKind.RUN_TOOL and action.tool_name == request.initial_tool_name:
                 state.checkpoint["initial_tool_done"] = True
             if state.status not in {DevsimAgentStatus.COMPLETED, DevsimAgentStatus.WAITING_FOR_USER}:
@@ -1575,6 +1678,7 @@ def run_autonomous_devsim_agent(
             step.status = DevsimAgentStepStatus.FAILED
             step.error = str(exc)
             step.completed_at = utc_timestamp()
+            update_agent_hypothesis_tree(state, step, decision, result=None, result_state_path=state.latest_state_path, error=str(exc))
             state.status = DevsimAgentStatus.FAILED
             state.failure_reason = str(exc)
             state.next_action = "inspect autonomous DEVSIM agent tool failure"

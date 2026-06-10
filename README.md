@@ -18,13 +18,15 @@ The current public version focuses on open-source DEVSIM workflows. It does not 
 - Runs agent-callable TCAD tools with checkpoints and run state.
 - Classifies failures such as convergence, schema mismatch, physical-quality risk, and repair exhaustion.
 - Repairs selected failures with an agent policy that can inspect curve diagnostics, deck patch lineage, physical benchmarks, mutation-effect overlays, and deterministic fallback actions.
-- Parses user-provided DEVSIM Python decks into a source IR, locates geometry/model/bias/mesh/doping sections, applies path-aware semantic deck patches, preserves common unit-wrapper calls, marks verified vs unverified edits, emits diffs, and can execute the patched/user deck directly.
+- Parses user-provided DEVSIM Python decks into a source IR with imports, functions, control flow, DEVSIM call aliases, semantic bindings, geometry/model/bias/mesh/doping sections, and verified vs unverified patch lineage.
+- Applies path-aware semantic deck patches to assignments, nested dictionaries, DEVSIM named parameters, function defaults, loop-driven bias values, and common unit-wrapper calls, then emits patched source plus unified diffs.
 - Compares baseline and mutation curves with shape features, leakage/BV brackets, field peaks, tradeoff checks, and overlay artifacts.
 - Supports deck mutation schemas for field plates, drift doping, lifetime, guard rings, junction depth, oxide thickness, implant dose, trench corner radius, trap density, and region-specific lifetime.
 - Scores physical credibility with unit, curve-shape, model-coupling, convergence, and golden/measured evidence checks.
+- Aligns golden/measured curves with unit normalization, interpolated x-grid matching, log-domain error metrics, and a calibration recommendation artifact.
 - Builds a signoff evidence pack that gates quality, artifacts, structured deck/spec, benchmark, convergence, golden/measured comparison, and capability boundary.
 - Generates ranked agent experiment-design candidates from signoff gaps, curve evidence, benchmark warnings, and deck mutations, then can execute the highest-value next experiment.
-- Displays process logs, plots, metrics, quality checks, deck patch lineage, agent reasoning, replanning decisions, and engineering conclusions in the page.
+- Displays a minimal agent cockpit with the active hypothesis, pending next experiment, deck patch lineage, golden/measured calibration summary, process logs, plots, metrics, quality checks, replanning decisions, and engineering conclusions.
 - Supports queue/worker recovery so long runs can be resumed after interruption.
 
 ## Current Simulation Scope
@@ -85,9 +87,10 @@ The long-running DEVSIM agent and repair loop are designed around structured age
 - `repair_executor` applies the selected request/deck patch, records the agent observation, hypothesis, tool plan, safety review, benchmark result, mutation-effect analysis, and next target.
 - `autonomous_devsim_agent` can turn a successful baseline-vs-mutation overlay into the next finer request/deck patch and execute it within the configured refinement budget.
 - When enabled, `autonomous_devsim_agent` can also run `plan_experiment_design`, which ranks convergence, golden/measured correlation, repair, and mutation candidates from the latest evidence instead of following a single fixed rule.
+- Every autonomous step updates `checkpoint.agent_hypothesis_tree` with the current hypothesis, expected observation, stop condition, evidence used, verdict, and fallback alternatives.
 - High-risk geometry/process/model changes require confirmation unless explicitly allowed.
 
-Each repair attempt can produce `deck_patch_history.json`, `tcad_deck_ir.json`, semantic patch diffs, patched source decks, `baseline_mutation_overlay.svg`, physical benchmark evidence, and a case-memory record for future agent context.
+Each repair attempt can produce `deck_patch_history.json`, `tcad_deck_ir.json`, semantic patch diffs, patched source decks, `baseline_mutation_overlay.svg`, physical benchmark evidence, golden/measured calibration artifacts, and a case-memory record for future agent context.
 
 ## Install
 

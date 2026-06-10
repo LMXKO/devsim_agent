@@ -17,6 +17,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-y-column", default=None)
     parser.add_argument("--reference-x-column", default=None)
     parser.add_argument("--reference-y-column", default=None)
+    parser.add_argument("--source-x-scale", type=float, default=None)
+    parser.add_argument("--source-y-scale", type=float, default=None)
+    parser.add_argument("--reference-x-scale", type=float, default=None)
+    parser.add_argument("--reference-y-scale", type=float, default=None)
+    parser.add_argument("--match-mode", choices=["interpolate", "exact"], default="interpolate")
     parser.add_argument("--max-pass-rmse-log-dec", type=float, default=0.2)
     parser.add_argument("--max-warn-rmse-log-dec", type=float, default=0.5)
     return parser.parse_args()
@@ -32,6 +37,11 @@ def main() -> None:
         "source_y_column": args.source_y_column,
         "reference_x_column": args.reference_x_column,
         "reference_y_column": args.reference_y_column,
+        "source_x_scale": args.source_x_scale,
+        "source_y_scale": args.source_y_scale,
+        "reference_x_scale": args.reference_x_scale,
+        "reference_y_scale": args.reference_y_scale,
+        "match_mode": args.match_mode,
         "max_pass_rmse_log_dec": args.max_pass_rmse_log_dec,
         "max_warn_rmse_log_dec": args.max_warn_rmse_log_dec,
     }

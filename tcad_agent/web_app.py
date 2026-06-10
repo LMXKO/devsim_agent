@@ -1254,11 +1254,74 @@ def compact_checkpoint(checkpoint: Any) -> dict[str, Any]:
         "best_state_path",
         "goal_step_statuses",
         "planned_attempt",
+        "experiment_design_plan_path",
+        "mutation_refinement_plan_path",
+        "semantic_deck_diff",
+        "deck_patch_verified",
     ]
     compact = {key: checkpoint.get(key) for key in keys if checkpoint.get(key) is not None}
+    tree = compact_agent_hypothesis_tree(checkpoint.get("agent_hypothesis_tree"))
+    if tree:
+        compact["agent_hypothesis_tree"] = tree
     if compact:
         return compact
     return {key: checkpoint[key] for key in list(checkpoint)[:8]}
+
+
+def compact_agent_hypothesis_tree(tree: Any) -> dict[str, Any]:
+    if not isinstance(tree, dict):
+        return {}
+    nodes = tree.get("nodes") if isinstance(tree.get("nodes"), list) else []
+    last = tree.get("last_hypothesis") if isinstance(tree.get("last_hypothesis"), dict) else (nodes[-1] if nodes and isinstance(nodes[-1], dict) else {})
+    output = {
+        "count": len(nodes),
+        "last": {
+            key: last.get(key)
+            for key in ["id", "step_index", "action_kind", "tool_name", "hypothesis_zh", "expected_observation", "verdict", "result_state_path"]
+            if last.get(key) is not None
+        },
+        "open_questions": (tree.get("open_questions") or [])[:5],
+    }
+    return {key: value for key, value in output.items() if value}
+
+
+def autonomous_cockpit_summary(state: dict[str, Any]) -> dict[str, Any]:
+    checkpoint = state.get("checkpoint") if isinstance(state.get("checkpoint"), dict) else {}
+    latest_state_path = state.get("latest_state_path") or checkpoint.get("latest_state_path")
+    latest_state = read_json_if_exists(latest_state_path)
+    final_summary = latest_state.get("final_summary") if isinstance(latest_state, dict) and isinstance(latest_state.get("final_summary"), dict) else {}
+    quality = latest_state.get("quality_report") if isinstance(latest_state, dict) and isinstance(latest_state.get("quality_report"), dict) else {}
+    artifacts = final_summary.get("artifacts") if isinstance(final_summary.get("artifacts"), dict) else {}
+    calibration = final_summary.get("calibration") if isinstance(final_summary.get("calibration"), dict) else quality.get("calibration")
+    if not isinstance(calibration, dict) and artifacts.get("calibration"):
+        calibration = read_json_if_exists(artifacts.get("calibration"))
+    pending_candidate = checkpoint.get("pending_agent_experiment_candidate")
+    if isinstance(pending_candidate, dict):
+        candidate = {
+            key: pending_candidate.get(key)
+            for key in ["candidate_id", "action_kind", "tool_name", "reason", "expected_effect", "executed"]
+            if pending_candidate.get(key) is not None
+        }
+    else:
+        candidate = {}
+    summary = {
+        "status": state.get("status"),
+        "next_action": state.get("next_action"),
+        "latest_state_path": latest_state_path,
+        "hypothesis": compact_agent_hypothesis_tree(checkpoint.get("agent_hypothesis_tree")),
+        "pending_candidate": candidate,
+        "deck_patch": {
+            key: checkpoint.get(key)
+            for key in ["patched_source_deck", "semantic_deck_diff", "deck_patch_verified", "deck_patch_unverified"]
+            if checkpoint.get(key) is not None
+        },
+        "calibration": {
+            key: calibration.get(key)
+            for key in ["source_to_reference_y_scale", "rmse_log_dec", "rmse_after_y_scale_fit_log_dec", "recommendations"]
+            if isinstance(calibration, dict) and calibration.get(key) is not None
+        },
+    }
+    return {key: value for key, value in summary.items() if value not in ({}, [], None)}
 
 
 def compact_result(result: Any) -> dict[str, Any] | None:
@@ -1358,6 +1421,19 @@ STEP_KIND_LABELS_ZH = {
 }
 
 ACTION_KIND_LABELS_ZH = {
+    "audit_capability": "审计能力边界",
+    "run_supervisor": "运行监督器",
+    "run_tool": "运行工具",
+    "run_repair_executor": "运行修复器",
+    "run_physical_benchmark": "运行物理基准",
+    "evaluate_objectives": "评估目标/约束",
+    "ingest_deck": "解析 deck",
+    "apply_deck_patch": "应用 deck patch",
+    "run_user_deck": "运行用户 deck",
+    "plan_mutation_refinement": "规划 mutation refinement",
+    "plan_experiment_design": "规划下一实验",
+    "generate_dashboard": "生成仪表盘",
+    "stop_success": "完成",
     "rebuild_index": "刷新实验索引",
     "query_index": "查询实验索引",
     "run_pn_iv": "运行 PN IV",
@@ -1499,6 +1575,8 @@ def extract_state_activity(state: dict[str, Any], *, source: str, path: str | No
         return extract_mission_activity(state, source=source, path=path)
     if tool_name == "tcad_supervisor":
         return extract_supervisor_activity(state, source=source, path=path)
+    if tool_name == "autonomous_devsim_agent":
+        return extract_autonomous_agent_activity(state, source=source, path=path)
     output = compact_result(state)
     return [
         activity_event(
@@ -1511,6 +1589,43 @@ def extract_state_activity(state: dict[str, Any], *, source: str, path: str | No
             created_at=state.get("updated_at") or state.get("created_at"),
         )
     ]
+
+
+def extract_autonomous_agent_activity(state: dict[str, Any], *, source: str, path: str | None = None) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = [
+        activity_event(
+            source=source,
+            title="Agent cockpit",
+            status=str(state.get("status") or "unknown"),
+            detail=str(state.get("next_action") or state.get("failure_reason") or ""),
+            output={"cockpit": autonomous_cockpit_summary(state)},
+            path=path,
+            created_at=state.get("updated_at") or state.get("created_at"),
+        )
+    ]
+    for step in state.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        output = compact_result(step.get("result") or {})
+        observation = step.get("observation") if isinstance(step.get("observation"), dict) else {}
+        decision = observation.get("agent_decision") if isinstance(observation.get("agent_decision"), dict) else {}
+        hypothesis = decision.get("hypothesis_tree_update") or {}
+        if isinstance(hypothesis, dict) and hypothesis:
+            output = {**(output or {}), "agent_hypothesis": short_value(hypothesis, max_chars=700)}
+        if step.get("error"):
+            output = {**(output or {}), "error": step.get("error")}
+        events.append(
+            activity_event(
+                source=source,
+                title=f"Agent 步骤 {step.get('index')}：{label_action_kind(step.get('kind'))}",
+                status=str(step.get("status") or "unknown"),
+                detail=translate_detail(step.get("reason")),
+                output=output,
+                path=step.get("result_state_path") or path,
+                created_at=step.get("completed_at") or step.get("started_at"),
+            )
+        )
+    return events
 
 
 def extract_mission_activity(state: dict[str, Any], *, source: str, path: str | None = None) -> list[dict[str, Any]]:
@@ -2248,6 +2363,14 @@ def render_app_html() -> str:
     .decision-main strong { color: #24211f; font-weight: 700; }
     .decision-list { margin: 5px 0 0; padding-left: 16px; color: #605a52; }
     .decision-list li { margin: 1px 0; overflow-wrap: anywhere; }
+    .cockpit-card {
+      margin-top: 9px; display: grid; gap: 6px; border: 1px solid #e8e1d7;
+      border-left: 2px solid #667085; border-radius: 7px; background: #fff; padding: 8px 10px;
+      color: #3d3934; font-size: 12px; line-height: 1.45;
+    }
+    .cockpit-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; }
+    .cockpit-row span { color: #827a70; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .cockpit-row strong { color: #24211f; font-weight: 600; overflow-wrap: anywhere; }
     .conclusion-card {
       margin-top: 10px; border: 1px solid #e5ded3; border-radius: 8px; background: #fff;
       padding: 10px 11px; color: #2e2b28; font-size: 12px; line-height: 1.5;
@@ -2438,6 +2561,11 @@ def render_app_html() -> str:
     }
     .decision-main strong, .notice-line strong { color: #171717; }
     .decision-list { color: #666; }
+    .cockpit-card {
+      border-color: #eeeeee; border-left-color: #667085; border-radius: 8px; background: #fafafa;
+    }
+    .cockpit-row span { color: #8a8a8a; }
+    .cockpit-row strong { color: #171717; }
     .conclusion-card { padding: 10px; }
     .conclusion-title { font-size: 13px; color: #171717; }
     .conclusion-image, .artifact-image {
@@ -2885,6 +3013,24 @@ def render_app_html() -> str:
       </div>`;
     }
 
+    function cockpitBlock(output) {
+      const cockpit = output && output.cockpit;
+      if (!cockpit || typeof cockpit !== 'object') return '';
+      const hypothesis = cockpit.hypothesis && cockpit.hypothesis.last ? cockpit.hypothesis.last : {};
+      const candidate = cockpit.pending_candidate || {};
+      const deck = cockpit.deck_patch || {};
+      const calibration = cockpit.calibration || {};
+      const rows = [];
+      if (hypothesis.hypothesis_zh) rows.push(['假设', `${hypothesis.hypothesis_zh}${hypothesis.verdict ? ` · ${labelStatus(hypothesis.verdict)}` : ''}`]);
+      if (candidate.candidate_id || cockpit.next_action) rows.push(['下一步', candidate.reason || candidate.candidate_id || cockpit.next_action]);
+      if (calibration.rmse_log_dec !== undefined) rows.push(['校准', `RMSE ${formatMetric(calibration.rmse_log_dec)} dec${calibration.source_to_reference_y_scale !== undefined ? ` · scale ${formatMetric(calibration.source_to_reference_y_scale)}` : ''}`]);
+      if (deck.semantic_deck_diff) rows.push(['Deck', `${deck.deck_patch_verified ? 'verified' : 'review'} · ${deck.semantic_deck_diff}`]);
+      if (!rows.length) return '';
+      return `<div class="cockpit-card">${rows.slice(0, 4).map(([label, value]) =>
+        `<div class="cockpit-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
+      ).join('')}</div>`;
+    }
+
     function artifactUrl(path) {
       return `/api/artifact?path=${encodeURIComponent(path)}`;
     }
@@ -3114,6 +3260,7 @@ def render_app_html() -> str:
               ${statusPill(eventDisplayStatus(event))}
             </div>
             ${event.detail ? `<div class="entry-detail">${esc(event.detail)}</div>` : ''}
+            ${cockpitBlock(event.output)}
             ${decisionBlock(event.output)}
             ${noticeBlock(event.output)}
             ${metricsBlock(event.output)}

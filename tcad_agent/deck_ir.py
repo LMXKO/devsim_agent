@@ -59,6 +59,40 @@ class DeckCall(BaseModel):
     section: str
     line: int
     keywords: dict[str, Any] = Field(default_factory=dict)
+    context: str | None = None
+    resolved_function: str | None = None
+    control_flow: list[str] = Field(default_factory=list)
+
+
+class DeckImport(BaseModel):
+    module: str | None = None
+    name: str
+    alias: str | None = None
+    line: int
+
+
+class DeckFunction(BaseModel):
+    name: str
+    start_line: int
+    end_line: int
+    args: list[str] = Field(default_factory=list)
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    calls: list[str] = Field(default_factory=list)
+    assignments: list[str] = Field(default_factory=list)
+    control_flow: list[str] = Field(default_factory=list)
+
+
+class DeckSemanticBinding(BaseModel):
+    name: str
+    section: str
+    line: int
+    source_kind: str
+    value: Any = None
+    expression: str | None = None
+    context: str | None = None
+    function: str | None = None
+    call_function: str | None = None
+    control_flow: list[str] = Field(default_factory=list)
 
 
 class DeckIRSection(BaseModel):
@@ -76,6 +110,10 @@ class DeckSourceIR(BaseModel):
     sections: list[DeckIRSection] = Field(default_factory=list)
     assignments: list[DeckAssignment] = Field(default_factory=list)
     calls: list[DeckCall] = Field(default_factory=list)
+    imports: list[DeckImport] = Field(default_factory=list)
+    functions: list[DeckFunction] = Field(default_factory=list)
+    semantic_bindings: list[DeckSemanticBinding] = Field(default_factory=list)
+    external_symbols: list[str] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
 
 
@@ -145,6 +183,35 @@ def call_name(node: ast.AST) -> str | None:
     return None
 
 
+def expression_text(source: str, node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    span = node_span(source, node)
+    if not span:
+        return None
+    return source[span[0] : span[1]]
+
+
+def resolved_call_name(name: str | None, aliases: dict[str, str]) -> str | None:
+    if not name:
+        return None
+    head, _, tail = name.partition(".")
+    if head in aliases:
+        return f"{aliases[head]}.{tail}" if tail else aliases[head]
+    return name
+
+
+def is_devsim_like_call(name: str | None) -> bool:
+    if not name:
+        return False
+    leaf = name.rsplit(".", 1)[-1]
+    return (
+        name.startswith("devsim.")
+        or leaf.startswith(("create_", "add_", "set_", "get_", "node_", "edge_", "element_"))
+        or leaf in {"solve", "rampbias", "set_parameter", "node_model", "edge_model", "contact_equation"}
+    )
+
+
 def classify_section(text: str, symbols: list[str] | None = None, preferred: str | None = None) -> str:
     combined = normalized_name(" ".join([text, *(symbols or [])]).replace("_", " "))
     if preferred and any(normalized_name(keyword) in combined for keyword in SECTION_KEYWORDS.get(preferred, [])):
@@ -160,12 +227,206 @@ def source_segment(lines: list[str], start_line: int, end_line: int) -> str:
     return "\n".join(lines[start_line - 1 : end_line])
 
 
+class _DeckIRCollector(ast.NodeVisitor):
+    def __init__(self, source: str):
+        self.source = source
+        self.lines = source.splitlines()
+        self.assignments: list[DeckAssignment] = []
+        self.calls: list[DeckCall] = []
+        self.imports: list[DeckImport] = []
+        self.functions: list[DeckFunction] = []
+        self.semantic_bindings: list[DeckSemanticBinding] = []
+        self.external_symbols: set[str] = set()
+        self.aliases: dict[str, str] = {}
+        self.context_stack: list[str] = []
+        self.control_stack: list[str] = []
+        self.function_stack: list[DeckFunction] = []
+
+    def context(self) -> str | None:
+        return ".".join(self.context_stack) if self.context_stack else None
+
+    def current_function(self) -> str | None:
+        return self.function_stack[-1].name if self.function_stack else None
+
+    def text_for(self, node: ast.AST) -> str:
+        start_line = int(getattr(node, "lineno", 1))
+        end_line = int(getattr(node, "end_lineno", start_line))
+        return source_segment(self.lines, start_line, end_line)
+
+    def add_binding(
+        self,
+        *,
+        name: str,
+        node: ast.AST,
+        source_kind: str,
+        value_node: ast.AST | None = None,
+        symbols: list[str] | None = None,
+        call_function: str | None = None,
+    ) -> None:
+        line = int(getattr(node, "lineno", 1))
+        text = self.text_for(node)
+        section = classify_section(text, [name, *(symbols or [])])
+        value = literal_value(value_node) if value_node is not None else None
+        binding = DeckSemanticBinding(
+            name=name,
+            section=section,
+            line=line,
+            source_kind=source_kind,
+            value=value,
+            expression=expression_text(self.source, value_node),
+            context=self.context(),
+            function=self.current_function(),
+            call_function=call_function,
+            control_flow=list(self.control_stack),
+        )
+        self.semantic_bindings.append(binding)
+        if isinstance(value_node, ast.Name) and value is None:
+            self.external_symbols.add(value_node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            asname = alias.asname or alias.name.split(".", 1)[0]
+            self.aliases[asname] = alias.name
+            self.imports.append(DeckImport(module=None, name=alias.name, alias=alias.asname, line=int(node.lineno)))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module or ""
+        for alias in node.names:
+            asname = alias.asname or alias.name
+            full_name = f"{module}.{alias.name}" if module else alias.name
+            self.aliases[asname] = full_name
+            self.imports.append(DeckImport(module=module or None, name=alias.name, alias=alias.asname, line=int(node.lineno)))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        args = [arg.arg for arg in node.args.args]
+        defaults: dict[str, Any] = {}
+        default_offset = len(args) - len(node.args.defaults)
+        function = DeckFunction(
+            name=node.name,
+            start_line=int(node.lineno),
+            end_line=int(getattr(node, "end_lineno", node.lineno)),
+            args=args,
+        )
+        self.functions.append(function)
+        self.context_stack.append(node.name)
+        self.function_stack.append(function)
+        for index, default in enumerate(node.args.defaults):
+            arg_name = args[default_offset + index]
+            defaults[arg_name] = literal_value(default)
+            self.add_binding(
+                name=arg_name,
+                node=default,
+                source_kind="function_default",
+                value_node=default,
+                symbols=[node.name, arg_name],
+            )
+        function.defaults = defaults
+        self.generic_visit(node)
+        self.function_stack.pop()
+        self.context_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)  # type: ignore[arg-type]
+
+    def visit_For(self, node: ast.For) -> None:
+        self.control_stack.append("for")
+        if self.function_stack and "for" not in self.function_stack[-1].control_flow:
+            self.function_stack[-1].control_flow.append("for")
+        self.generic_visit(node)
+        self.control_stack.pop()
+
+    def visit_While(self, node: ast.While) -> None:
+        self.control_stack.append("while")
+        if self.function_stack and "while" not in self.function_stack[-1].control_flow:
+            self.function_stack[-1].control_flow.append("while")
+        self.generic_visit(node)
+        self.control_stack.pop()
+
+    def visit_If(self, node: ast.If) -> None:
+        self.control_stack.append("if")
+        if self.function_stack and "if" not in self.function_stack[-1].control_flow:
+            self.function_stack[-1].control_flow.append("if")
+        self.generic_visit(node)
+        self.control_stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        names: list[str] = []
+        for target in node.targets:
+            names.extend(target_names(target))
+        section = classify_section(self.text_for(node), names)
+        for name in names:
+            self.assignments.append(DeckAssignment(name=name, value=literal_value(node.value), section=section, line=int(node.lineno)))
+            self.add_binding(name=name, node=node, source_kind="assignment", value_node=node.value, symbols=names)
+            if self.function_stack and name not in self.function_stack[-1].assignments:
+                self.function_stack[-1].assignments.append(name)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        names = target_names(node.target)
+        section = classify_section(self.text_for(node), names)
+        for name in names:
+            self.assignments.append(DeckAssignment(name=name, value=literal_value(node.value), section=section, line=int(node.lineno)))
+            self.add_binding(name=name, node=node, source_kind="assignment", value_node=node.value, symbols=names)
+            if self.function_stack and name not in self.function_stack[-1].assignments:
+                self.function_stack[-1].assignments.append(name)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = call_name(node.func)
+        resolved = resolved_call_name(name, self.aliases)
+        if name:
+            symbols = [name]
+            if resolved and resolved != name:
+                symbols.append(resolved)
+            keyword_values = {
+                keyword.arg: literal_value(keyword.value)
+                for keyword in node.keywords
+                if keyword.arg is not None
+            }
+            section = classify_section(self.text_for(node), symbols)
+            self.calls.append(
+                DeckCall(
+                    function=name,
+                    resolved_function=resolved,
+                    section=section,
+                    line=int(getattr(node, "lineno", 1)),
+                    keywords=keyword_values,
+                    context=self.context(),
+                    control_flow=list(self.control_stack),
+                )
+            )
+            if self.function_stack and name not in self.function_stack[-1].calls:
+                self.function_stack[-1].calls.append(name)
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    continue
+                self.add_binding(
+                    name=keyword.arg,
+                    node=keyword.value,
+                    source_kind="devsim_call_keyword" if is_devsim_like_call(resolved or name) else "call_keyword",
+                    value_node=keyword.value,
+                    symbols=[name, resolved or "", keyword.arg],
+                    call_function=resolved or name,
+                )
+            named = next((literal_value(keyword.value) for keyword in node.keywords if keyword.arg in {"name", "parameter", "model"}), None)
+            if isinstance(named, str):
+                for keyword in node.keywords:
+                    if keyword.arg in {"value", "init", "default"}:
+                        self.add_binding(
+                            name=named,
+                            node=keyword.value,
+                            source_kind="named_devsim_parameter",
+                            value_node=keyword.value,
+                            symbols=[name, resolved or "", named],
+                            call_function=resolved or name,
+                        )
+        self.generic_visit(node)
+
+
 def parse_devsim_deck_source(source: str, *, source_path: str | None = None) -> DeckSourceIR:
     lines = source.splitlines()
     warnings: list[str] = []
     sections: list[DeckIRSection] = []
-    assignments: list[DeckAssignment] = []
-    calls: list[DeckCall] = []
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -173,6 +434,9 @@ def parse_devsim_deck_source(source: str, *, source_path: str | None = None) -> 
             source_path=source_path,
             parse_warnings=[f"syntax_error:{exc.lineno}:{exc.msg}"],
         )
+
+    collector = _DeckIRCollector(source)
+    collector.visit(tree)
 
     for node in tree.body:
         start_line = int(getattr(node, "lineno", 1))
@@ -186,12 +450,6 @@ def parse_devsim_deck_source(source: str, *, source_path: str | None = None) -> 
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
                 symbols.extend(target_names(target))
-            value = node.value
-            section = classify_section(text, symbols)
-            for symbol in symbols:
-                assignments.append(
-                    DeckAssignment(name=symbol, value=literal_value(value), section=section, line=start_line)
-                )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             symbols.append(node.name)
             preferred = classify_section(node.name)
@@ -199,14 +457,6 @@ def parse_devsim_deck_source(source: str, *, source_path: str | None = None) -> 
             name = call_name(node.value.func)
             if name:
                 call_symbols.append(name)
-            keyword_values = {
-                keyword.arg: literal_value(keyword.value)
-                for keyword in node.value.keywords
-                if keyword.arg is not None
-            }
-            section = classify_section(text, call_symbols)
-            if name:
-                calls.append(DeckCall(function=name, section=section, line=start_line, keywords=keyword_values))
 
         if not symbols and not call_symbols:
             for child in ast.walk(node):
@@ -231,7 +481,17 @@ def parse_devsim_deck_source(source: str, *, source_path: str | None = None) -> 
 
     if not sections and lines:
         warnings.append("no_top_level_ast_sections_found")
-    return DeckSourceIR(source_path=source_path, sections=sections, assignments=assignments, calls=calls, parse_warnings=warnings)
+    return DeckSourceIR(
+        source_path=source_path,
+        sections=sections,
+        assignments=collector.assignments,
+        calls=collector.calls,
+        imports=collector.imports,
+        functions=collector.functions,
+        semantic_bindings=collector.semantic_bindings,
+        external_symbols=sorted(collector.external_symbols),
+        parse_warnings=warnings,
+    )
 
 
 def parse_devsim_deck_file(path: Path) -> DeckSourceIR:
@@ -457,8 +717,30 @@ class _PatchLocator(ast.NodeVisitor):
             priority += 80
         if self.leaf_candidate and any(match_name(name, {self.leaf_candidate}) for name in names):
             priority += 30
+        priority += 160 if reason == "function_default" else 0
+        priority += 25 if reason == "loop_iterable" else 0
         priority += 10 if reason in {"assignment", "dict_key", "call_keyword"} else 0
         self.matches.append((priority, node, reason))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        args = list(node.args.args)
+        default_offset = len(args) - len(node.args.defaults)
+        self.path_stack.append(node.name)
+        for index, default in enumerate(node.args.defaults):
+            arg_name = args[default_offset + index].arg
+            names = [arg_name, ".".join([*self.path_stack, arg_name]), "_".join([*self.path_stack, arg_name])]
+            self.score(default, names, "function_default")
+        self.generic_visit(node)
+        self.path_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)  # type: ignore[arg-type]
+
+    def visit_For(self, node: ast.For) -> None:
+        names = target_names(node.target)
+        if names:
+            self.score(node.iter, names, "loop_iterable")
+        self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         names: list[str] = []
