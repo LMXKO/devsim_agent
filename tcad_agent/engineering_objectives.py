@@ -146,8 +146,6 @@ def default_objectives_for_candidates(candidates: list[ObjectiveCandidate]) -> l
         objectives.append(EngineeringObjective(metric_path="breakdown_voltage_v", direction=ObjectiveDirection.MAXIMIZE_ABS))
     if "specific_on_resistance_ohm_cm2" in keys:
         objectives.append(EngineeringObjective(metric_path="specific_on_resistance_ohm_cm2", direction=ObjectiveDirection.MINIMIZE))
-    if "responsivity_a_per_w" in keys:
-        objectives.append(EngineeringObjective(metric_path="responsivity_a_per_w", direction=ObjectiveDirection.MAXIMIZE))
     return objectives or [EngineeringObjective(metric_path="objective_value", direction=ObjectiveDirection.MINIMIZE)]
 
 

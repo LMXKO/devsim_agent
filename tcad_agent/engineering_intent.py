@@ -125,22 +125,6 @@ DEVICE_CATALOG: list[dict[str, Any]] = [
         },
     },
     {
-        "device_family": "jfet",
-        "template_id": "jfet_transfer_output",
-        "support": DeviceSupport.EXECUTABLE,
-        "tool": "extended_device_sweep",
-        "aliases": ["jfet", "junction fet", "结型场效应"],
-        "request": {"device_type": "jfet_transfer_output", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": -3.0, "stop": 0.0, "step": 0.25},
-    },
-    {
-        "device_family": "photodiode",
-        "template_id": "photodiode_iv",
-        "support": DeviceSupport.EXECUTABLE,
-        "tool": "extended_device_sweep",
-        "aliases": ["photodiode", "photo diode", "光电二极管", "光电"],
-        "request": {"device_type": "photodiode_iv", "fidelity": "physics_1d", "evidence_level": "tcad_executable", "start": -1.0, "stop": 0.8, "step": 0.1},
-    },
-    {
         "device_family": "finfet",
         "template_id": "finfet_id_cv",
         "support": DeviceSupport.EXECUTABLE,
@@ -200,7 +184,6 @@ METRIC_KEYWORDS: dict[str, list[str]] = {
     "cox": ["cox", "oxide capacitance", "氧化层电容"],
     "flatband_shift": ["flatband", "平带", "qf", "固定电荷"],
     "ron": ["ron", "r_on", "导通电阻"],
-    "responsivity": ["responsivity", "响应度"],
 }
 
 MODEL_KEYWORDS: dict[str, list[str]] = {

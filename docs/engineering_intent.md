@@ -7,7 +7,7 @@ It extracts:
 - device family and template id;
 - executable status: executable, compact baseline, planned, or unknown;
 - analyses such as Id-Vg, Id-Vd, C-V, leakage, breakdown, calibration, optimization, and convergence;
-- requested metrics such as Vth, SS, Ion/Ioff, DIBL, BV, leakage, ideality factor, Cox, flat-band shift, Ron, and responsivity;
+- requested metrics such as Vth, SS, Ion/Ioff, DIBL, BV, leakage, ideality factor, Cox, flat-band shift, and Ron;
 - simple spec constraints such as leakage limits, Ion/Ioff minimums, and BV minimums when they are written in natural language;
 - evidence requirements such as mesh convergence, model A/B, unit check, curve-shape check, golden/measured comparison, and engineering signoff;
 - repair preferences such as automatic retry, continuation ramp, and mesh refinement;

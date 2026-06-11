@@ -23,17 +23,9 @@ DEFAULT_GOLDEN_PROFILES: dict[str, dict[str, dict[str, float]]] = {
         "current_gain_beta": {"expected": 100.0, "relative_tolerance": 0.35},
         "early_voltage_v": {"expected": 80.0, "relative_tolerance": 0.35},
     },
-    "extended_device_sweep:jfet_transfer_output": {
-        "pinch_off_voltage_v": {"expected": -2.0, "relative_tolerance": 0.25},
-        "idss_a": {"expected": 1.0e-3, "relative_tolerance": 0.35},
-    },
     "extended_device_sweep:power_mosfet_bv_ron": {
         "breakdown_voltage_v": {"expected": -60.0, "relative_tolerance": 0.35},
         "specific_on_resistance_ohm_cm2": {"expected": 5.0e-2, "relative_tolerance": 0.35},
-    },
-    "extended_device_sweep:photodiode_iv": {
-        "responsivity_a_per_w": {"expected": 0.5, "relative_tolerance": 0.25},
-        "photocurrent_a": {"expected": 5.0e-7, "relative_tolerance": 0.35},
     },
     "extended_device_sweep:finfet_id_cv": {
         "vth_at_threshold_current_v": {"expected": 0.35, "relative_tolerance": 0.35},
@@ -56,9 +48,7 @@ DEFAULT_GOLDEN_PROFILES: dict[str, dict[str, dict[str, float]]] = {
 COMPACT_BASELINE_DEVICE_TYPES = {
     "schottky_diode",
     "bjt_gummel_output",
-    "jfet_transfer_output",
     "power_mosfet_bv_ron",
-    "photodiode_iv",
 }
 PLANNED_INDUSTRIAL_DEVICE_TYPES = {
     "finfet_id_cv",
@@ -68,9 +58,7 @@ PLANNED_INDUSTRIAL_DEVICE_TYPES = {
 }
 PHYSICS_1D_PROMOTION_DEVICE_TYPES = {
     "bjt_gummel_output",
-    "jfet_transfer_output",
     "power_mosfet_bv_ron",
-    "photodiode_iv",
     "finfet_id_cv",
     "sic_power_diode_bv_leakage",
     "gan_hemt_id_bv",
@@ -925,48 +913,6 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                 )
             else:
                 checks.append(error_check("bjt_mesh_resolved_deck_missing", "BJT physics_1d result lacks mesh-resolved geometry/doping evidence."))
-    elif device_type == "jfet_transfer_output":
-        pinch = float_or_none(metrics.get("pinch_off_voltage_v"))
-        if pinch is None:
-            checks.append(warn_check("jfet_pinch_off_missing", "JFET pinch-off voltage was not extracted."))
-        elif pinch < 0:
-            checks.append(
-                pass_check(
-                    "jfet_pinch_off_voltage_sign_ok",
-                    "JFET pinch-off voltage is negative for the default n-channel convention.",
-                    {"pinch_off_voltage_v": pinch},
-                )
-            )
-        else:
-            checks.append(
-                error_check(
-                    "jfet_pinch_off_voltage_wrong_sign",
-                    "JFET pinch-off voltage should be negative for the default n-channel convention.",
-                    {"pinch_off_voltage_v": pinch},
-                )
-            )
-        if fidelity == "physics_1d":
-            if metrics.get("equation_coupled_depletion"):
-                checks.append(
-                    pass_check(
-                        "jfet_depletion_model_coupled",
-                        "JFET physics_1d run records gate-junction depletion coupling.",
-                        {
-                            "depletion_model": metrics.get("depletion_model"),
-                            "depletion_width_peak_um": metrics.get("depletion_width_peak_um"),
-                        },
-                    )
-                )
-            else:
-                checks.append(error_check("jfet_depletion_model_missing", "JFET physics_1d run lacks depletion-model coupling evidence."))
-            if metrics.get("output_family") and float_or_none(metrics.get("output_points")):
-                checks.append(
-                    pass_check(
-                        "jfet_output_family_present",
-                        "JFET run includes an Id-Vd output family in addition to transfer data.",
-                        {"output_points": metrics.get("output_points")},
-                    )
-                )
     elif device_type == "power_mosfet_bv_ron":
         bv = float_or_none(metrics.get("breakdown_voltage_v"))
         ron = float_or_none(metrics.get("specific_on_resistance_ohm_cm2"))
@@ -1128,38 +1074,6 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                 )
             else:
                 checks.append(error_check("power_mos_mesh_resolved_deck_missing", "Power MOSFET physics_1d result lacks mesh-resolved drift/field-plate evidence."))
-    elif device_type == "photodiode_iv":
-        photocurrent = float_or_none(metrics.get("photocurrent_a"))
-        responsivity = float_or_none(metrics.get("responsivity_a_per_w"))
-        if photocurrent is not None and photocurrent > 0:
-            checks.append(pass_check("photodiode_photocurrent_positive", "Photodiode photocurrent is positive.", {"photocurrent_a": photocurrent}))
-        else:
-            checks.append(warn_check("photodiode_photocurrent_missing", "Photodiode photocurrent was not positive.", {"photocurrent_a": photocurrent}))
-        if responsivity is not None and 0 < responsivity <= 1.5:
-            checks.append(
-                pass_check(
-                    "photodiode_responsivity_range_ok",
-                    "Photodiode responsivity is inside a broad silicon detector sanity range.",
-                    {"responsivity_a_per_w": responsivity},
-                    {"range_a_per_w": [0.0, 1.5]},
-                )
-            )
-        if fidelity == "physics_1d":
-            if metrics.get("optical_generation_coupled"):
-                checks.append(
-                    pass_check(
-                        "photodiode_optical_generation_coupled",
-                        "Photodiode physics_1d run records optical generation as coupled evidence.",
-                        {
-                            "optical_generation_rate_cm3_s": metrics.get("optical_generation_rate_cm3_s"),
-                            "quantum_efficiency": metrics.get("quantum_efficiency"),
-                        },
-                    )
-                )
-            else:
-                checks.append(error_check("photodiode_optical_generation_missing", "Photodiode physics_1d run lacks optical-generation coupling evidence."))
-            if metrics.get("dark_light_pair_present"):
-                checks.append(pass_check("photodiode_dark_light_pair_present", "Photodiode run includes dark and illuminated IV evidence."))
     elif device_type == "finfet_id_cv":
         ss = range_check(
             "finfet_subthreshold_swing_range",

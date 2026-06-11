@@ -25,9 +25,7 @@ Q_OVER_K_BOLTZMANN = 11604.518121550082
 class ExtendedDeviceType(str, Enum):
     SCHOTTKY_DIODE = "schottky_diode"
     BJT_GUMMEL_OUTPUT = "bjt_gummel_output"
-    JFET_TRANSFER_OUTPUT = "jfet_transfer_output"
     POWER_MOSFET_BV_RON = "power_mosfet_bv_ron"
-    PHOTODIODE_IV = "photodiode_iv"
     FINFET_ID_CV = "finfet_id_cv"
     SIC_POWER_DIODE_BV_LEAKAGE = "sic_power_diode_bv_leakage"
     GAN_HEMT_ID_BV = "gan_hemt_id_bv"
@@ -98,15 +96,6 @@ class ExtendedDeviceRequest(BaseModel):
     bjt_collector_doping_cm3: float = Field(default=1.0e16, gt=0.0)
     bjt_junction_mesh_spacing_um: float = Field(default=0.005, gt=0.0)
 
-    jfet_idss_a: float = Field(default=1.0e-3, gt=0.0)
-    jfet_pinch_off_voltage_v: float = Field(default=-2.0)
-    jfet_channel_length_um: float = Field(default=2.0, gt=0.0)
-    jfet_channel_thickness_um: float = Field(default=0.4, gt=0.0)
-    jfet_channel_doping_cm3: float = Field(default=5.0e15, gt=0.0)
-    jfet_gate_junction_depth_um: float = Field(default=0.15, gt=0.0)
-    jfet_output_stop_v: float = Field(default=5.0, gt=0.0)
-    jfet_output_step_v: float = Field(default=0.5, gt=0.0)
-
     power_mos_breakdown_voltage_v: float = Field(default=-60.0)
     power_mos_specific_ron_ohm_cm2: float = Field(default=5.0e-2, gt=0.0)
     power_mos_leakage_floor_a: float = Field(default=1.0e-10, gt=0.0)
@@ -130,13 +119,6 @@ class ExtendedDeviceRequest(BaseModel):
     power_mos_implant_dose_cm2: float = Field(default=1.0e13, gt=0.0)
     power_mos_trench_corner_radius_um: float = Field(default=0.08, gt=0.0)
     power_mos_trap_density_cm2: float = Field(default=1.0e11, ge=0.0)
-
-    photodiode_dark_saturation_current_a: float = Field(default=1.0e-12, gt=0.0)
-    optical_power_w: float = Field(default=1.0e-6, ge=0.0)
-    responsivity_a_per_w: float = Field(default=0.5, gt=0.0)
-    photodiode_quantum_efficiency: float = Field(default=0.8, gt=0.0)
-    photodiode_absorption_depth_um: float = Field(default=10.0, gt=0.0)
-    photodiode_depletion_width_um: float = Field(default=2.0, gt=0.0)
 
     finfet_gate_length_nm: float = Field(default=28.0, gt=0.0)
     finfet_fin_width_nm: float = Field(default=8.0, gt=0.0)
@@ -187,8 +169,6 @@ class ExtendedDeviceRequest(BaseModel):
             raise ValueError("schottky_contact_model must be equivalent_density or thermionic_emission")
         if self.schottky_contact_coupling_mode not in {"reported", "residual"}:
             raise ValueError("schottky_contact_coupling_mode must be reported or residual")
-        if self.device_type == ExtendedDeviceType.JFET_TRANSFER_OUTPUT and self.jfet_pinch_off_voltage_v >= 0:
-            raise ValueError("jfet_pinch_off_voltage_v must be negative for the default n-channel convention")
         if self.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON and self.power_mos_breakdown_voltage_v >= 0:
             raise ValueError("power_mos_breakdown_voltage_v must be negative for reverse-bias BV extraction")
         if self.power_mos_impact_ionization_model not in {"none", "selberherr_local_field"}:
@@ -235,12 +215,8 @@ def sweep_defaults(device_type: ExtendedDeviceType) -> tuple[float, float, float
         return -0.5, 0.8, 0.1
     if device_type == ExtendedDeviceType.BJT_GUMMEL_OUTPUT:
         return 0.55, 0.8, 0.025
-    if device_type == ExtendedDeviceType.JFET_TRANSFER_OUTPUT:
-        return -3.0, 0.0, 0.25
     if device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON:
         return 0.0, -90.0, 5.0
-    if device_type == ExtendedDeviceType.PHOTODIODE_IV:
-        return -1.0, 0.8, 0.1
     if device_type == ExtendedDeviceType.FINFET_ID_CV:
         return 0.0, 1.0, 0.1
     if device_type == ExtendedDeviceType.SIC_POWER_DIODE_BV_LEAKAGE:
@@ -401,69 +377,6 @@ def simulate_bjt(request: ExtendedDeviceRequest) -> tuple[list[dict[str, Any]], 
     return points, metrics
 
 
-def simulate_jfet(request: ExtendedDeviceRequest) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    vp = request.jfet_pinch_off_voltage_v
-    points = []
-    q = 1.602176634e-19
-    eps_si = 11.7 * 8.8541878128e-14
-    depletion_width_cm = math.sqrt(2.0 * eps_si * abs(vp) / max(q * request.jfet_channel_doping_cm3, 1.0e-300))
-    depletion_width_um = depletion_width_cm * 1.0e4
-    for vgs in request_sweep(request):
-        if vgs <= vp:
-            drain_current = 0.0
-        elif vgs >= 0:
-            drain_current = request.jfet_idss_a
-        else:
-            drain_current = request.jfet_idss_a * (1.0 - vgs / vp) ** 2
-        gm = 2.0 * request.jfet_idss_a / abs(vp) * max(0.0, 1.0 - vgs / vp) if vp else 0.0
-        points.append(
-            {
-                "gate_source_voltage_v": vgs,
-                "drain_current_a": drain_current,
-                "abs_drain_current_a": abs(drain_current),
-                "transconductance_s": gm,
-                "depletion_width_um": depletion_width_um * math.sqrt(max(0.0, abs(vgs - vp) / abs(vp))) if vp else 0.0,
-            }
-        )
-    transfer_points = list(points)
-    output_points = []
-    if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
-        vgs_output = 0.0
-        for vds in voltage_targets(0.0, request.jfet_output_stop_v, request.jfet_output_step_v):
-            current = request.jfet_idss_a * (1.0 - math.exp(-vds / max(abs(vp), 1.0e-9)))
-            output_points.append(
-                {
-                    "sweep_type": "output",
-                    "gate_source_voltage_v": vgs_output,
-                    "drain_source_voltage_v": vds,
-                    "drain_current_a": current,
-                    "abs_drain_current_a": abs(current),
-                    "output_conductance_s": request.jfet_idss_a / max(abs(vp), 1.0e-9) * math.exp(-vds / max(abs(vp), 1.0e-9)),
-                    "depletion_width_um": depletion_width_um,
-                }
-            )
-        points.extend(output_points)
-    metrics = {
-        "device_type": request.device_type.value,
-        "fidelity": request.fidelity.value,
-        "points": len(points),
-        "idss_a": request.jfet_idss_a,
-        "pinch_off_voltage_v": vp,
-        "max_transconductance_s": max(point["transconductance_s"] for point in transfer_points),
-        "min_drain_current_a": min(point["drain_current_a"] for point in points),
-        "max_drain_current_a": max(point["drain_current_a"] for point in points),
-        "depletion_width_peak_um": depletion_width_um,
-        "channel_length_um": request.jfet_channel_length_um,
-        "channel_thickness_um": request.jfet_channel_thickness_um,
-        "channel_doping_cm3": request.jfet_channel_doping_cm3,
-        "depletion_model": "gate_junction_depletion",
-        "equation_coupled_depletion": request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D,
-        "output_family": request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D and len(output_points) >= 2,
-        "output_points": len(output_points),
-    }
-    return points, metrics
-
-
 def simulate_power_mosfet(request: ExtendedDeviceRequest) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     bv = abs(request.power_mos_breakdown_voltage_v)
     threshold = 1e-6
@@ -585,52 +498,6 @@ def simulate_power_mosfet(request: ExtendedDeviceRequest) -> tuple[list[dict[str
         "oxide_field_scale": oxide_field_scale,
         "junction_mesh_spacing_um": request.power_mos_junction_mesh_spacing_um,
         "mesh_nodes_estimate": int(max(3, request.power_mos_drift_region_length_um / request.power_mos_junction_mesh_spacing_um)),
-    }
-    return points, metrics
-
-
-def simulate_photodiode(request: ExtendedDeviceRequest) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    vt = thermal_voltage_v(request.temperature_k)
-    photocurrent = request.responsivity_a_per_w * request.optical_power_w
-    photon_energy_j = 1.602176634e-19 * 1.12
-    photon_flux_per_s = request.optical_power_w / max(photon_energy_j, 1.0e-300)
-    active_volume_cm3 = request.area_cm2 * request.photodiode_absorption_depth_um * 1.0e-4
-    optical_generation_rate = (
-        request.photodiode_quantum_efficiency * photon_flux_per_s / max(active_volume_cm3, 1.0e-300)
-        if request.optical_power_w > 0
-        else 0.0
-    )
-    points = []
-    for voltage in request_sweep(request):
-        dark = request.photodiode_dark_saturation_current_a * (math.exp(min(voltage / vt, 80.0)) - 1.0)
-        illuminated = dark - photocurrent
-        points.append(
-            {
-                "voltage_v": voltage,
-                "dark_current_a": dark,
-                "illuminated_current_a": illuminated,
-                "photocurrent_a": illuminated - dark,
-                "optical_generation_rate_cm3_s": optical_generation_rate,
-            }
-        )
-    reverse_points = [point for point in points if point["voltage_v"] <= 0]
-    metrics = {
-        "device_type": request.device_type.value,
-        "fidelity": request.fidelity.value,
-        "points": len(points),
-        "dark_current_a": abs(reverse_points[0]["dark_current_a"]) if reverse_points else None,
-        "photocurrent_a": abs(photocurrent),
-        "responsivity_a_per_w": request.responsivity_a_per_w,
-        "optical_power_w": request.optical_power_w,
-        "open_circuit_voltage_v": vt * math.log(photocurrent / request.photodiode_dark_saturation_current_a + 1.0)
-        if photocurrent > 0
-        else 0.0,
-        "quantum_efficiency": request.photodiode_quantum_efficiency,
-        "absorption_depth_um": request.photodiode_absorption_depth_um,
-        "depletion_width_um": request.photodiode_depletion_width_um,
-        "optical_generation_rate_cm3_s": optical_generation_rate,
-        "optical_generation_coupled": request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D,
-        "dark_light_pair_present": request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D,
     }
     return points, metrics
 
@@ -830,12 +697,8 @@ def simulate_device(request: ExtendedDeviceRequest) -> tuple[list[dict[str, Any]
         return simulate_schottky(request)
     if request.device_type == ExtendedDeviceType.BJT_GUMMEL_OUTPUT:
         return simulate_bjt(request)
-    if request.device_type == ExtendedDeviceType.JFET_TRANSFER_OUTPUT:
-        return simulate_jfet(request)
     if request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON:
         return simulate_power_mosfet(request)
-    if request.device_type == ExtendedDeviceType.PHOTODIODE_IV:
-        return simulate_photodiode(request)
     if request.device_type == ExtendedDeviceType.FINFET_ID_CV:
         return simulate_finfet(request)
     if request.device_type == ExtendedDeviceType.SIC_POWER_DIODE_BV_LEAKAGE:
@@ -1418,14 +1281,6 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
                 issues.append({"code": "bjt_output_family_missing", "severity": "warning"})
             if not metrics.get("early_voltage_v"):
                 issues.append({"code": "bjt_early_voltage_missing", "severity": "warning"})
-    elif request.device_type == ExtendedDeviceType.JFET_TRANSFER_OUTPUT:
-        if float(metrics.get("pinch_off_voltage_v") or 0.0) >= 0:
-            issues.append({"code": "jfet_pinch_off_wrong_sign", "severity": "error"})
-        if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
-            if not metrics.get("equation_coupled_depletion"):
-                issues.append({"code": "jfet_depletion_not_coupled", "severity": "error"})
-            if not metrics.get("output_family"):
-                issues.append({"code": "jfet_output_family_missing", "severity": "warning"})
     elif request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON:
         if float(metrics.get("breakdown_voltage_v") or 0.0) >= 0:
             issues.append({"code": "power_mos_breakdown_wrong_sign", "severity": "error"})
@@ -1468,11 +1323,6 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
                         "critical_field_v_per_cm": critical_field,
                     }
                 )
-    elif request.device_type == ExtendedDeviceType.PHOTODIODE_IV:
-        if float(metrics.get("photocurrent_a") or 0.0) <= 0:
-            issues.append({"code": "photodiode_missing_photocurrent", "severity": "warning"})
-        if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D and not metrics.get("optical_generation_coupled"):
-            issues.append({"code": "photodiode_optical_generation_not_coupled", "severity": "error"})
     elif request.device_type == ExtendedDeviceType.FINFET_ID_CV:
         if float(metrics.get("subthreshold_swing_mv_dec") or 0.0) < 55.0:
             issues.append({"code": "finfet_subthreshold_swing_below_thermal_limit", "severity": "warning"})

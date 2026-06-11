@@ -5,15 +5,13 @@
 - Schottky diode with `fidelity=devsim_1d` invokes the DEVSIM-backed 1D thermionic-emission contact path and is an executable TCAD evidence path.
 - Power MOSFET/LDMOS with `fidelity=devsim_2d_field_plate` invokes a DEVSIM 2D layout seed and emits layout-sensitive field-plate/BV/Ron evidence with explicit signoff gaps.
 - Power MOSFET/LDMOS with `fidelity=physics_1d` invokes the DEVSIM-backed 1D drift/body baseline runner for fast iterations.
-- BJT, JFET, photodiode, GaN, SiC, and IGBT physics routes are executable planning/iteration evidence unless their registry entry says a real solver was invoked.
+- BJT, GaN, SiC, and IGBT physics routes are executable planning/iteration evidence unless their registry entry says a real solver was invoked.
 
 Supported `device_type` values:
 
 - `schottky_diode`
 - `bjt_gummel_output`
-- `jfet_transfer_output`
 - `power_mosfet_bv_ron`
-- `photodiode_iv`
 - `finfet_id_cv`
 - `sic_power_diode_bv_leakage`
 - `gan_hemt_id_bv`

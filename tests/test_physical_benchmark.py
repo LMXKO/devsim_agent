@@ -376,15 +376,15 @@ class PhysicalBenchmarkTest(unittest.TestCase):
                 "tool_name": "extended_device_sweep",
                 "status": "completed",
                 "request": {
-                    "device_type": "photodiode_iv",
-                    "golden_metrics": {"responsivity_a_per_w": {"expected": 0.9, "relative_tolerance": 0.05}},
+                    "device_type": "schottky_diode",
+                    "golden_metrics": {"barrier_height_ev": {"expected": 0.9, "relative_tolerance": 0.05}},
                 },
                 "quality_report": {
                     "status": "passed",
                     "metrics": {
-                        "device_type": "photodiode_iv",
-                        "photocurrent_a": 5e-7,
-                        "responsivity_a_per_w": 0.5,
+                        "device_type": "schottky_diode",
+                        "barrier_height_ev": 0.72,
+                        "ideality_factor_estimate": 1.08,
                     },
                 },
             },
@@ -393,7 +393,7 @@ class PhysicalBenchmarkTest(unittest.TestCase):
         result = run_physical_benchmark(state_path)
 
         self.assertEqual(result.status, BenchmarkStatus.FAILED)
-        self.assertIn("golden_metric_responsivity_a_per_w_far_outside_tolerance", {check.code for check in result.checks})
+        self.assertIn("golden_metric_barrier_height_ev_far_outside_tolerance", {check.code for check in result.checks})
 
     def test_planned_industrial_surrogate_blocks_signoff(self) -> None:
         state_path = self.root / "gan" / "state.json"

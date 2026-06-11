@@ -177,25 +177,6 @@ python3.11 -m tcad_agent.tools.result_judge \
   --state runs/agent_tools/pn_junction_iv/quality_smoke/state.json
 ```
 
-## LLM Diagnosis CLI
-
-After the deterministic quality report marks a run as `suspicious` or `failed`, ask the configured OpenAI-compatible model for a strategy diagnosis:
-
-```bash
-python3.11 -m tcad_agent.tools.llm_diagnose \
-  --state runs/agent_tools/pn_junction_iv/quality_extreme/state.json
-```
-
-The diagnosis is written to:
-
-```text
-runs/agent_tools/pn_junction_iv/<run_id>/llm_diagnosis.json
-```
-
-The LLM response is advisory. The deterministic `quality_report` remains the source of truth for whether artifacts are accepted.
-
-If the model proposes `next_tool_command`, the diagnosis parser only accepts whitelisted `python3.11 -m tcad_agent.tools.*` commands. Arbitrary shell commands are rejected.
-
 ## Agent Follow-Up
 
 For multi-step repair, mutation refinement, objective checks, and reporting, run this tool through the project-level autonomous agent:

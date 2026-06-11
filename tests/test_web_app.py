@@ -461,7 +461,6 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("finfet_dibl_cv", ids)
         self.assertIn("soi_finfet_variability", ids)
         self.assertNotIn("pn_doping_unit_regression", ids)
-        self.assertNotIn("photodiode_iv", ids)
         for case in SEMICONDUCTOR_TEST_CASES:
             self.assertIn("业务任务", case["goal"])
             self.assertGreaterEqual(case["max_cycles"], 12)

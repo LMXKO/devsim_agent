@@ -94,7 +94,7 @@ These executable templates carry TCAD fidelity labels such as `devsim_1d_drift_d
 
 ## Compact Baselines
 
-Legacy JFET and photodiode compact routes remain in code for regression coverage, but they are no longer used as public seven-category examples. Compact templates generate deterministic curves, metrics, artifacts, quality reports, benchmark checks, and indexable state. They are useful for routing, UI validation, planning, and smoke evidence. `physical_benchmark` marks them with `compact_baseline_not_signoff_evidence`, so conclusions are conditional until a higher-fidelity runner or golden/measured correlation is added.
+The public catalog no longer carries hidden legacy compact-only routes. New device families should enter through an explicit runner promotion plan with quality rules and benchmark evidence instead of being added as regression-only surrogates.
 
 ## Planned Industrial Templates
 

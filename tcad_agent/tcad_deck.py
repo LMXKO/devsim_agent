@@ -429,7 +429,6 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
             "current_gain_beta",
             "breakdown_voltage_v",
             "specific_on_resistance_ohm_cm2",
-            "responsivity_a_per_w",
         ],
         "signoff_requirements": common_signoff_requirements(goal_text, request),
         "assumptions": [

@@ -33,9 +33,7 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
         expected_metric = {
             ExtendedDeviceType.SCHOTTKY_DIODE: "barrier_height_ev",
             ExtendedDeviceType.BJT_GUMMEL_OUTPUT: "current_gain_beta",
-            ExtendedDeviceType.JFET_TRANSFER_OUTPUT: "pinch_off_voltage_v",
             ExtendedDeviceType.POWER_MOSFET_BV_RON: "specific_on_resistance_ohm_cm2",
-            ExtendedDeviceType.PHOTODIODE_IV: "responsivity_a_per_w",
         }
 
         for device_type, metric in expected_metric.items():
@@ -331,8 +329,6 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
 
     def test_remaining_extended_devices_have_physics_fidelity_benchmarks(self) -> None:
         expected_codes = {
-            ExtendedDeviceType.JFET_TRANSFER_OUTPUT: "jfet_depletion_model_coupled",
-            ExtendedDeviceType.PHOTODIODE_IV: "photodiode_optical_generation_coupled",
             ExtendedDeviceType.FINFET_ID_CV: "finfet_density_gradient_coupled",
             ExtendedDeviceType.SIC_POWER_DIODE_BV_LEAKAGE: "sic_impact_ionization_coupled",
             ExtendedDeviceType.GAN_HEMT_ID_BV: "gan_polarization_charge_coupled",

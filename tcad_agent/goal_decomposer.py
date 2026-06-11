@@ -156,38 +156,6 @@ def default_tool_convergence_request(text: str) -> dict[str, Any]:
             "metric_path": "quality_report.metrics.current_gain_beta",
             "relative_tolerance": 0.3,
         }
-    if intent.device_family == "jfet":
-        return {
-            "tool_name": "extended_device_sweep",
-            "base_request": {
-                "device_type": "jfet_transfer_output",
-                "fidelity": "physics_1d",
-                "evidence_level": "tcad_executable",
-                "start": -3.0,
-                "stop": 0.0,
-                "step": 0.25,
-            },
-            "axis_path": "jfet_channel_doping_cm3",
-            "values": [2.0e15, 5.0e15, 1.0e16],
-            "metric_path": "quality_report.metrics.pinch_off_voltage_v",
-            "relative_tolerance": 0.35,
-        }
-    if intent.device_family == "photodiode":
-        return {
-            "tool_name": "extended_device_sweep",
-            "base_request": {
-                "device_type": "photodiode_iv",
-                "fidelity": "physics_1d",
-                "evidence_level": "tcad_executable",
-                "start": -1.0,
-                "stop": 0.8,
-                "step": 0.1,
-            },
-            "axis_path": "optical_power_w",
-            "values": [1.0e-4, 1.0e-3, 1.0e-2],
-            "metric_path": "quality_report.metrics.responsivity_a_per_w",
-            "relative_tolerance": 0.2,
-        }
     compact_device_map = {
         "finfet": {
             "device_type": "finfet_id_cv",

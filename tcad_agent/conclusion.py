@@ -139,11 +139,7 @@ def experiment_items(state: dict[str, Any]) -> list[dict[str, Any]]:
         if objective is None:
             objective = metrics.get("current_gain_beta")
         if objective is None:
-            objective = metrics.get("pinch_off_voltage_v")
-        if objective is None:
             objective = metrics.get("breakdown_voltage_v")
-        if objective is None:
-            objective = metrics.get("responsivity_a_per_w")
         return [
             {
                 "task_id": state.get("run_id"),
@@ -630,14 +626,9 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
         "reverse_leakage_current_a",
         "current_gain_beta",
         "early_voltage_v",
-        "pinch_off_voltage_v",
-        "idss_a",
         "specific_on_resistance_ohm_cm2",
         "breakdown_voltage_v",
         "max_electric_field_v_per_cm",
-        "photocurrent_a",
-        "responsivity_a_per_w",
-        "open_circuit_voltage_v",
     ]
     metric_lines = [f"- `{key}`: `{format_value(metrics.get(key))}`" for key in metric_keys if key in metrics]
     lines.extend(metric_lines or ["- 没有可用的详细最终指标。"])

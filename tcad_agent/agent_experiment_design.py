@@ -113,7 +113,7 @@ def infer_convergence_axis_and_values(state: dict[str, Any], request: dict[str, 
         if device_type == "power_mosfet_bv_ron":
             spacing = float(request.get("power_mos_junction_mesh_spacing_um") or metrics.get("junction_mesh_spacing_um") or 0.01)
             return "power_mos_junction_mesh_spacing_um", [spacing * 2.0, spacing, max(spacing / 2.0, 1.0e-5)]
-        if device_type in {"bjt_gummel_output", "jfet_transfer_output"}:
+        if device_type == "bjt_gummel_output":
             return "fidelity", [request.get("fidelity") or "physics_1d", "physics_1d"]
     if "step" in request:
         step = float(request.get("step") or 0.1)
