@@ -305,9 +305,13 @@ def run_agent_soak(
         cockpit_path = None
         if agent_steps == 0 or agent_steps % request.cockpit_interval_steps == 0 or agent_state.status != DevsimAgentStatus.RUNNING:
             cockpit_path = maybe_generate_cockpit(request, soak_dir=soak_dir, cycle_index=cycle_index, agent_state_path=agent_state_file)
-        cycle_status = terminal_soak_status(agent_state) or (
+        terminal = terminal_soak_status(agent_state)
+        cycle_status = terminal or (
             "slice_exhausted" if max_steps_exhausted(agent_state) else AgentSoakStatus.RUNNING
         )
+        cycle_failure_reason = agent_state.failure_reason
+        if cycle_status == AgentSoakStatus.COMPLETED:
+            cycle_failure_reason = None
         state.cycles.append(
             AgentSoakCycle(
                 index=cycle_index,
@@ -322,7 +326,7 @@ def run_agent_soak(
                 fallback_decisions=fallback_decisions,
                 agent_state_path=str(agent_state_file.resolve()) if agent_state_file.exists() else None,
                 cockpit_path=cockpit_path,
-                failure_reason=agent_state.failure_reason,
+                failure_reason=cycle_failure_reason,
             )
         )
         state.agent_state_path = str(agent_state_file.resolve()) if agent_state_file.exists() else None
@@ -333,7 +337,6 @@ def run_agent_soak(
         state.model_decisions = model_decisions
         state.fallback_decisions = fallback_decisions
         state.next_action = agent_state.next_action
-        terminal = terminal_soak_status(agent_state)
         if terminal:
             state.status = terminal
             state.failure_reason = None if terminal == AgentSoakStatus.COMPLETED else agent_state.failure_reason

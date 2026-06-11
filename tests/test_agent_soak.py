@@ -66,6 +66,7 @@ class AgentSoakTest(unittest.TestCase):
             self.assertEqual(calls, ["tool", "benchmark"])
             self.assertEqual(state.completed_steps, 3)
             self.assertIsNone(state.failure_reason)
+            self.assertIsNone(state.cycles[-1].failure_reason)
             self.assertTrue(Path(str(state.agent_state_path)).exists())
             self.assertTrue(Path(str(state.latest_cockpit_path)).exists())
 

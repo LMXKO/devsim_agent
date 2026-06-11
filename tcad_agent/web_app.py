@@ -369,15 +369,52 @@ def autonomous_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return request
 
 
+def soak_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    goal_text = str(payload.get("goal_text") or payload.get("goal") or "").strip()
+    if not goal_text:
+        raise ValueError("goal_text is required")
+    max_steps = int_from_payload(
+        payload,
+        "max_steps",
+        int_from_payload(payload, "max_cycles", 24, minimum=1),
+        minimum=1,
+    )
+    autonomous_payload = autonomous_request_from_payload({**payload, "max_steps": max_steps})
+    autonomous_payload.pop("goal_text", None)
+    autonomous_payload.pop("execute", None)
+    autonomous_payload.pop("max_steps", None)
+    request: dict[str, Any] = {
+        "goal_text": goal_text,
+        "execute": bool_from_payload(payload, "execute", True),
+        "resume": bool_from_payload(payload, "resume", False),
+        "duration_hours": float(payload["duration_hours"]) if payload.get("duration_hours") not in {None, ""} else 1.0,
+        "max_steps": max_steps,
+        "step_slice": int_from_payload(payload, "step_slice", 4, minimum=1),
+        "poll_interval_seconds": float(payload["poll_interval_seconds"]) if payload.get("poll_interval_seconds") not in {None, ""} else 0.0,
+        "autonomous_request": autonomous_payload,
+        "generate_cockpit": bool_from_payload(payload, "generate_cockpit", True),
+        "cockpit_interval_steps": int_from_payload(payload, "cockpit_interval_steps", 1, minimum=1),
+    }
+    for key in ["soak_id", "soak_root", "agent_id", "agent_root", "cancel_file", "heartbeat_path"]:
+        if payload.get(key):
+            request[key] = payload[key]
+    return request
+
+
 def enqueue_mission_from_payload(config: WebAppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    if str(payload.get("tool_name") or payload.get("tool") or "").strip() == "mission_agent":
+    requested_tool = str(payload.get("tool_name") or payload.get("tool") or "").strip()
+    if requested_tool == "mission_agent":
         request = mission_request_from_payload(payload)
         tool_name = "mission_agent"
         default_tags = ["web", "mission"]
-    else:
+    elif requested_tool == "autonomous_devsim_agent":
         request = autonomous_request_from_payload(payload)
         tool_name = "autonomous_devsim_agent"
         default_tags = ["web", "autonomous"]
+    else:
+        request = soak_request_from_payload(payload)
+        tool_name = "agent_soak"
+        default_tags = ["web", "agent_soak", "autonomous"]
     tags = payload.get("tags") or default_tags
     if isinstance(tags, str):
         tags = [item.strip() for item in tags.split(",") if item.strip()]
@@ -399,18 +436,26 @@ def approve_item_confirmation(config: WebAppConfig, queue_id: str) -> dict[str, 
     item = get_item(config.queue_db_path, queue_id)
     if item is None:
         raise FileNotFoundError(f"queue item does not exist: {queue_id}")
+    patch: dict[str, Any] = {
+        "resume": True,
+        "execute": True,
+        "allow_user_confirmation_actions": True,
+        "allow_unverified_deck_patch_execution": True,
+    }
+    if item.tool_name == "agent_soak":
+        nested = item.request.get("autonomous_request") if isinstance(item.request.get("autonomous_request"), dict) else {}
+        patch["autonomous_request"] = {
+            **nested,
+            "allow_user_confirmation_actions": True,
+            "allow_unverified_deck_patch_execution": True,
+        }
     updated = update_item_request(
         config.queue_db_path,
         queue_id,
-        {
-            "resume": True,
-            "execute": True,
-            "allow_user_confirmation_actions": True,
-            "allow_unverified_deck_patch_execution": True,
-        },
+        patch,
         checkpoint_patch={"user_confirmation": "approved"},
     )
-    cancel_file = updated.request.get("cancel_file")
+    cancel_file = updated.request.get("cancel_file") or ((updated.result or {}).get("cancel_file") if isinstance(updated.result, dict) else None)
     if cancel_file:
         path = Path(str(cancel_file))
         if path.exists():
@@ -512,6 +557,7 @@ IMPORTANT_RESULT_KEYS = [
     "status",
     "quality_status",
     "run_id",
+    "soak_id",
     "mission_id",
     "supervisor_id",
     "convergence_id",
@@ -523,6 +569,12 @@ IMPORTANT_RESULT_KEYS = [
     "state_path",
     "result_state_path",
     "final_state_path",
+    "agent_state_path",
+    "latest_cockpit_path",
+    "final_agent_status",
+    "completed_steps",
+    "model_decisions",
+    "fallback_decisions",
     "failure_reason",
     "next_action",
 ]
@@ -1582,6 +1634,8 @@ def extract_state_activity(state: dict[str, Any], *, source: str, path: str | No
         return extract_supervisor_activity(state, source=source, path=path)
     if tool_name == "autonomous_devsim_agent":
         return extract_autonomous_agent_activity(state, source=source, path=path)
+    if tool_name == "agent_soak":
+        return extract_agent_soak_activity(state, source=source, path=path)
     output = compact_result(state)
     return [
         activity_event(
@@ -1630,6 +1684,92 @@ def extract_autonomous_agent_activity(state: dict[str, Any], *, source: str, pat
                 created_at=step.get("completed_at") or step.get("started_at"),
             )
         )
+    return events
+
+
+def compact_soak_cycles(cycles: Any) -> list[dict[str, Any]]:
+    if not isinstance(cycles, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for cycle in cycles[-8:]:
+        if not isinstance(cycle, dict):
+            continue
+        rows.append(
+            {
+                key: cycle.get(key)
+                for key in [
+                    "index",
+                    "status",
+                    "agent_status",
+                    "requested_max_steps",
+                    "agent_steps",
+                    "new_steps",
+                    "model_decisions",
+                    "fallback_decisions",
+                    "agent_state_path",
+                    "cockpit_path",
+                    "failure_reason",
+                ]
+                if cycle.get(key) is not None
+            }
+        )
+    return rows
+
+
+def extract_agent_soak_activity(state: dict[str, Any], *, source: str, path: str | None = None) -> list[dict[str, Any]]:
+    cycles = compact_soak_cycles(state.get("cycles"))
+    artifacts = {
+        key: state.get(key)
+        for key in ["agent_state_path", "latest_cockpit_path", "final_state_path", "heartbeat_path"]
+        if state.get(key)
+    }
+    output = {
+        key: state.get(key)
+        for key in [
+            "soak_id",
+            "status",
+            "completed_steps",
+            "model_decisions",
+            "fallback_decisions",
+            "final_agent_status",
+            "state_path",
+        ]
+        if state.get(key) is not None
+    }
+    if cycles:
+        output["cycles"] = cycles
+    if artifacts:
+        output["artifacts"] = artifacts
+    events: list[dict[str, Any]] = [
+        activity_event(
+            source=source,
+            title="Agent Soak",
+            status=str(state.get("status") or "unknown"),
+            detail=str(state.get("next_action") or state.get("failure_reason") or ""),
+            output=short_value(output, max_chars=1800),
+            path=path,
+            created_at=state.get("updated_at") or state.get("created_at"),
+        )
+    ]
+    for cycle in cycles:
+        events.append(
+            activity_event(
+                source=source,
+                title=f"Soak 周期 {cycle.get('index')}",
+                status=str(cycle.get("status") or "unknown"),
+                detail=(
+                    f"agent={cycle.get('agent_status')}, "
+                    f"new_steps={cycle.get('new_steps')}, "
+                    f"model={cycle.get('model_decisions')}, fallback={cycle.get('fallback_decisions')}"
+                ),
+                output=cycle,
+                path=cycle.get("agent_state_path") or path,
+                created_at=state.get("updated_at") or state.get("created_at"),
+            )
+        )
+    agent_state = read_json_if_exists(state.get("agent_state_path"))
+    if agent_state:
+        events.extend(extract_autonomous_agent_activity(agent_state, source=source, path=state.get("agent_state_path")))
     return events
 
 
@@ -2693,7 +2833,7 @@ def render_app_html() -> str:
                 <label class="toggle"><input id="execute" type="checkbox" checked>执行</label>
                 <label class="toggle"><input id="useLlm" type="checkbox" checked>LLM</label>
                 <label class="toggle"><input id="allowFallback" type="checkbox" checked>Fallback</label>
-                <label class="mini-field">轮数<input class="number" id="maxCycles" type="number" min="1" value="12" aria-label="Max cycles"></label>
+                <label class="mini-field">步数<input class="number" id="maxCycles" type="number" min="1" value="12" aria-label="Max steps"></label>
                 <label class="mini-field">优先级<input class="number" id="priority" type="number" value="10" aria-label="Priority"></label>
               </div>
             </details>

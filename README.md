@@ -46,6 +46,8 @@ python -m pip install -r requirements.txt
 
 ## Start The Web UI
 
+The web UI is the simplest entry point: type a natural-language TCAD goal, press Send, and the queue runs it through the long-duration `agent_soak` agent wrapper by default.
+
 ```bash
 python3.11 -m uvicorn tcad_agent.asgi_web:app --host 127.0.0.1 --port 8766 --no-access-log
 ```

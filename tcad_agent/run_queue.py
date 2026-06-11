@@ -335,12 +335,17 @@ def resume_item(db_path: Path, queue_id: str) -> QueueItem:
 
 
 def autonomous_agent_control_dir(item: QueueItem) -> Path | None:
-    if item.tool_name != "autonomous_devsim_agent":
-        return None
-    raw_root = item.request.get("agent_root")
-    agent_root = Path(str(raw_root)) if raw_root else PROJECT_ROOT / "runs" / "autonomous_devsim_agent"
-    agent_id = str(item.request.get("agent_id") or item.queue_id)
-    return agent_root / agent_id
+    if item.tool_name == "autonomous_devsim_agent":
+        raw_root = item.request.get("agent_root")
+        agent_root = Path(str(raw_root)) if raw_root else PROJECT_ROOT / "runs" / "autonomous_devsim_agent"
+        agent_id = str(item.request.get("agent_id") or item.queue_id)
+        return agent_root / agent_id
+    if item.tool_name == "agent_soak":
+        raw_root = item.request.get("soak_root")
+        soak_root = Path(str(raw_root)) if raw_root else PROJECT_ROOT / "runs" / "agent_soak"
+        soak_id = str(item.request.get("soak_id") or item.queue_id)
+        return soak_root / soak_id
+    return None
 
 
 def request_autonomous_agent_cancel(item: QueueItem) -> str | None:
@@ -348,7 +353,8 @@ def request_autonomous_agent_cancel(item: QueueItem) -> str | None:
     if control_dir is None:
         return None
     control_dir.mkdir(parents=True, exist_ok=True)
-    cancel_file = control_dir / "cancel.requested"
+    cancel_file = Path(str(item.request.get("cancel_file") or control_dir / "cancel.requested"))
+    cancel_file.parent.mkdir(parents=True, exist_ok=True)
     cancel_file.write_text(json.dumps({"queue_id": item.queue_id, "cancelled_at": utc_timestamp()}, ensure_ascii=False), encoding="utf-8")
     return str(cancel_file)
 
@@ -636,6 +642,7 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
 def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.adaptive_optimizer import AdaptiveOptimizationRequest, run_adaptive_optimization
     from tcad_agent.agent_cockpit import generate_agent_cockpit
+    from tcad_agent.agent_soak import AgentSoakRequest, run_agent_soak
     from tcad_agent.autonomous_devsim_agent import AutonomousDevsimRequest, run_autonomous_devsim_agent
     from tcad_agent.conclusion import generate_experiment_conclusion
     from tcad_agent.engineering_objectives import (
@@ -890,6 +897,10 @@ def default_runner_registry() -> dict[str, Runner]:
         AutonomousDevsimRequest.model_validate(request),
         runner_registry=registry,
     ).model_dump(mode="json")
+    registry["agent_soak"] = lambda request: run_agent_soak(
+        AgentSoakRequest.model_validate(request),
+        runner_registry=registry,
+    ).model_dump(mode="json")
     return registry
 
 
@@ -1052,6 +1063,13 @@ def execute_item(
             tool_request.setdefault("agent_root", str(control_dir.parent))
             tool_request.setdefault("cancel_file", str(control_dir / "cancel.requested"))
             tool_request.setdefault("heartbeat_path", str(control_dir / "heartbeat.json"))
+    if item.tool_name == "agent_soak":
+        tool_request.setdefault("soak_id", item.queue_id)
+        control_dir = autonomous_agent_control_dir(item)
+        if control_dir:
+            tool_request.setdefault("soak_root", str(control_dir.parent))
+            tool_request.setdefault("cancel_file", str(control_dir / "cancel.requested"))
+            tool_request.setdefault("heartbeat_path", str(control_dir / "agent_soak_heartbeat.json"))
 
     started = time.monotonic()
     try:

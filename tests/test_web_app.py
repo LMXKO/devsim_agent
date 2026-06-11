@@ -28,6 +28,7 @@ from tcad_agent.web_app import (
     reject_item_confirmation,
     render_app_html,
     save_llm_settings_from_payload,
+    soak_request_from_payload,
 )
 
 
@@ -62,6 +63,18 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(request["require_capability_audit"])
         self.assertEqual(request["max_steps"], 12)
 
+    def test_soak_request_from_payload_defaults_to_long_agent_execution(self) -> None:
+        request = soak_request_from_payload({"goal_text": "做 MOSFET Id-Vg", "max_cycles": 6})
+
+        self.assertEqual(request["goal_text"], "做 MOSFET Id-Vg")
+        self.assertTrue(request["execute"])
+        self.assertEqual(request["max_steps"], 6)
+        self.assertEqual(request["step_slice"], 4)
+        self.assertTrue(request["generate_cockpit"])
+        self.assertTrue(request["autonomous_request"]["use_llm"])
+        self.assertTrue(request["autonomous_request"]["allow_llm_fallback"])
+        self.assertTrue(request["autonomous_request"]["require_capability_audit"])
+
     def test_enqueue_mission_from_payload_writes_queue_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -82,11 +95,33 @@ class WebAppTest(unittest.TestCase):
             )
             rows = list_items(config.queue_db_path)
 
-        self.assertEqual(item["tool_name"], "autonomous_devsim_agent")
+        self.assertEqual(item["tool_name"], "agent_soak")
         self.assertEqual(item["priority"], 7)
         self.assertEqual(rows[0]["request"]["goal_text"], "做 diode breakdown 并给结论")
         self.assertFalse(rows[0]["request"]["execute"])
-        self.assertTrue(rows[0]["request"]["require_capability_audit"])
+        self.assertTrue(rows[0]["request"]["autonomous_request"]["require_capability_audit"])
+
+    def test_enqueue_mission_from_payload_can_still_force_autonomous_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                worker_stop_file=root / "worker.stop",
+            )
+
+            item = enqueue_mission_from_payload(
+                config,
+                {
+                    "tool_name": "autonomous_devsim_agent",
+                    "goal_text": "做 diode breakdown 并给结论",
+                    "execute": False,
+                    "max_steps": 2,
+                },
+            )
+
+        self.assertEqual(item["tool_name"], "autonomous_devsim_agent")
+        self.assertEqual(item["request"]["max_steps"], 2)
 
     def test_enqueue_mission_from_payload_can_still_force_mission_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,6 +328,39 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(item.request["allow_user_confirmation_actions"])
         self.assertTrue(item.request["allow_unverified_deck_patch_execution"])
         self.assertTrue(cancel_removed)
+
+    def test_approve_confirmation_patches_nested_soak_agent_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                worker_stop_file=root / "worker.stop",
+            )
+            cancel_file = root / "soaks" / "soak_wait" / "cancel.requested"
+            cancel_file.parent.mkdir(parents=True, exist_ok=True)
+            cancel_file.write_text("cancel", encoding="utf-8")
+            enqueue_run(
+                config.queue_db_path,
+                queue_id="q_soak_wait",
+                tool_name="agent_soak",
+                request={
+                    "goal_text": "需要确认",
+                    "soak_id": "soak_wait",
+                    "cancel_file": str(cancel_file),
+                    "autonomous_request": {"use_llm": True},
+                },
+            )
+            pause_item(config.queue_db_path, "q_soak_wait")
+
+            approved = approve_item_confirmation(config, "q_soak_wait")
+            item = get_item(config.queue_db_path, "q_soak_wait")
+
+        self.assertEqual(approved["status"], QueueStatus.QUEUED.value)
+        self.assertTrue(item.request["resume"])
+        self.assertTrue(item.request["autonomous_request"]["allow_user_confirmation_actions"])
+        self.assertTrue(item.request["autonomous_request"]["allow_unverified_deck_patch_execution"])
+        self.assertFalse(cancel_file.exists())
 
     def test_reject_confirmation_cancels_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

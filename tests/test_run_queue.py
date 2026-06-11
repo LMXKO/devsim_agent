@@ -198,6 +198,24 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(runner.call_args.args[0].goal_text, "自主跑 PN IV，失败时修复并给结论")
         self.assertIn("runner_registry", runner.call_args.kwargs)
 
+    def test_default_agent_soak_runner_is_registered(self) -> None:
+        fake_state = Mock()
+        fake_state.model_dump.return_value = {"status": "completed", "soak_id": "soak_unit"}
+
+        with patch("tcad_agent.agent_soak.run_agent_soak", return_value=fake_state) as runner:
+            result = default_runner_registry()["agent_soak"](
+                {
+                    "goal_text": "长时间自主跑 PN IV，失败时继续修复并给结论",
+                    "execute": False,
+                    "max_steps": 2,
+                    "autonomous_request": {"use_llm": False},
+                }
+            )
+
+        self.assertEqual(result["soak_id"], "soak_unit")
+        self.assertEqual(runner.call_args.args[0].goal_text, "长时间自主跑 PN IV，失败时继续修复并给结论")
+        self.assertIn("runner_registry", runner.call_args.kwargs)
+
     def test_worker_pauses_autonomous_agent_waiting_for_user(self) -> None:
         enqueue_run(
             self.db,
@@ -238,6 +256,26 @@ class RunQueueTest(unittest.TestCase):
         self.assertTrue(str(seen["cancel_file"]).endswith("q_control_agent/cancel.requested"))
         self.assertTrue(str(seen["heartbeat_path"]).endswith("q_control_agent/heartbeat.json"))
 
+    def test_agent_soak_queue_request_gets_control_paths(self) -> None:
+        seen: dict[str, object] = {}
+        enqueue_run(
+            self.db,
+            queue_id="q_control_soak",
+            tool_name="agent_soak",
+            request={"goal_text": "长跑自主执行", "execute": False, "max_steps": 2},
+        )
+
+        def fake_soak(request: dict[str, object]) -> dict[str, object]:
+            seen.update(request)
+            return {"status": "completed", "soak_dir": str(self.root / "runs" / "agent_soak" / "q_control_soak")}
+
+        run_queue_worker(self.db, owner="worker_a", registry={"agent_soak": fake_soak})
+
+        self.assertEqual(seen["queue_id"], "q_control_soak")
+        self.assertEqual(seen["soak_id"], "q_control_soak")
+        self.assertTrue(str(seen["cancel_file"]).endswith("q_control_soak/cancel.requested"))
+        self.assertTrue(str(seen["heartbeat_path"]).endswith("q_control_soak/agent_soak_heartbeat.json"))
+
     def test_cancel_autonomous_agent_writes_cancel_file(self) -> None:
         enqueue_run(
             self.db,
@@ -248,6 +286,20 @@ class RunQueueTest(unittest.TestCase):
 
         cancelled = cancel_item(self.db, "q_cancel_agent")
         cancel_file = self.root / "agents" / "agent_cancel" / "cancel.requested"
+
+        self.assertEqual(cancelled.status, QueueStatus.CANCELLED)
+        self.assertTrue(cancel_file.exists())
+
+    def test_cancel_agent_soak_writes_cancel_file(self) -> None:
+        enqueue_run(
+            self.db,
+            queue_id="q_cancel_soak",
+            tool_name="agent_soak",
+            request={"goal_text": "长跑自主执行", "soak_root": str(self.root / "soaks"), "soak_id": "soak_cancel"},
+        )
+
+        cancelled = cancel_item(self.db, "q_cancel_soak")
+        cancel_file = self.root / "soaks" / "soak_cancel" / "cancel.requested"
 
         self.assertEqual(cancelled.status, QueueStatus.CANCELLED)
         self.assertTrue(cancel_file.exists())

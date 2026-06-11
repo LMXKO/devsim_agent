@@ -4,6 +4,8 @@
 
 It runs the same autonomous agent in step slices, then persists a soak-level checkpoint, heartbeat, decision counts, latest agent state, and minimal cockpit after each cycle. This is the entry point for "let the AI operate DEVSIM for a long time" validation.
 
+The web UI posts natural-language missions to `agent_soak` by default. The user-facing flow is intentionally small: enter the TCAD goal, press Send, then watch the queue item, soak cycles, autonomous decisions, artifacts, and cockpit links in the transcript.
+
 Run a short real LLM/DEVSIM soak:
 
 ```bash
