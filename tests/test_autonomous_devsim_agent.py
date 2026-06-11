@@ -329,6 +329,44 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(state.steps[0].action["tool_name"], "mos_capacitor_cv_sweep")
         self.assertIn("tools", client.calls[0])
 
+    def test_compatible_content_json_tool_result_selects_action(self) -> None:
+        client = FakeToolCallClient(
+            json.dumps(
+                {
+                    "content": """```json
+{
+  "action": {
+    "kind": "run_tool",
+    "tool_name": "mos_capacitor_cv_sweep",
+    "request": {"run_id": "compatible_content"},
+    "reason": "兼容模式把 JSON 放进 content 代码块。"
+  },
+  "observation_summary": "content JSON",
+  "hypothesis_zh": "仍应作为模型决策执行。"
+}
+```"""
+                }
+            )
+        )
+        request = AutonomousDevsimRequest(
+            goal_text="Run MOS C-V with compatible content JSON",
+            agent_id="agent_compatible_content",
+            agent_root=self.root / "agents",
+            execute=False,
+            use_llm=True,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={"mos_capacitor_cv_sweep": lambda request: {"status": "completed"}},
+            llm_client=client,
+        )
+
+        self.assertEqual(state.steps[0].kind, DevsimAgentActionKind.RUN_TOOL)
+        self.assertEqual(state.steps[0].action["tool_name"], "mos_capacitor_cv_sweep")
+        self.assertFalse(state.checkpoint["last_agent_decision"]["fallback_used"])
+        self.assertEqual(state.checkpoint["last_agent_decision"]["status"], "completed")
+
     def test_agent_context_exposes_industrial_runner_registry_and_2d_power_alias(self) -> None:
         client = FakeToolCallClient(
             json.dumps(
