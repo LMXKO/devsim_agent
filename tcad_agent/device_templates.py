@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.industrial_runner_registry import runner_descriptors_for_template
 from tcad_agent.public_sources import public_sources_for_template
 
 
@@ -63,6 +64,7 @@ class DeviceRouteResult(BaseModel):
     public_source_category_ids: list[str] = Field(default_factory=list)
     public_sources: list[dict[str, Any]] = Field(default_factory=list)
     recommended_convergence: list[str] = Field(default_factory=list)
+    industrial_runner_coverage: list[dict[str, Any]] = Field(default_factory=list)
     runner_promotion_required: bool = False
     runner_promotion_stage_ids: list[str] = Field(default_factory=list)
     message: str
@@ -267,7 +269,7 @@ def device_templates() -> list[DeviceTaskTemplate]:
             executable_tool="extended_device_sweep",
             default_request={
                 "device_type": "power_mosfet_bv_ron",
-                "fidelity": "physics_1d",
+                "fidelity": "devsim_2d_field_plate",
                 "evidence_level": "tcad_executable",
                 "start": 0.0,
                 "stop": -90.0,
@@ -276,11 +278,12 @@ def device_templates() -> list[DeviceTaskTemplate]:
             benchmark_metrics=["breakdown_voltage_v", "specific_on_resistance_ohm_cm2", "max_electric_field_v_per_cm"],
             industrial_metrics=["BV", "specific Ron", "leakage", "peak electric field", "drift-region tradeoff"],
             natural_language_examples=["功率 MOSFET BV 和 Ron tradeoff，漏电不能太高，自动找风险点。"],
-            evidence_requirements=["high_voltage_field_check", "impact_ionization_coupling", "ron_component_decomposition"],
-            tcad_fidelity="physics_1d_high_voltage_drift_avalanche",
+            evidence_requirements=["2d_field_plate_layout", "high_voltage_field_check", "impact_ionization_coupling", "ron_component_decomposition"],
+            tcad_fidelity="devsim_2d_field_plate_layout_prototype",
             signoff_workflow=[
-                "run_off_state_bv_and_ron_tradeoff",
+                "run_2d_field_plate_layout_runner",
                 "physical_benchmark",
+                "mesh_model_convergence",
                 "high_voltage_bias_convergence",
                 "golden_or_measured_comparison_if_requested",
             ],
@@ -291,8 +294,8 @@ def device_templates() -> list[DeviceTaskTemplate]:
                 "use_current_or_resistor_control_for_snapback_or_breakdown",
             ],
             next_implementation_steps=[
-                "Correlate the physics_1d high-voltage drift/avalanche baseline against LDMOS public application examples.",
-                "Add a mesh-resolved field-plate/drift-region runner for final layout-sensitive signoff.",
+                "Correlate the DEVSIM 2D field-plate layout runner against LDMOS public application examples or user golden curves.",
+                "Promote from the 2D layout seed to full process cross-section or 3D termination geometry for final signoff.",
             ],
         ),
         DeviceTaskTemplate(
@@ -482,6 +485,9 @@ def route_device_goal(goal_text: str) -> DeviceRouteResult:
             capability_warnings.append("该工业模板尚未实现可执行 TCAD runner、质量规则和 benchmark 证据链。")
             capability_warnings.extend(template.missing_capabilities[:3])
         promotion_required = template.support != TemplateSupport.EXECUTABLE or template.tcad_fidelity.startswith("physics_1d")
+        coverage = [runner.model_dump(mode="json") for runner in runner_descriptors_for_template(template.template_id)]
+        if any(runner.get("signoff_gaps") for runner in coverage):
+            promotion_required = True
         promotion_stage_ids = [
             "public_evidence_and_license_gate",
             "runner_contract",
@@ -516,6 +522,7 @@ def route_device_goal(goal_text: str) -> DeviceRouteResult:
                 for source in public_sources_for_template(template.template_id)
             ],
             recommended_convergence=template.recommended_convergence,
+            industrial_runner_coverage=coverage,
             runner_promotion_required=promotion_required,
             runner_promotion_stage_ids=promotion_stage_ids,
             message=(

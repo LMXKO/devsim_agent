@@ -996,6 +996,46 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                     {"specific_on_resistance_ohm_cm2": ron},
                 )
             )
+        if fidelity == "devsim_2d_field_plate":
+            if metrics.get("tcad_solver_invoked") and metrics.get("devsim_2d_solver_invoked"):
+                checks.append(
+                    pass_check(
+                        "power_mos_devsim_2d_field_plate_runner_invoked",
+                        "Power MOSFET runner invoked a DEVSIM 2D field-plate layout seed.",
+                        {
+                            "solver_backend": metrics.get("solver_backend"),
+                            "tcad_runner": metrics.get("tcad_runner"),
+                            "layout_dimensionality": metrics.get("layout_dimensionality"),
+                        },
+                    )
+                )
+            else:
+                checks.append(
+                    error_check(
+                        "power_mos_devsim_2d_solver_missing",
+                        "Power MOSFET devsim_2d_field_plate run lacks DEVSIM 2D solver invocation evidence.",
+                        {"solver_backend": metrics.get("solver_backend")},
+                    )
+                )
+            if metrics.get("layout_resolved_field_plate"):
+                checks.append(
+                    pass_check(
+                        "power_mos_2d_field_plate_layout_present",
+                        "Power MOSFET run records layout-resolved field-plate/drift extraction evidence.",
+                        {
+                            "field_peak_x_um": metrics.get("field_peak_x_um"),
+                            "field_peak_y_um": metrics.get("field_peak_y_um"),
+                        },
+                    )
+                )
+            if metrics.get("signoff_gaps"):
+                checks.append(
+                    warn_check(
+                        "power_mos_2d_signoff_gaps_remaining",
+                        "2D field-plate evidence is available, but calibrated process, mesh, and golden-correlation gates remain open.",
+                        {"signoff_gaps": metrics.get("signoff_gaps")},
+                    )
+                )
         if fidelity == "physics_1d":
             if metrics.get("tcad_solver_invoked"):
                 checks.append(

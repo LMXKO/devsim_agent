@@ -24,7 +24,7 @@ python3.11 -m tcad_agent.tools.device_templates route \
   --goal "做 Schottky/SBD forward IV 并提取 barrier height"
 ```
 
-The route result includes the matched template, support state, suggested executable tool when available, default request hints, missing capabilities, and next implementation steps.
+The route result includes the matched template, support state, suggested executable tool when available, default request hints, missing capabilities, industrial runner coverage, and next implementation steps.
 It also includes `tcad_fidelity` and `signoff_workflow`, so downstream agents can tell a real TCAD evidence path from a compact planning route.
 For public-source seeding, route results can also include `public_source_category_ids`, `public_sources`, `recommended_convergence`, `runner_promotion_required`, and `runner_promotion_stage_ids`.
 
@@ -41,15 +41,15 @@ python3.11 -m tcad_agent.tools.industrial_runner_promotion \
 
 The plan breaks promotion into public-evidence/license gate, runner contract, geometry/mesh/model implementation, metric extraction, convergence/quality gates, golden correlation/signoff, and autonomous E2E validation. Capability audit in `autonomous_devsim_agent` writes the same package to `checkpoint.runner_promotion_plan`.
 
-Power MOSFET / LDMOS now exposes the first promoted real runner:
+Power MOSFET / LDMOS now exposes two promoted real runners:
 
 ```bash
 python3.11 -m tcad_agent.tools.extended_device_sweep \
   --device-type power_mosfet_bv_ron \
-  --fidelity physics_1d
+  --fidelity devsim_2d_field_plate
 ```
 
-The runner invokes DEVSIM through `tcad_agent.examples.power_mosfet_1d.run`, emits `runner_contract.json`, CSV, SVG, log, summary, and DEVSIM export artifacts, and records high-voltage bias convergence gaps as warning evidence. It is a 1D drift/body electrostatic runner with auditable field-plate/termination extraction, not a final 2D/3D layout signoff substitute.
+The 2D runner invokes DEVSIM through the existing 2D MOS layout seed, emits a runner contract, CSV, SVG, log, summary, inner DEVSIM CSV, Tecplot, and field-peak artifacts, and records remaining mesh/golden/process-cross-section gaps as warning evidence. The 1D drift/body runner remains available with `fidelity=physics_1d` for fast BV/Ron baseline iterations.
 
 ## Public Sources
 
@@ -79,9 +79,10 @@ python3.11 -m tcad_agent.tools.device_templates sources --kind sources
 - 2D MOSFET Id-Vg / Id-Vd: `mosfet_2d_id_sweep`
 - Schottky diode IV: `extended_device_sweep` with `fidelity=devsim_1d` for the DEVSIM-backed thermionic-emission contact model path.
 - BJT Gummel/output: `extended_device_sweep` with `fidelity=physics_1d`, including a Gummel sweep, Ic-Vce output family, Early-effect evidence, beta extraction, and collector leakage.
-- power MOSFET/LDMOS BV/Ron: `extended_device_sweep` with `fidelity=physics_1d`, including drift-region Ron decomposition, peak-field evidence, and local-field impact-ionization coupling for BV extraction.
+- power MOSFET/LDMOS BV/Ron: `extended_device_sweep` with `fidelity=devsim_2d_field_plate` by default, plus `fidelity=physics_1d` as a fast baseline.
+- GaN HEMT, SiC power diode, and IGBT expose agent-callable runner aliases backed by `extended_device_sweep` physics surrogates; their registry entries mark them as planning evidence until real solver decks are promoted.
 
-These executable templates carry TCAD fidelity labels such as `devsim_1d_drift_diffusion`, `devsim_1d_quasi_static_cv`, `devsim_1d_reverse_iv`, `devsim_2d_drift_diffusion`, `devsim_1d_thermionic_contact`, `physics_1d_bjt_transport`, and `physics_1d_high_voltage_drift_avalanche`. Their signoff workflows require physical benchmark plus convergence and golden/measured comparison when requested.
+These executable templates carry TCAD fidelity labels such as `devsim_1d_drift_diffusion`, `devsim_1d_quasi_static_cv`, `devsim_1d_reverse_iv`, `devsim_2d_drift_diffusion`, `devsim_1d_thermionic_contact`, `devsim_2d_field_plate_layout_prototype`, and `physics_1d_bjt_transport`. Their signoff workflows require physical benchmark plus convergence and golden/measured comparison when requested.
 
 ## Compact Baselines
 

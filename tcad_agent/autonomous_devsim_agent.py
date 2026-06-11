@@ -16,6 +16,7 @@ from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
 from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
 from tcad_agent.evidence_lookup import PublicEvidenceLookupRequest, run_public_evidence_lookup
+from tcad_agent.industrial_runner_registry import industrial_runner_coverage_matrix, runner_descriptors_for_template
 from tcad_agent.industrial_runner_promotion import build_industrial_runner_promotion_plan
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
@@ -303,6 +304,12 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
         cancel_file=str(cancel_file),
         checkpoint={
             "completed_steps": 0,
+            "agent_control": {
+                "mode": "agent_first" if request.use_llm else "deterministic_guardrail",
+                "llm_selects_tools": request.use_llm,
+                "deterministic_policy_role": "fallback_guardrail" if request.use_llm else "primary_controller",
+                "decision_ledger_enabled": True,
+            },
             "agent_first_policy": {
                 "enabled": request.use_llm,
                 "deterministic_fallback": request.allow_llm_fallback,
@@ -715,6 +722,7 @@ def build_agent_context(
         "agent_hypothesis_tree": state.checkpoint.get("agent_hypothesis_tree"),
         "checkpoint": state.checkpoint,
         "public_evidence_dossier": state.checkpoint.get("public_evidence_dossier"),
+        "industrial_runner_registry": industrial_runner_coverage_matrix(),
         "recent_steps": compact_steps(state),
         "initial_tool_name": request.initial_tool_name,
         "initial_request": request.initial_request,
@@ -1599,6 +1607,7 @@ def execute_action(
             "runnable": route.runnable,
             "signoff_ready": route.signoff_ready,
             "capability_warnings": route.capability_warnings,
+            "industrial_runner_coverage": route.industrial_runner_coverage,
         }
         audit_path = Path(state.agent_dir) / "capability_audit.json"
         write_json(audit_path, result)
@@ -1616,6 +1625,9 @@ def execute_action(
                 "signoff_workflow": route.template.signoff_workflow,
                 "next_implementation_steps": route.template.next_implementation_steps,
                 "missing_capabilities": route.template.missing_capabilities,
+                "industrial_runner_coverage": [
+                    item.model_dump(mode="json") for item in runner_descriptors_for_template(route.template.template_id)
+                ],
             }
             promotion_path = Path(state.agent_dir) / "runner_promotion_plan.json"
             promotion = build_industrial_runner_promotion_plan(
@@ -2042,6 +2054,20 @@ def run_autonomous_devsim_agent(
             write_heartbeat(state, note="decision failure")
             return state
         state.checkpoint["last_agent_decision"] = decision
+        ledger = state.checkpoint.get("agent_decision_ledger")
+        ledger_items = list(ledger) if isinstance(ledger, list) else []
+        ledger_items.append(
+            {
+                "step_index": len(state.steps) + 1,
+                "decided_at": utc_timestamp(),
+                "decision_status": decision.get("status"),
+                "fallback_used": bool(decision.get("fallback_used")),
+                "action": action.model_dump(mode="json"),
+                "observation_summary": decision.get("observation_summary"),
+                "hypothesis_zh": decision.get("hypothesis_zh"),
+            }
+        )
+        state.checkpoint["agent_decision_ledger"] = ledger_items[-80:]
         if action.user_confirmation_required and not request.allow_user_confirmation_actions:
             state.status = DevsimAgentStatus.WAITING_FOR_USER
             state.next_action = "wait for user confirmation before executing autonomous DEVSIM action"

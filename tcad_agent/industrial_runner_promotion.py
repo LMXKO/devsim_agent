@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tcad_agent.device_templates import DeviceTaskTemplate, route_device_goal, device_templates
+from tcad_agent.industrial_runner_registry import preferred_runner_for_template, runner_descriptors_for_template
 from tcad_agent.public_sources import build_public_evidence_dossier, public_categories_for_template
 
 
@@ -56,6 +57,9 @@ def template_by_id(template_id: str) -> DeviceTaskTemplate | None:
 
 
 def promotion_required(template: DeviceTaskTemplate) -> bool:
+    coverage = runner_descriptors_for_template(template.template_id)
+    if any(runner.signoff_gaps for runner in coverage):
+        return True
     if template.support.value != "executable":
         return True
     if template.tcad_fidelity.startswith("physics_1d"):
@@ -73,18 +77,16 @@ def source_ids_for_template(template: DeviceTaskTemplate) -> list[str]:
 
 
 def real_runner_descriptor(template: DeviceTaskTemplate) -> dict[str, Any]:
-    if template.template_id == "power_mosfet_bv_ron":
+    runner = preferred_runner_for_template(template.template_id)
+    if runner and runner.solver_invoked:
         return {
             "available": True,
-            "runner_id": "power_mosfet_bv_ron_devsim_1d",
-            "command": (
-                "python3.11 -m tcad_agent.tools.extended_device_sweep "
-                "--device-type power_mosfet_bv_ron --fidelity physics_1d"
-            ),
+            "runner_id": runner.runner_id,
+            "command": runner.command,
             "notes": [
-                "Invokes tcad_agent.examples.power_mosfet_1d.run through extended_device_sweep.",
-                "DEVSIM solves the 1D source/body/drift/drain electrostatic stack.",
-                "High-voltage bias convergence gaps are recorded as warning evidence for agent repair.",
+                f"Agent-callable tool alias: {runner.tool_name}.",
+                f"Solver backend: {runner.solver_backend}.",
+                runner.capability_boundary,
             ],
         }
     return {"available": False, "runner_id": None, "command": None, "notes": []}
@@ -93,6 +95,8 @@ def real_runner_descriptor(template: DeviceTaskTemplate) -> dict[str, Any]:
 def promotion_stages(template: DeviceTaskTemplate, goal_text: str, evidence_dossier: dict[str, Any]) -> list[RunnerPromotionStage]:
     source_ids = source_ids_for_template(template)
     runner = real_runner_descriptor(template)
+    coverage = [item.model_dump(mode="json") for item in runner_descriptors_for_template(template.template_id)]
+    coverage_ids = [str(item.get("runner_id")) for item in coverage if item.get("runner_id")]
     category_steps: list[str] = []
     for category in public_categories_for_template(template.template_id):
         category_steps.extend(str(item) for item in category.get("promotion_steps", []) if item)
@@ -125,6 +129,7 @@ def promotion_stages(template: DeviceTaskTemplate, goal_text: str, evidence_doss
                 "Declare required inputs, sweep axes, output CSV columns, log/artifact globs, and cancellation behavior.",
                 "Add fixture manifests for fake/interface-only execution when proprietary tools are unavailable.",
                 f"Smoke command: {runner['command']}" if runner["available"] else "Implement the first real runner command.",
+                f"Registered runner ids: {', '.join(coverage_ids)}" if coverage_ids else "Register runner coverage before autonomous execution.",
             ],
             required_artifacts=["runner_contract.json", "fixture_manifest.json", "state_schema.json"],
             acceptance_criteria=[

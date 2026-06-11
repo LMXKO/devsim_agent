@@ -217,6 +217,76 @@ class ExtendedDeviceSweepTest(unittest.TestCase):
         self.assertIn("physics_1d_reference_correlation_missing", codes)
         self.assertNotIn("compact_baseline_not_signoff_evidence", codes)
 
+    def test_power_mosfet_2d_field_plate_runner_exposes_layout_evidence(self) -> None:
+        def fake_run(command, **kwargs):
+            run_root = Path(command[command.index("--run-root") + 1])
+            run_id = command[command.index("--run-id") + 1]
+            runner_dir = run_root / "mosfet_2d" / run_id
+            runner_dir.mkdir(parents=True, exist_ok=True)
+            (runner_dir / "mosfet_id_sweep.csv").write_text(
+                "\n".join(
+                    [
+                        "sweep_type,gate_voltage_v,drain_voltage_v,drain_total_current_a,abs_drain_current_a",
+                        "idvg,0,0.1,1e-12,1e-12",
+                        "idvg,1,0.1,1e-6,1e-6",
+                        "idvd,1.5,0,0,0",
+                        "idvd,1.5,1,1e-5,1e-5",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (runner_dir / "device_tecplot.dat").write_text("tecplot", encoding="utf-8")
+            (runner_dir / "devsim.log").write_text("2d solver log", encoding="utf-8")
+            (runner_dir / "mosfet_id_curves.png").write_bytes(b"png")
+            summary = {
+                "metrics": {
+                    "points": 4,
+                    "vth_at_threshold_current_v": 1.0,
+                    "ion_ioff_ratio": 1e6,
+                }
+            }
+            (runner_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+            class Completed:
+                returncode = 0
+                stdout = json.dumps({"status": "completed", "run_dir": str(runner_dir)})
+                stderr = ""
+
+            return Completed()
+
+        with patch("tcad_agent.tools.extended_device_sweep.run_cancellable", side_effect=fake_run):
+            state = run_extended_device_sweep(
+                ExtendedDeviceRequest(
+                    device_type=ExtendedDeviceType.POWER_MOSFET_BV_RON,
+                    fidelity=ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE,
+                    start=0.0,
+                    stop=-20.0,
+                    step=10.0,
+                    run_id="unit_power_2d_field_plate",
+                    run_root=self.root,
+                )
+            )
+
+        self.assertEqual(state.status, ExtendedDeviceStatus.COMPLETED)
+        self.assertEqual(state.quality_report["status"], "suspicious")
+        metrics = state.quality_report["metrics"]
+        self.assertTrue(metrics["tcad_solver_invoked"])
+        self.assertTrue(metrics["devsim_2d_solver_invoked"])
+        self.assertEqual(metrics["solver_backend"], "devsim_2d_power_mos_field_plate_layout_extraction")
+        self.assertEqual(metrics["layout_dimensionality"], "2d")
+        self.assertTrue(metrics["layout_resolved_field_plate"])
+        self.assertIn("field_peak_x_um", metrics)
+        artifacts = state.final_summary["artifacts"]
+        self.assertTrue(Path(artifacts["runner_contract"]).exists())
+        self.assertTrue(Path(artifacts["inner_devsim_csv"]).exists())
+        self.assertEqual(state.tcad_deck_spec["simulator"], "devsim_2d_power_mos_field_plate_runner")
+
+        benchmark = run_physical_benchmark(Path(state.run_dir))
+        codes = {check.code for check in benchmark.checks}
+        self.assertIn("power_mos_devsim_2d_field_plate_runner_invoked", codes)
+        self.assertIn("power_mos_2d_field_plate_layout_present", codes)
+        self.assertIn("power_mos_2d_signoff_gaps_remaining", codes)
+
     def test_power_mosfet_lifetime_mutation_changes_leakage_and_writes_history(self) -> None:
         short_lifetime = run_extended_device_sweep(
             ExtendedDeviceRequest(

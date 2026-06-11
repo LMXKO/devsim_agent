@@ -299,7 +299,7 @@ def pn_iv_deck(goal_text: str, request: dict[str, Any]) -> dict[str, Any]:
 def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, Any]:
     device_type = str(request.get("device_type") or "extended_device")
     fidelity = str(request.get("fidelity") or "compact")
-    is_executable_physics = fidelity in {"devsim_1d", "physics_1d"}
+    is_executable_physics = fidelity in {"devsim_1d", "devsim_2d_field_plate", "physics_1d"}
     physics_models: dict[str, Any] = {
         "fidelity": fidelity,
         "schottky_contact_model": request.get("schottky_contact_model"),
@@ -324,7 +324,7 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
                 "carrier_lifetime_s": compact_number(request.get("power_mos_carrier_lifetime_s")),
                 "drift_region_lifetime_s": compact_number(request.get("power_mos_drift_region_lifetime_s")),
                 "trap_density_cm2": compact_number(request.get("power_mos_trap_density_cm2")),
-                "coupling_status": "equation_coupled" if fidelity == "physics_1d" else "compact_baseline",
+                "coupling_status": "equation_coupled" if fidelity in {"physics_1d", "devsim_2d_field_plate"} else "compact_baseline",
             }
         )
     regions = [{"name": device_type, "material": "Si", "role": "template"}]
@@ -403,6 +403,8 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
     simulator = (
         "devsim"
         if fidelity == "devsim_1d"
+        else "devsim_2d_power_mos_field_plate_runner"
+        if device_type == "power_mosfet_bv_ron" and fidelity == "devsim_2d_field_plate"
         else "devsim_1d_power_mos_runner"
         if device_type == "power_mosfet_bv_ron" and fidelity == "physics_1d"
         else "physics_1d_model"
@@ -411,7 +413,7 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
     )
     return {
         "device_family": device_type,
-        "dimensionality": "1d" if is_executable_physics else "compact",
+        "dimensionality": "2d" if fidelity == "devsim_2d_field_plate" else "1d" if is_executable_physics else "compact",
         "simulator": simulator,
         "intent_zh": "扩展器件模板仿真与关键指标提取",
         "regions": regions,
@@ -431,7 +433,7 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
         ],
         "signoff_requirements": common_signoff_requirements(goal_text, request),
         "assumptions": [
-            "physics_1d 路径可作为本轮可执行工程证据；最终签核仍需收敛、golden/实测相关性和版图相关几何复核。"
+            "该 fidelity 路径可作为本轮可执行工程证据；最终签核仍需收敛、golden/实测相关性和版图相关几何复核。"
             if is_executable_physics
             else "紧凑模板只能作为规划基线；工程签核需要更完整的几何/模型/收敛验证。"
         ],

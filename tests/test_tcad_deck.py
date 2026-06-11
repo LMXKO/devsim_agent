@@ -81,6 +81,22 @@ class TCADDeckSpecTest(unittest.TestCase):
         compact = compact_tcad_deck_spec(deck)
         self.assertEqual(len(compact["planned_mutations"]), 3)
 
+    def test_power_device_2d_deck_records_field_plate_runner(self) -> None:
+        deck = build_tcad_deck_spec(
+            "Power MOSFET 2D field plate BV/Ron",
+            "extended_device_sweep",
+            {
+                "device_type": "power_mosfet_bv_ron",
+                "fidelity": "devsim_2d_field_plate",
+                "power_mos_field_plate_length_um": 2.0,
+            },
+        )
+
+        self.assertEqual(deck["dimensionality"], "2d")
+        self.assertEqual(deck["simulator"], "devsim_2d_power_mos_field_plate_runner")
+        self.assertEqual(deck["physics_models"]["coupling_status"], "equation_coupled")
+        self.assertIn("field_plate_edge", deck["mesh"]["refined_regions"])
+
     def test_parses_existing_devsim_deck_sections_and_semantic_patch_diff(self) -> None:
         source = "\n".join(
             [

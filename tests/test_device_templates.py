@@ -40,7 +40,11 @@ class DeviceTemplatesTest(unittest.TestCase):
         self.assertTrue(result.runner_promotion_required)
         self.assertIn("runner_contract", result.runner_promotion_stage_ids)
         self.assertEqual(result.template.support, TemplateSupport.EXECUTABLE)
-        self.assertEqual(result.request_hint["fidelity"], "physics_1d")
+        self.assertEqual(result.request_hint["fidelity"], "devsim_2d_field_plate")
+        self.assertEqual(result.tcad_fidelity, "devsim_2d_field_plate_layout_prototype")
+        runner_ids = {runner["runner_id"] for runner in result.industrial_runner_coverage}
+        self.assertIn("power_mosfet_bv_ron_devsim_1d", runner_ids)
+        self.assertIn("power_mosfet_bv_ron_devsim_2d_field_plate", runner_ids)
         self.assertIn("TCAD evidence", result.message)
 
     def test_lists_extended_templates_by_support_boundary(self) -> None:

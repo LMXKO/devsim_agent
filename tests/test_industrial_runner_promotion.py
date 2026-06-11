@@ -56,13 +56,14 @@ class IndustrialRunnerPromotionTest(unittest.TestCase):
         self.assertEqual(plan.status, "completed")
         self.assertTrue(plan.promotion_required)
         self.assertTrue(plan.real_runner_available)
-        self.assertEqual(plan.real_runner_id, "power_mosfet_bv_ron_devsim_1d")
+        self.assertEqual(plan.real_runner_id, "power_mosfet_bv_ron_devsim_2d_field_plate")
         self.assertIn("extended_device_sweep", plan.real_runner_command)
         self.assertNotIn("run_id", plan.real_runner_command)
+        self.assertIn("devsim_2d_field_plate", plan.real_runner_command)
         self.assertEqual(plan.next_action, "run_real_runner_and_close_convergence_gaps")
         stages = {stage.stage_id: stage for stage in plan.stages}
         self.assertEqual(stages["runner_contract"].status, "completed")
-        self.assertTrue(any("power_mosfet_bv_ron_devsim_1d" in action for action in stages["runner_contract"].actions))
+        self.assertTrue(any("power_mosfet_bv_ron_devsim_2d_field_plate" in action for action in stages["runner_contract"].actions))
 
 
 if __name__ == "__main__":

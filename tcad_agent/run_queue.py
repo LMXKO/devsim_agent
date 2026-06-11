@@ -732,6 +732,13 @@ def default_runner_registry() -> dict[str, Runner]:
     def extended_device_runner(request: dict[str, Any]) -> dict[str, Any]:
         return run_extended_device_sweep(ExtendedDeviceRequest.model_validate(request)).model_dump(mode="json")
 
+    def extended_device_alias(device_type: str, fidelity: str) -> Runner:
+        def runner(request: dict[str, Any]) -> dict[str, Any]:
+            payload = {**request, "device_type": device_type, "fidelity": fidelity}
+            return extended_device_runner(payload)
+
+        return runner
+
     def schottky_calibration_runner(request: dict[str, Any]) -> dict[str, Any]:
         return run_schottky_calibration(SchottkyCalibrationRequest.model_validate(request)).model_dump(mode="json")
 
@@ -826,6 +833,11 @@ def default_runner_registry() -> dict[str, Runner]:
             run_mosfet_2d_id_sweep(MOSFET2DIDRequest.model_validate(request))
         ),
         "extended_device_sweep": extended_device_runner,
+        "power_mosfet_bv_ron_1d_runner": extended_device_alias("power_mosfet_bv_ron", "physics_1d"),
+        "power_mosfet_bv_ron_2d_runner": extended_device_alias("power_mosfet_bv_ron", "devsim_2d_field_plate"),
+        "gan_hemt_id_bv_runner": extended_device_alias("gan_hemt_id_bv", "physics_1d"),
+        "sic_power_diode_bv_leakage_runner": extended_device_alias("sic_power_diode_bv_leakage", "physics_1d"),
+        "igbt_output_turnoff_runner": extended_device_alias("igbt_output_turnoff", "physics_1d"),
         "schottky_iv_calibration": schottky_calibration_runner,
         "golden_curve_comparison": golden_curve_runner,
         "tool_convergence": lambda request: result_to_dict(

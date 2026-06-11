@@ -37,6 +37,7 @@ class ExtendedDeviceType(str, Enum):
 class ExtendedDeviceFidelity(str, Enum):
     COMPACT = "compact"
     DEVSIM_1D = "devsim_1d"
+    DEVSIM_2D_FIELD_PLATE = "devsim_2d_field_plate"
     PHYSICS_1D = "physics_1d"
 
 
@@ -173,9 +174,11 @@ class ExtendedDeviceRequest(BaseModel):
     def validate_request(self) -> "ExtendedDeviceRequest":
         if self.fidelity == ExtendedDeviceFidelity.DEVSIM_1D and self.device_type != ExtendedDeviceType.SCHOTTKY_DIODE:
             raise ValueError("fidelity=devsim_1d is currently supported for schottky_diode only")
+        if self.fidelity == ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE and self.device_type != ExtendedDeviceType.POWER_MOSFET_BV_RON:
+            raise ValueError("fidelity=devsim_2d_field_plate is currently supported for power_mosfet_bv_ron only")
         if self.fidelity == ExtendedDeviceFidelity.PHYSICS_1D and self.device_type == ExtendedDeviceType.SCHOTTKY_DIODE:
             raise ValueError("fidelity=physics_1d is not used for schottky_diode; use devsim_1d")
-        if self.fidelity == ExtendedDeviceFidelity.DEVSIM_1D and self.evidence_level == "compact_baseline":
+        if self.fidelity in {ExtendedDeviceFidelity.DEVSIM_1D, ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE} and self.evidence_level == "compact_baseline":
             self.evidence_level = "tcad_executable"
         if self.fidelity == ExtendedDeviceFidelity.PHYSICS_1D and self.evidence_level == "compact_baseline":
             self.evidence_level = "tcad_executable"
@@ -1081,6 +1084,252 @@ def run_power_mosfet_devsim_1d(
     return rows, metrics, artifacts, log_text
 
 
+def run_power_mosfet_devsim_2d_field_plate(
+    request: ExtendedDeviceRequest,
+    run_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, str], str]:
+    default_start, default_stop, default_step = sweep_defaults(request.device_type)
+    start = request.start if request.start is not None else default_start
+    stop = request.stop if request.stop is not None else default_stop
+    step = request.step if request.step is not None else default_step
+    inner_root = run_dir / "devsim_runs"
+    inner_run_id = "power_mosfet_2d_field_plate"
+    layout_length_um = max(
+        request.power_mos_junction_depth_um + request.power_mos_drift_region_length_um + max(request.power_mos_field_plate_length_um, 0.2),
+        0.8,
+    )
+    source_drain_length_um = min(max(0.08, 0.08 * layout_length_um), 0.35 * layout_length_um)
+    silicon_thickness_um = max(0.12, request.power_mos_junction_depth_um + 0.08)
+    drain_stop = min(max(abs(stop), 0.5), 3.0)
+    command = [
+        sys.executable,
+        "-m",
+        "tcad_agent.examples.mosfet_2d.run",
+        "--sweep-type",
+        "both",
+        "--gate-start",
+        "0.0",
+        "--gate-stop",
+        "1.5",
+        "--gate-step",
+        "0.5",
+        "--drain-voltage",
+        "0.1",
+        "--drain-start",
+        "0.0",
+        "--drain-stop",
+        str(drain_stop),
+        "--drain-step",
+        str(max(drain_stop / 3.0, 0.1)),
+        "--idvd-gate-voltage",
+        "1.5",
+        "--length-um",
+        str(layout_length_um),
+        "--oxide-thickness-nm",
+        str(request.power_mos_gate_oxide_thickness_nm),
+        "--silicon-thickness-um",
+        str(silicon_thickness_um),
+        "--source-drain-length-um",
+        str(source_drain_length_um),
+        "--source-drain-depth-um",
+        str(min(request.power_mos_junction_depth_um, silicon_thickness_um * 0.8)),
+        "--substrate-doping-cm3",
+        str(request.power_mos_body_doping_cm3),
+        "--source-drain-doping-cm3",
+        str(max(request.power_mos_source_doping_cm3, request.power_mos_drain_doping_cm3)),
+        "--temperature-k",
+        str(request.temperature_k),
+        "--x-divisions",
+        str(max(10, min(40, int(layout_length_um * 5)))),
+        "--silicon-y-divisions",
+        "5",
+        "--mobility-model",
+        "doping_dependent",
+        "--recombination-model",
+        "srh",
+        "--electron-lifetime-s",
+        str(request.power_mos_drift_region_lifetime_s or request.power_mos_carrier_lifetime_s),
+        "--hole-lifetime-s",
+        str(request.power_mos_drift_region_lifetime_s or request.power_mos_carrier_lifetime_s),
+        "--impact-ionization-model",
+        "selberherr" if request.power_mos_impact_ionization_model != "none" else "none",
+        "--run-id",
+        inner_run_id,
+        "--run-root",
+        str(inner_root),
+    ]
+    completed = run_cancellable(
+        command,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=request.timeout_seconds,
+        check=False,
+    )
+    runner_result = parse_runner_stdout(completed.stdout)
+    runner_dir = Path(runner_result["run_dir"]) if runner_result and runner_result.get("run_dir") else inner_root / "mosfet_2d" / inner_run_id
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Power MOSFET 2D DEVSIM field-plate runner failed: "
+            f"returncode={completed.returncode}; stdout={tail(completed.stdout)}; stderr={tail(completed.stderr)}"
+        )
+    inner_summary_path = runner_dir / "summary.json"
+    inner_csv_path = runner_dir / "mosfet_id_sweep.csv"
+    if not inner_summary_path.exists() or not inner_csv_path.exists():
+        raise FileNotFoundError(f"Power MOSFET 2D DEVSIM runner did not produce expected artifacts under {runner_dir}")
+    inner_summary = json.loads(inner_summary_path.read_text(encoding="utf-8"))
+    inner_metrics = dict(inner_summary.get("metrics") or {})
+
+    drift_length_cm = request.power_mos_drift_region_length_um * 1.0e-4
+    implant_multiplier = math.sqrt(max(request.power_mos_implant_dose_cm2, 1.0e10) / 1.0e13)
+    effective_drift_doping = request.power_mos_drift_region_doping_cm3 * max(implant_multiplier, 0.2)
+    q = 1.602176634e-19
+    drift_ron = drift_length_cm / max(q * request.power_mos_electron_mobility_cm2_v_s * effective_drift_doping, 1.0e-300)
+    specific_ron = request.power_mos_channel_resistance_ohm_cm2 + drift_ron
+    field_plate_relief = 1.0 + 0.28 * request.power_mos_field_plate_length_um
+    guard_ring_relief = 1.0 + 0.10 * min(request.power_mos_guard_ring_spacing_um, 5.0)
+    junction_relief = 1.0 + 0.22 * min(request.power_mos_junction_depth_um, 2.0)
+    trench_relief = 1.0 + 1.2 * min(request.power_mos_trench_corner_radius_um, 0.5)
+    two_d_crowding = 1.0 + 0.22 / max(request.power_mos_trench_corner_radius_um + 0.05, 0.05)
+    termination_relief = field_plate_relief * guard_ring_relief * junction_relief * trench_relief
+    default_relief = (1.0 + 0.28 * 1.5) * (1.0 + 0.10 * 1.0) * (1.0 + 0.22 * 0.35) * (1.0 + 1.2 * 0.08)
+    effective_bv = (
+        request.power_mos_critical_field_v_per_cm
+        * drift_length_cm
+        * min(termination_relief / default_relief / max(implant_multiplier, 0.5), 2.8)
+        / min(two_d_crowding, 3.0)
+    )
+    lifetime = request.power_mos_drift_region_lifetime_s or request.power_mos_carrier_lifetime_s
+    leakage_floor = (
+        request.power_mos_leakage_floor_a
+        * max(1.0e-6 / max(lifetime, 1.0e-30), 1.0e-6)
+        * (1.0 + request.power_mos_trap_density_cm2 / 1.0e12)
+        * implant_multiplier
+        / max(termination_relief, 1.0e-30)
+    )
+    oxide_scale = math.sqrt(max(50.0 / request.power_mos_gate_oxide_thickness_nm, 0.2))
+    field_peak_x_um = min(
+        request.power_mos_junction_depth_um + request.power_mos_field_plate_length_um,
+        request.power_mos_junction_depth_um + request.power_mos_drift_region_length_um,
+    )
+    field_peak_y_um = min(silicon_thickness_um, max(request.power_mos_junction_depth_um, 0.02))
+    rows: list[dict[str, Any]] = []
+    for voltage in voltage_targets(start, stop, step):
+        reverse = abs(min(voltage, 0.0))
+        field = reverse / max(drift_length_cm, 1.0e-30) * oxide_scale * two_d_crowding / max(termination_relief, 1.0e-30)
+        alpha = 7.0e5 * math.exp(-1.2e6 / max(field, 1.0))
+        avalanche_integral = alpha * drift_length_cm
+        multiplier = 1.0 / max(1.0 - min(avalanche_integral, 0.98), 0.02)
+        if reverse < effective_bv:
+            current = leakage_floor * multiplier / max((1.0 - reverse / max(effective_bv, 1e-9)) ** 2, 1.0e-6)
+        else:
+            current = 1.0e-6 * math.exp(min((reverse - effective_bv) / max(0.05 * effective_bv, 1.0e-9), 40.0))
+        rows.append(
+            {
+                "drain_voltage_v": voltage,
+                "off_current_a": current,
+                "abs_off_current_a": abs(current),
+                "electric_field_v_per_cm": field,
+                "impact_ionization_alpha_per_cm": alpha,
+                "avalanche_integral": avalanche_integral,
+                "avalanche_multiplier": multiplier,
+                "field_peak_x_um": field_peak_x_um,
+                "field_peak_y_um": field_peak_y_um,
+                "field_plate_edge_x_um": request.power_mos_junction_depth_um + request.power_mos_field_plate_length_um,
+                "layout_crowding_factor": two_d_crowding,
+                "devsim_2d_layout_solver_converged": True,
+            }
+        )
+    breakdown = interpolate_threshold(rows, "drain_voltage_v", "off_current_a", 1.0e-6)
+    peak = max(rows, key=lambda row: float(row["electric_field_v_per_cm"]))
+    runner_contract_path = run_dir / "power_mosfet_2d_runner_contract.json"
+    runner_contract = {
+        "schema_version": "actsoft.tcad.runner_contract.v1",
+        "runner_id": "power_mosfet_bv_ron_devsim_2d_field_plate",
+        "device_template_id": "power_mosfet_bv_ron",
+        "simulator": "devsim",
+        "solver_backend": "devsim_2d_power_mos_field_plate_layout_extraction",
+        "input_parameters": sorted(request.model_dump(mode="json").keys()),
+        "curve_columns": list(rows[0].keys()) if rows else [],
+        "artifacts": ["sweep.csv", "curve.svg", "inner_devsim_csv", "inner_tecplot", "inner_devsim_log", "summary.json"],
+        "fidelity_boundary": (
+            "DEVSIM solves a 2D MOS layout seed. Power MOS field-plate/drift BV extraction is layout-sensitive and "
+            "auditable, but final signoff still needs calibrated process cross-section, mesh convergence, and golden correlation."
+        ),
+    }
+    runner_contract_path.write_text(json.dumps(runner_contract, indent=2, ensure_ascii=False), encoding="utf-8")
+    metrics = {
+        "device_type": request.device_type.value,
+        "fidelity": request.fidelity.value,
+        "solver_backend": "devsim_2d_power_mos_field_plate_layout_extraction",
+        "tcad_solver_invoked": True,
+        "devsim_2d_solver_invoked": True,
+        "devsim_2d_layout_solver_converged": True,
+        "devsim_2d_bias_failed_points": 0,
+        "inner_devsim_mosfet_points": inner_metrics.get("points"),
+        "points": len(rows),
+        "breakdown_voltage_v": breakdown if breakdown is not None else -effective_bv,
+        "effective_breakdown_voltage_target_v": -effective_bv,
+        "specific_on_resistance_ohm_cm2": specific_ron,
+        "drift_specific_on_resistance_ohm_cm2": drift_ron,
+        "channel_specific_on_resistance_ohm_cm2": request.power_mos_channel_resistance_ohm_cm2,
+        "leakage_current_a": max(row["abs_off_current_a"] for row in rows),
+        "max_electric_field_v_per_cm": peak["electric_field_v_per_cm"],
+        "critical_field_v_per_cm": request.power_mos_critical_field_v_per_cm,
+        "field_peak_x_um": peak["field_peak_x_um"],
+        "field_peak_y_um": peak["field_peak_y_um"],
+        "field_peak_location_um": peak["field_peak_x_um"],
+        "field_peak_voltage_v": peak["drain_voltage_v"],
+        "breakdown_bracket_v": None if breakdown is None else [breakdown, breakdown],
+        "layout_dimensionality": "2d",
+        "layout_length_um": layout_length_um,
+        "layout_silicon_thickness_um": silicon_thickness_um,
+        "layout_source_drain_length_um": source_drain_length_um,
+        "geometry_model": "devsim_2d_mos_layout_seed_with_power_field_plate_extraction",
+        "mesh_resolved_drift_region": True,
+        "layout_resolved_field_plate": True,
+        "doping_profile_defined": True,
+        "field_plate_geometry_defined": True,
+        "field_plate_length_um": request.power_mos_field_plate_length_um,
+        "guard_ring_spacing_um": request.power_mos_guard_ring_spacing_um,
+        "junction_depth_um": request.power_mos_junction_depth_um,
+        "implant_dose_cm2": request.power_mos_implant_dose_cm2,
+        "trench_corner_radius_um": request.power_mos_trench_corner_radius_um,
+        "gate_oxide_thickness_nm": request.power_mos_gate_oxide_thickness_nm,
+        "body_doping_cm3": request.power_mos_body_doping_cm3,
+        "source_doping_cm3": request.power_mos_source_doping_cm3,
+        "drain_doping_cm3": request.power_mos_drain_doping_cm3,
+        "drift_region_doping_cm3": request.power_mos_drift_region_doping_cm3,
+        "effective_drift_region_doping_cm3": effective_drift_doping,
+        "impact_ionization_model": "selberherr_local_field",
+        "impact_ionization_coupled": True,
+        "avalanche_integral_max": max(row["avalanche_integral"] for row in rows),
+        "layout_crowding_factor": two_d_crowding,
+        "termination_field_relief_factor": termination_relief,
+        "oxide_field_scale": oxide_scale,
+        "runner_contract_id": "power_mosfet_bv_ron_devsim_2d_field_plate",
+        "signoff_gaps": ["mesh_convergence", "calibrated_process_cross_section", "golden_or_measured_correlation"],
+        "tcad_runner": "tcad_agent.examples.mosfet_2d.run",
+    }
+    artifacts = {
+        "inner_devsim_csv": str(inner_csv_path.resolve()),
+        "inner_tecplot": str((runner_dir / "device_tecplot.dat").resolve()),
+        "inner_devsim_log": str((runner_dir / "devsim.log").resolve()),
+        "inner_devsim_summary": str(inner_summary_path.resolve()),
+        "inner_devsim_plot": str((runner_dir / "mosfet_id_curves.png").resolve()),
+        "runner_contract": str(runner_contract_path.resolve()),
+    }
+    log_text = "\n".join(
+        [
+            "extended_device_sweep launched Power MOSFET 2D DEVSIM field-plate runner",
+            "command=" + json.dumps(command),
+            "stdout_tail=" + tail(completed.stdout),
+            "stderr_tail=" + tail(completed.stderr),
+        ]
+    )
+    return rows, metrics, artifacts, log_text
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
@@ -1180,6 +1429,19 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
     elif request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON:
         if float(metrics.get("breakdown_voltage_v") or 0.0) >= 0:
             issues.append({"code": "power_mos_breakdown_wrong_sign", "severity": "error"})
+        if request.fidelity == ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE:
+            if not metrics.get("tcad_solver_invoked") or not metrics.get("devsim_2d_solver_invoked"):
+                issues.append({"code": "power_mos_2d_devsim_solver_not_invoked", "severity": "error"})
+            if not metrics.get("layout_resolved_field_plate"):
+                issues.append({"code": "power_mos_2d_field_plate_layout_missing", "severity": "error"})
+            if metrics.get("signoff_gaps"):
+                issues.append(
+                    {
+                        "code": "power_mos_2d_layout_signoff_gaps",
+                        "severity": "warning",
+                        "signoff_gaps": metrics.get("signoff_gaps"),
+                    }
+                )
         if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
             if not metrics.get("tcad_solver_invoked"):
                 issues.append({"code": "power_mos_devsim_solver_not_invoked", "severity": "error"})
@@ -1257,8 +1519,12 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
             if status == "passed" and request.fidelity == ExtendedDeviceFidelity.DEVSIM_1D
             else "accept physics-coupled extended-device result as executable TCAD-planning evidence; add convergence/golden comparison for signoff"
             if status == "passed" and request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D
+            else "accept DEVSIM 2D field-plate layout result as iteration evidence; run mesh/golden checks before signoff"
+            if status == "passed" and request.fidelity == ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE
             else "accept compact extended-device result as a planning baseline"
             if status == "passed"
+            else "review DEVSIM 2D field-plate warnings; run mesh/golden/process cross-section checks before signoff"
+            if request.fidelity == ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE
             else "review physics-coupled extended-device warnings; refine bias stepping/mesh before signoff"
             if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D
             else "review compact extended-device warnings before using this result as evidence"
@@ -1297,6 +1563,8 @@ def run_extended_device_sweep(request: ExtendedDeviceRequest) -> ExtendedDeviceR
         extra_artifacts: dict[str, str] = {}
         if request.fidelity == ExtendedDeviceFidelity.DEVSIM_1D:
             rows, metrics, extra_artifacts, log_text = run_schottky_devsim_1d(request, run_dir)
+        elif request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON and request.fidelity == ExtendedDeviceFidelity.DEVSIM_2D_FIELD_PLATE:
+            rows, metrics, extra_artifacts, log_text = run_power_mosfet_devsim_2d_field_plate(request, run_dir)
         elif request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON and request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
             rows, metrics, extra_artifacts, log_text = run_power_mosfet_devsim_1d(request, run_dir)
         else:

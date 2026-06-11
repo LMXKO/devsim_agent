@@ -328,6 +328,43 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(state.steps[0].action["tool_name"], "mos_capacitor_cv_sweep")
         self.assertIn("tools", client.calls[0])
 
+    def test_agent_context_exposes_industrial_runner_registry_and_2d_power_alias(self) -> None:
+        client = FakeToolCallClient(
+            json.dumps(
+                {
+                    "tool_call": {
+                        "name": "run_tool__power_mosfet_bv_ron_2d_runner",
+                        "arguments": {"run_id": "agent_power_2d"},
+                    },
+                    "observation_summary": "选择 Power MOSFET 2D 场板 runner。",
+                    "hypothesis_zh": "2D field-plate runner 比 1D baseline 更适合观察场峰位置。",
+                }
+            )
+        )
+        request = AutonomousDevsimRequest(
+            goal_text="自主优化 Power MOSFET BV Ron field plate",
+            agent_id="agent_power_2d_toolbelt",
+            agent_root=self.root / "agents",
+            execute=False,
+            use_llm=True,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={"power_mosfet_bv_ron_2d_runner": lambda request: {"status": "completed"}},
+            llm_client=client,
+        )
+
+        tool_names = {tool["function"]["name"] for tool in client.calls[0]["tools"]}
+        self.assertIn("run_tool__power_mosfet_bv_ron_2d_runner", tool_names)
+        prompt = json.loads(client.calls[0]["user"])
+        registry = prompt["context"]["industrial_runner_registry"]
+        power_runners = registry["by_template"]["power_mosfet_bv_ron"]
+        self.assertIn("power_mosfet_bv_ron_devsim_2d_field_plate", {item["runner_id"] for item in power_runners})
+        self.assertEqual(state.steps[0].action["tool_name"], "power_mosfet_bv_ron_2d_runner")
+        self.assertFalse(state.checkpoint["agent_decision_ledger"][0]["fallback_used"])
+        self.assertEqual(state.checkpoint["agent_control"]["mode"], "agent_first")
+
     def test_deck_ingest_patch_then_initial_tool(self) -> None:
         source_deck = self.root / "user_deck.py"
         source_deck.write_text("oxide_thickness_nm = 50\nsolve_voltage = 1.0\n", encoding="utf-8")
@@ -501,6 +538,11 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertIn("capability_audit", state.checkpoint)
         self.assertIn("coverage_work_package", state.checkpoint)
         self.assertEqual(state.checkpoint["coverage_work_package"]["template_id"], "gan_hemt_id_bv")
+        self.assertTrue(state.checkpoint["coverage_work_package"]["industrial_runner_coverage"])
+        self.assertEqual(
+            state.checkpoint["coverage_work_package"]["industrial_runner_coverage"][0]["maturity"],
+            "physics_surrogate",
+        )
         self.assertIn("runner_promotion_plan", state.checkpoint)
         self.assertTrue(Path(state.checkpoint["runner_promotion_plan_path"]).exists())
         self.assertEqual(state.checkpoint["runner_promotion_plan"]["template_id"], "gan_hemt_id_bv")

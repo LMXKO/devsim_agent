@@ -212,7 +212,7 @@ class SupervisorTest(unittest.TestCase):
 
         self.assertEqual(action.kind, SupervisorActionKind.RUN_EXTENDED_DEVICE)
         self.assertEqual(action.request["device_type"], "power_mosfet_bv_ron")
-        self.assertEqual(action.request["fidelity"], "physics_1d")
+        self.assertEqual(action.request["fidelity"], "devsim_2d_field_plate")
         targets = {mutation["target"] for mutation in action.request["tcad_deck_mutations"]}
         self.assertEqual(targets, {"field_plate", "drift_doping", "lifetime"})
 

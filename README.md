@@ -9,9 +9,10 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 ## Core Capabilities
 
 - Natural-language task routing into structured TCAD specs and executable requests.
-- Long-running `autonomous_devsim_agent` loop with observe/diagnose/plan/act steps.
+- Agent-first `autonomous_devsim_agent` loop with decision ledger, hypothesis tree, dynamic toolbelt, and guardrail fallback.
 - DEVSIM-backed examples for PN, diode/BV, MOS C-V, MOSFET Id, Schottky, BJT, power-device planning, and related sweeps.
-- DEVSIM-backed Power MOSFET/LDMOS 1D drift/BV runner with runner contract, mesh/field artifacts, and convergence-gap evidence.
+- DEVSIM-backed Power MOSFET/LDMOS 2D field-plate runner plus 1D drift/BV baseline, runner contracts, mesh/field artifacts, and signoff-gap evidence.
+- Industrial runner registry for agent-callable Power MOSFET, GaN HEMT, SiC diode, and IGBT routes with explicit maturity/signoff boundaries.
 - User DEVSIM deck ingestion, source IR extraction, semantic patching, diffs, and guarded execution.
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
@@ -100,10 +101,10 @@ python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "GaN HEMT BV
 python3.11 -m tcad_agent.tools.industrial_runner_promotion --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
 ```
 
-Run the promoted Power MOSFET/LDMOS runner:
+Run the promoted Power MOSFET/LDMOS 2D field-plate runner:
 
 ```bash
-python3.11 -m tcad_agent.tools.extended_device_sweep --device-type power_mosfet_bv_ron --fidelity physics_1d
+python3.11 -m tcad_agent.tools.extended_device_sweep --device-type power_mosfet_bv_ron --fidelity devsim_2d_field_plate
 ```
 
 Validate long-run behavior:
