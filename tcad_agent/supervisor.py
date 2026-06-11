@@ -917,11 +917,9 @@ def execute_action(action: SupervisorAction, state: SupervisorState) -> Supervis
             task_state = run_task(
                 spec,
                 task_root=Path(state.supervisor_dir) / "tasks",
-                loop_root=Path(state.supervisor_dir) / "autonomous_loop",
                 run_root=Path(state.supervisor_dir) / "agent_tools",
                 execute=state.execute,
                 overwrite=True,
-                use_llm=False,
             )
             action.result = with_action_deck_result(task_state, action)
         elif action.kind == SupervisorActionKind.RUN_MOS_CV:

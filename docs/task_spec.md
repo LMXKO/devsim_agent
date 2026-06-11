@@ -27,11 +27,11 @@ runs/tasks/diode_leakage_text/
   task_run_state.json
 ```
 
-`task_run_state.json` includes the exact `AutonomousLoopRequest` that would be executed.
+`task_run_state.json` includes the exact `PNJunctionIVRequest` that would be executed.
 
 ## Execute A Task
 
-Add `--execute` to run the autonomous loop:
+Add `--execute` to run the PN IV tool through `task_runner`:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
@@ -41,11 +41,11 @@ python3.11 -m tcad_agent.tools.task_runner \
   --no-llm
 ```
 
-The task runner records task-level status, while the loop still writes its own checkpoint:
+The task runner records task-level status, while the PN IV tool writes its own checkpoint:
 
 ```text
 runs/tasks/<task_id>/task_run_state.json
-runs/autonomous_loop/<task_id>/loop_state.json
+runs/agent_tools/pn_junction_iv/<task_id>/state.json
 ```
 
 ## Resume

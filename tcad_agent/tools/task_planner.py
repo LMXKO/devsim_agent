@@ -20,9 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--task-output", type=Path, default=None)
     parser.add_argument("--no-fallback", action="store_true")
-    loop_llm = parser.add_mutually_exclusive_group()
-    loop_llm.add_argument("--loop-use-llm", dest="execution_use_llm", action="store_true")
-    loop_llm.add_argument("--loop-no-llm", dest="execution_use_llm", action="store_false")
+    execution_llm = parser.add_mutually_exclusive_group()
+    execution_llm.add_argument("--execution-use-llm", dest="execution_use_llm", action="store_true")
+    execution_llm.add_argument("--execution-no-llm", dest="execution_use_llm", action="store_false")
     parser.set_defaults(execution_use_llm=None)
     return parser.parse_args()
 

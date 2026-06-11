@@ -278,11 +278,9 @@ def run_parameter_sweep(
             task_state = task_runner(
                 case_spec,
                 task_root=sweep_dir / "tasks",
-                loop_root=sweep_dir / "autonomous_loop",
                 run_root=sweep_dir / "agent_tools",
                 execute=request.execute,
                 overwrite=True,
-                use_llm=request.use_llm,
             )
         except Exception as exc:
             case.status = "failed"

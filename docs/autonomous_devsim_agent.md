@@ -4,7 +4,7 @@
 
 > AI autonomously operates DEVSIM-backed TCAD tools over many steps until it produces useful engineering evidence, asks for a required confirmation, or exhausts its budget.
 
-It is broader than the older PN-only `tools/autonomous_loop.py`. The old loop still exists as a narrow checkpointed runner for legacy PN tasks. The new runtime is an agent-first tool controller that can call registered TCAD tools, repair executor, physical benchmark, objective/Pareto evaluator, deck IR/semantic patch utilities, Power MOSFET signoff workflow, external Sentaurus runner contracts, report/conclusion generation, and minimal cockpit generation. The checkpoint records `agent_control`, `agent_decision_ledger`, and `agent_hypothesis_tree` so long runs remain auditable.
+It is the project-level agent-first controller. It can call registered TCAD tools, repair executor, physical benchmark, objective/Pareto evaluator, deck IR/semantic patch utilities, Power MOSFET signoff workflow, external Sentaurus runner contracts, report/conclusion generation, and minimal cockpit generation. The checkpoint records `agent_control`, `agent_decision_ledger`, and `agent_hypothesis_tree` so long runs remain auditable.
 
 ## Loop Shape
 

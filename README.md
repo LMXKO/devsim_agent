@@ -185,7 +185,7 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
   --execute
 ```
 
-The adapter can copy a project into a controlled run workspace, apply verified semantic patches, run configured local commands, parse logs, ingest CSV curves, compare baseline vs mutation, build patch lineage, and return state to the autonomous loop.
+The adapter can copy a project into a controlled run workspace, apply verified semantic patches, run configured local commands, parse logs, ingest CSV curves, compare baseline vs mutation, build patch lineage, and return state to the autonomous agent.
 
 When Sentaurus is not installed, validate only the agent-side contract:
 

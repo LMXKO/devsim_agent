@@ -21,10 +21,10 @@ from tcad_agent.task_spec import (
     TaskSpec,
     load_task_spec,
     parse_task_text,
-    task_spec_to_loop_request,
+    task_spec_to_pn_request,
     write_task_spec,
 )
-from tcad_agent.tools.autonomous_loop import AutonomousLoopRequest, LoopStatus, run_autonomous_loop
+from tcad_agent.tools.pn_junction_iv import PNJunctionIVRequest, ToolStatus, run_pn_junction_iv_sweep
 
 
 class TaskRunStatus(str, Enum):
@@ -43,9 +43,9 @@ class TaskRunState(BaseModel):
     created_at: str
     updated_at: str
     execute: bool = False
-    loop_request: dict[str, Any] | None = None
-    loop_state_path: str | None = None
-    loop_result: dict[str, Any] | None = None
+    execution_request: dict[str, Any] | None = None
+    execution_state_path: str | None = None
+    execution_result: dict[str, Any] | None = None
     final_state_path: str | None = None
     final_quality_report: dict[str, Any] | None = None
     failure_reason: str | None = None
@@ -55,7 +55,7 @@ class TaskRunState(BaseModel):
     planning_result_path: str | None = None
 
 
-LoopRunner = Callable[[AutonomousLoopRequest], dict[str, Any]]
+ToolRunner = Callable[[PNJunctionIVRequest], dict[str, Any]]
 
 
 def utc_timestamp() -> str:
@@ -83,8 +83,8 @@ def planning_result_path(run_dir: Path) -> Path:
     return run_dir / "task_plan_result.json"
 
 
-def loop_state_path_from_request(request: AutonomousLoopRequest) -> Path:
-    return request.loop_root / (request.loop_id or "") / "loop_state.json"
+def execution_state_path_from_request(request: PNJunctionIVRequest) -> Path:
+    return request.run_root / "pn_junction_iv" / (request.run_id or "") / "state.json"
 
 
 def create_initial_state(
@@ -92,7 +92,7 @@ def create_initial_state(
     run_dir: Path,
     task_path: Path,
     execute: bool,
-    loop_request: AutonomousLoopRequest,
+    execution_request: PNJunctionIVRequest,
     planner: str,
     planning_result: TaskPlanningResult | None,
 ) -> TaskRunState:
@@ -105,8 +105,8 @@ def create_initial_state(
         created_at=now,
         updated_at=now,
         execute=execute,
-        loop_request=loop_request.model_dump(mode="json"),
-        loop_state_path=str(loop_state_path_from_request(loop_request)),
+        execution_request=execution_request.model_dump(mode="json"),
+        execution_state_path=str(execution_state_path_from_request(execution_request)),
         warnings=[*spec.assumptions, *spec.warnings],
         planner=planner,
         planner_status=planning_result.status if planning_result else None,
@@ -164,32 +164,28 @@ def run_task(
     spec: TaskSpec,
     *,
     task_root: Path | None = None,
-    loop_root: Path | None = None,
     run_root: Path | None = None,
     execute: bool = False,
     overwrite: bool = False,
     resume: bool = False,
-    use_llm: bool | None = None,
     planner: str = "deterministic",
     planning_result: TaskPlanningResult | None = None,
-    loop_runner: LoopRunner = run_autonomous_loop,
+    tool_runner: ToolRunner = run_pn_junction_iv_sweep,
 ) -> TaskRunState:
     actual_task_root = task_root or default_task_root()
     run_dir, task_path = prepare_task_files(spec, actual_task_root, overwrite=overwrite, resume=resume)
-    loop_request = task_spec_to_loop_request(
+    execution_request = task_spec_to_pn_request(
         spec,
-        loop_id=spec.task_id,
-        loop_root=loop_root,
+        run_id=spec.task_id,
         run_root=run_root,
         resume=resume,
-        use_llm=use_llm,
     )
     state = create_initial_state(
         spec,
         run_dir,
         task_path,
         execute,
-        loop_request,
+        execution_request,
         planner,
         planning_result,
     )
@@ -202,21 +198,27 @@ def run_task(
         return state
 
     try:
-        loop_result = loop_runner(loop_request)
+        execution_result = tool_runner(execution_request)
     except Exception as exc:
         state.status = TaskRunStatus.FAILED
         state.failure_reason = str(exc)
         write_task_run_state(state, state_path)
         return state
 
-    state.loop_result = loop_result
-    state.final_state_path = loop_result.get("final_state_path")
-    state.final_quality_report = loop_result.get("final_quality_report")
-    if loop_result.get("status") == LoopStatus.COMPLETED:
+    state.execution_result = execution_result
+    state.final_state_path = state.execution_state_path
+    state.final_quality_report = execution_result.get("quality_report")
+    raw_status = execution_result.get("status")
+    status = raw_status.value if isinstance(raw_status, ToolStatus) else str(raw_status)
+    if status == ToolStatus.COMPLETED.value:
         state.status = TaskRunStatus.COMPLETED
     else:
         state.status = TaskRunStatus.FAILED
-        state.failure_reason = loop_result.get("failure_reason") or "autonomous loop did not complete"
+        state.failure_reason = (
+            execution_result.get("failure_reason")
+            or execution_result.get("next_action")
+            or "task execution did not complete"
+        )
     write_task_run_state(state, state_path)
     return state
 
@@ -228,7 +230,6 @@ def parse_args() -> argparse.Namespace:
     source.add_argument("--task", type=Path, help="Existing task.json path.")
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--task-root", type=Path, default=default_task_root())
-    parser.add_argument("--loop-root", type=Path, default=PROJECT_ROOT / "runs" / "autonomous_loop")
     parser.add_argument("--run-root", type=Path, default=PROJECT_ROOT / "runs" / "agent_tools")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -256,12 +257,10 @@ def main() -> None:
         state = run_task(
             spec,
             task_root=args.task_root,
-            loop_root=args.loop_root,
             run_root=args.run_root,
             execute=args.execute,
             overwrite=args.overwrite,
             resume=args.resume,
-            use_llm=args.use_llm,
             planner=args.planner,
             planning_result=planning_result,
         )

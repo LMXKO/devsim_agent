@@ -2,7 +2,7 @@
 
 `tcad_agent.tools.adaptive_optimizer` turns fixed parameter sweeps into a checkpointed optimization loop.
 
-It currently supports one numeric axis. Each round runs a normal `parameter_sweep`, records observations, chooses the best completed case, and proposes new points around that best value. This keeps every TCAD execution fully traceable through existing task, autonomous loop, and tool state files.
+It currently supports one numeric axis. Each round runs a normal `parameter_sweep`, records observations, chooses the best completed case, and proposes new points around that best value. This keeps every TCAD execution fully traceable through existing task, sweep, and tool state files.
 
 ## Dry Run
 
@@ -64,7 +64,6 @@ runs/optimizations/<optimize_id>/
       sweep_state.json
       summary.csv
       tasks/
-      autonomous_loop/
       agent_tools/
 ```
 

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from tcad_agent.tools.autonomous_loop import AutonomousLoopRequest
+from tcad_agent.tools.pn_junction_iv import PNJunctionIVRequest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -60,8 +60,6 @@ class ExecutionPolicySpec(BaseModel):
     max_cycles: int = Field(default=3, ge=1)
     timeout_seconds: float = Field(default=300.0, gt=0.0)
     use_llm: bool = False
-    force_llm: bool = False
-    max_log_chars: int = Field(default=4000, ge=0)
 
 
 class PNJunctionParametersSpec(BaseModel):
@@ -311,15 +309,13 @@ def parse_task_text(
     )
 
 
-def task_spec_to_loop_request(
+def task_spec_to_pn_request(
     spec: TaskSpec,
     *,
-    loop_id: str | None = None,
-    loop_root: Path | None = None,
+    run_id: str | None = None,
     run_root: Path | None = None,
     resume: bool = False,
-    use_llm: bool | None = None,
-) -> AutonomousLoopRequest:
+) -> PNJunctionIVRequest:
     if spec.intent != TaskIntent.SIMULATE_IV:
         raise ValueError(f"Unsupported task intent: {spec.intent}")
     if spec.device != DeviceKind.PN_JUNCTION:
@@ -327,8 +323,7 @@ def task_spec_to_loop_request(
     if spec.simulator != SimulatorKind.DEVSIM:
         raise ValueError(f"Unsupported simulator: {spec.simulator}")
 
-    return AutonomousLoopRequest(
-        task="pn_junction_iv",
+    return PNJunctionIVRequest(
         start=spec.sweep.start_v,
         stop=spec.sweep.stop_v,
         step=spec.sweep.step_v,
@@ -347,12 +342,7 @@ def task_spec_to_loop_request(
         hole_lifetime_s=spec.parameters.hole_lifetime_s,
         contact_spacing_um=spec.mesh.contact_spacing_um,
         junction_spacing_um=spec.mesh.junction_spacing_um,
-        max_cycles=spec.execution.max_cycles,
-        use_llm=spec.execution.use_llm if use_llm is None else use_llm,
-        force_llm=spec.execution.force_llm,
-        max_log_chars=spec.execution.max_log_chars,
-        loop_id=loop_id or spec.task_id,
-        loop_root=loop_root or PROJECT_ROOT / "runs" / "autonomous_loop",
+        run_id=run_id or spec.task_id,
         run_root=run_root or PROJECT_ROOT / "runs" / "agent_tools",
         resume=resume,
     )

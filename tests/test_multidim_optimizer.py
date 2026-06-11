@@ -36,9 +36,9 @@ class MultiDimCountingRunner:
             created_at="2026-01-01T00:00:00Z",
             updated_at="2026-01-01T00:00:00Z",
             execute=execute,
-            loop_request={},
-            loop_state_path=str(run_dir / "loop_state.json"),
-            loop_result={},
+            execution_request={},
+            execution_state_path=str(run_dir / "state.json"),
+            execution_result={},
             final_state_path=str(run_dir / "final_state.json") if execute else None,
             final_quality_report={
                 "status": "passed",

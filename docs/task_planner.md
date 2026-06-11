@@ -17,7 +17,7 @@ Use the configured OpenAI-compatible endpoint to produce a task plan:
 python3.11 -m tcad_agent.tools.task_planner \
   --task-id diode_planner_smoke \
   --text "做一个 diode/SBD reverse leakage，从 0V 扫到 -5V，初始步长 1V，最小步长 0.25V，最多 3 次 attempt，最多 3 轮" \
-  --loop-no-llm
+  --execution-no-llm
 ```
 
 This writes:
@@ -28,11 +28,11 @@ runs/task_plans/diode_planner_smoke/
   task.json
 ```
 
-`--loop-no-llm` means the later autonomous execution loop should not use LLM diagnosis. It does not disable the planner itself.
+`--execution-no-llm` means the later execution handoff should not request LLM-assisted diagnosis. It does not disable the planner itself.
 
 ## Execute With LLM Planning
 
-Ask the LLM planner to create `TaskSpec`, then run the autonomous loop:
+Ask the LLM planner to create `TaskSpec`, then run the PN tool execution layer:
 
 ```bash
 python3.11 -m tcad_agent.tools.task_runner \
@@ -95,7 +95,7 @@ The planner can also emit device parameters:
 python3.11 -m tcad_agent.tools.task_planner \
   --task-id diode_param_planner \
   --text "做 diode/SBD reverse leakage，0 到 -5V，步长 0.5V，器件长度 0.2um，结位置 0.08um，P 区掺杂 1e17，N 区掺杂 2e17，温度 325K" \
-  --loop-no-llm \
+  --execution-no-llm \
   --no-fallback
 ```
 

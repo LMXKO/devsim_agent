@@ -57,7 +57,6 @@ runs/optimizations/<optimize_id>/
       sweep_state.json
       summary.csv
       tasks/
-      autonomous_loop/
       agent_tools/
 ```
 

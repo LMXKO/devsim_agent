@@ -9,7 +9,7 @@ from tcad_agent.task_spec import (
     TaskIntent,
     load_task_spec,
     parse_task_text,
-    task_spec_to_loop_request,
+    task_spec_to_pn_request,
     write_task_spec,
 )
 
@@ -48,22 +48,19 @@ class TaskSpecTest(unittest.TestCase):
         self.assertEqual(spec.sweep.stop_v, 0.2)
         self.assertEqual(spec.parameters.junction_um, 0.05)
 
-    def test_task_spec_to_loop_request(self) -> None:
-        spec = parse_task_text("PN IV 0 to 5 V step 5 V", task_id="loop_req", use_llm=True)
+    def test_task_spec_to_pn_request(self) -> None:
+        spec = parse_task_text("PN IV 0 to 5 V step 5 V", task_id="pn_req", use_llm=True)
         root = Path("/tmp/actsoft-unit")
 
-        request = task_spec_to_loop_request(
+        request = task_spec_to_pn_request(
             spec,
-            loop_root=root / "loops",
             run_root=root / "agent_tools",
-            use_llm=False,
         )
 
-        self.assertEqual(request.loop_id, "loop_req")
+        self.assertEqual(request.run_id, "pn_req")
         self.assertEqual(request.stop, 5.0)
         self.assertEqual(request.step, 5.0)
-        self.assertFalse(request.use_llm)
-        self.assertEqual(request.loop_root, root / "loops")
+        self.assertEqual(request.run_root, root / "agent_tools")
 
     def test_parse_device_parameters(self) -> None:
         spec = parse_task_text(
@@ -80,7 +77,7 @@ class TaskSpecTest(unittest.TestCase):
         self.assertEqual(spec.mesh.contact_spacing_um, 0.002)
         self.assertEqual(spec.mesh.junction_spacing_um, 0.00002)
 
-        request = task_spec_to_loop_request(spec)
+        request = task_spec_to_pn_request(spec)
         self.assertEqual(request.length_um, 0.2)
         self.assertEqual(request.junction_um, 0.08)
         self.assertEqual(request.p_doping_cm3, 1e17)

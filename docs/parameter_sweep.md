@@ -2,7 +2,7 @@
 
 `tcad_agent.tools.parameter_sweep` runs multiple `TaskSpec` variants and summarizes the best case by an objective metric.
 
-It is intentionally built above `task_runner`: each case still gets its own `task.json`, `task_run_state.json`, autonomous loop checkpoint, quality report, and DEVSIM artifacts.
+It is intentionally built above `task_runner`: each case still gets its own `task.json`, `task_run_state.json`, PN tool checkpoint, quality report, and DEVSIM artifacts.
 
 ## Dry Run
 
@@ -55,7 +55,6 @@ runs/sweeps/<sweep_id>/
     <sweep_id>_case_001/
       task.json
       task_run_state.json
-  autonomous_loop/
   agent_tools/
 ```
 

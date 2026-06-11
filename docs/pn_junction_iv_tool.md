@@ -196,62 +196,16 @@ The LLM response is advisory. The deterministic `quality_report` remains the sou
 
 If the model proposes `next_tool_command`, the diagnosis parser only accepts whitelisted `python3.11 -m tcad_agent.tools.*` commands. Arbitrary shell commands are rejected.
 
-## Strategy Executor
+## Agent Follow-Up
 
-Use the strategy executor to convert a suspicious or failed run into a constrained follow-up request:
-
-```bash
-python3.11 -m tcad_agent.tools.strategy_executor \
-  --state runs/agent_tools/pn_junction_iv/quality_extreme/state.json
-```
-
-The dry-run writes:
-
-```text
-runs/agent_tools/pn_junction_iv/<run_id>/strategy_plan.json
-```
-
-Add `--execute` to run the planned follow-up:
+For multi-step repair, mutation refinement, objective checks, and reporting, run this tool through the project-level autonomous agent:
 
 ```bash
-python3.11 -m tcad_agent.tools.strategy_executor \
-  --state runs/agent_tools/pn_junction_iv/quality_extreme/state.json \
+python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+  --goal "自主跑 PN IV，发现曲线或收敛问题就修复，最后给工程结论" \
+  --initial-tool-name pn_junction_iv_sweep \
+  --initial-request-json '{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"}' \
   --execute
 ```
 
-Verified local behavior:
-
-- source run: `quality_extreme`, `quality_report.status = suspicious`;
-- strategy: narrow voltage range from `5.0 V` to `0.5 V`;
-- follow-up run: `quality_extreme_followup_001`;
-- follow-up quality: `passed`.
-
-The executor remains constrained:
-
-- passed runs are skipped;
-- arbitrary LLM shell commands are ignored;
-- only `pn_junction_iv` follow-up requests are generated;
-- deterministic quality rules can override advisory model text.
-
-## Autonomous Loop
-
-The higher-level loop chains this tool, optional LLM diagnosis, and strategy planning over multiple cycles:
-
-```bash
-python3.11 -m tcad_agent.tools.autonomous_loop \
-  --loop-id auto_extreme \
-  --stop 5.0 \
-  --step 5.0 \
-  --min-step 1.25 \
-  --max-attempts 3 \
-  --max-cycles 3 \
-  --no-llm
-```
-
-It writes:
-
-```text
-runs/autonomous_loop/<loop_id>/loop_state.json
-```
-
-See [autonomous_loop.md](autonomous_loop.md) for the loop-level checkpoint contract.
+The direct PN tool remains the source of truth for attempt history and curve artifacts; the autonomous agent owns cross-run decisions, repair lineage, objective/Pareto checks, reports, and dashboards.
