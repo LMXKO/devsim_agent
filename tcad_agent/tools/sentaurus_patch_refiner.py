@@ -14,6 +14,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", "--output-path", dest="output_path", type=Path, default=None)
     parser.add_argument("--max-candidates", type=int, default=4)
     parser.add_argument("--allow-high-risk", action="store_true")
+    parser.add_argument("--use-llm", action="store_true", help="Let the configured LLM choose among verified refinement candidates.")
+    parser.add_argument("--no-llm-fallback", action="store_true", help="Fail when the LLM returns an invalid candidate selection.")
     return parser.parse_args()
 
 
@@ -24,6 +26,8 @@ def request_from_args(args: argparse.Namespace) -> SentaurusPatchRefinerRequest:
         output_path=args.output_path,
         max_candidates=args.max_candidates,
         allow_high_risk=args.allow_high_risk,
+        use_llm=args.use_llm,
+        allow_llm_fallback=not args.no_llm_fallback,
     )
 
 

@@ -47,6 +47,7 @@ class LongRunValidationTest(unittest.TestCase):
                 "agent_cancel_boundary",
                 "agent_repair_report",
                 "mutation_refinement_multiround",
+                "sentaurus_autonomous_refinement",
                 "queue_confirmation_resume",
                 "queue_interruption_recovery",
             },
@@ -55,6 +56,14 @@ class LongRunValidationTest(unittest.TestCase):
         self.assertEqual(
             scenario_by_id["mutation_refinement_multiround"]["details"]["refinement_values"],
             [2.25, 2.375],
+        )
+        self.assertEqual(
+            scenario_by_id["sentaurus_autonomous_refinement"]["details"]["sentaurus_run_count"],
+            3,
+        )
+        self.assertEqual(
+            scenario_by_id["sentaurus_autonomous_refinement"]["details"]["lineage_entries"],
+            3,
         )
         self.assertTrue(
             any(artifact["name"] == "report" and artifact["exists"] for artifact in scenario_by_id["agent_repair_report"]["artifacts"])

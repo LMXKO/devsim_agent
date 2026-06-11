@@ -490,6 +490,50 @@ def recommendations(state: dict[str, Any], items: list[dict[str, Any]], best: di
     return recs or ["先收集更多已完成观测点，再决定下一轮实验。"]
 
 
+def sentaurus_patch_lines(state: dict[str, Any]) -> list[str]:
+    effect = state.get("sentaurus_mutation_effect_analysis") if isinstance(state.get("sentaurus_mutation_effect_analysis"), dict) else {}
+    archive = state.get("sentaurus_lineage_archive") if isinstance(state.get("sentaurus_lineage_archive"), dict) else {}
+    if not effect and not archive:
+        return []
+    candidate = effect.get("candidate") if isinstance(effect.get("candidate"), dict) else {}
+    patches = candidate.get("patches") if isinstance(candidate.get("patches"), list) else []
+    patch_fields: list[str] = []
+    for patch in patches:
+        if not isinstance(patch, dict):
+            continue
+        target = patch.get("variable") or patch.get("parameter") or patch.get("model") or patch.get("operation")
+        value = patch.get("value")
+        reason = patch.get("reason")
+        rendered = f"`{target}`"
+        if value is not None:
+            rendered += f" -> `{format_value(value)}`"
+        if reason:
+            rendered += f"：{reason}"
+        patch_fields.append(rendered)
+    deltas = effect.get("metric_deltas") if isinstance(effect.get("metric_deltas"), dict) else {}
+    primary = effect.get("primary_metric")
+    primary_delta = deltas.get(primary) if primary and isinstance(deltas.get(primary), dict) else {}
+    entries = archive.get("entries") if isinstance(archive.get("entries"), list) else []
+    best = archive.get("best_entry") if isinstance(archive.get("best_entry"), dict) else {}
+    lines = ["", "## Sentaurus Patch Lineage", ""]
+    lines.extend(
+        [
+            f"- 本轮候选：`{format_value(effect.get('candidate_id') or candidate.get('candidate_id'))}`。",
+            f"- 本轮改动：{'; '.join(patch_fields) if patch_fields else 'N/A'}。",
+            f"- 选择原因：{format_value(effect.get('rationale'))}。",
+            f"- 主指标：`{format_value(primary)}`，baseline `{format_value(primary_delta.get('baseline'))}` -> mutation `{format_value(primary_delta.get('mutation'))}`。",
+            f"- 改善指标：`{format_value(effect.get('improved_metrics') or [])}`；退化指标：`{format_value(effect.get('regressed_metrics') or [])}`。",
+            f"- 下一步建议：`{format_value(effect.get('recommended_next_action'))}`；下一目标：`{format_value(effect.get('recommended_next_target'))}`。",
+            f"- Lineage：`{len(entries)}` 轮；Pareto front `{format_value(archive.get('pareto_front') or [])}`；当前 best `{format_value(best.get('lineage_id'))}`。",
+        ]
+    )
+    artifacts = final_artifacts(state)
+    for key in ["sentaurus_mutation_effect", "sentaurus_baseline_mutation_overlay", "sentaurus_lineage_archive"]:
+        if artifacts.get(key):
+            lines.append(f"- `{key}`: `{artifacts[key]}`。")
+    return lines
+
+
 def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
     items = experiment_items(state)
     ranked = sorted_items(items, objective_direction(state))
@@ -593,6 +637,7 @@ def render_conclusion(state: dict[str, Any], source_path: Path) -> str:
     ]
     metric_lines = [f"- `{key}`: `{format_value(metrics.get(key))}`" for key in metric_keys if key in metrics]
     lines.extend(metric_lines or ["- 没有可用的详细最终指标。"])
+    lines.extend(sentaurus_patch_lines(state))
 
     lines.extend(["", "## 排序证据", ""])
     if ranked:

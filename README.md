@@ -208,6 +208,7 @@ Refine the next Sentaurus patch from that effect evidence:
 python3.11 -m tcad_agent.tools.sentaurus_patch_refiner \
   --state /tmp/sentaurus_patch/sentaurus_state.json \
   --goal "继续降低漏电，但不要牺牲 BV/Ron/field peak" \
+  --use-llm \
   --output /tmp/sentaurus_patch_refinement.json
 ```
 
@@ -292,7 +293,7 @@ Open:
 http://127.0.0.1:8766/
 ```
 
-The normal workflow is intentionally minimal: type a natural-language TCAD task at the bottom, submit it, and watch the autonomous agent steps, tool calls, logs, plots, metrics, deck patch lineage, replanning decisions, and final conclusion appear above.
+The normal workflow is intentionally minimal: type a natural-language TCAD task at the bottom, submit it, and watch the autonomous agent steps, tool calls, logs, plots, metrics, deck patch lineage, replanning decisions, and final conclusion appear above. The autonomous timeline dashboard also includes a compact Sentaurus patch lineage panel when the latest run has Sentaurus effect/archive evidence.
 
 ## Configure An LLM
 
@@ -394,7 +395,7 @@ python3.11 -m tcad_agent.tools.long_run_validation \
   --validation-id autonomous_e2e
 ```
 
-The `autonomous_e2e` suite checks confirmation gates, cancellation, repair/report output, multi-round mutation refinement, queue approval/resume, and interrupted-worker recovery. For real overnight LLM/DEVSIM runs, use `--mode real --use-llm --real-agent-request-json ...`; generated evidence stays under `runs/long_run_validation/<validation_id>/`.
+The `autonomous_e2e` suite checks confirmation gates, cancellation, repair/report output, multi-round mutation refinement, the Sentaurus planner/effect/refiner/lineage loop against the public-syntax fake contract, queue approval/resume, and interrupted-worker recovery. The Sentaurus scenario validates autonomous control flow and artifacts, not real Sentaurus physics. For real overnight LLM/DEVSIM runs, use `--mode real --use-llm --real-agent-request-json ...`; generated evidence stays under `runs/long_run_validation/<validation_id>/`.
 
 Plan or execute a repair with the agent policy:
 

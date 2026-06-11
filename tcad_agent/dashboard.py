@@ -972,6 +972,10 @@ def collect_paths(value: Any, keys: set[str] | None = None) -> list[tuple[str, s
         "semantic_deck_diff",
         "patched_source_deck",
         "tcad_deck_ir",
+        "sentaurus_mutation_effect",
+        "sentaurus_baseline_mutation_overlay",
+        "sentaurus_lineage_archive",
+        "overlay_svg_path",
     }
     found: list[tuple[str, str]] = []
     if isinstance(value, dict):
@@ -984,6 +988,60 @@ def collect_paths(value: Any, keys: set[str] | None = None) -> list[tuple[str, s
         for item in value:
             found.extend(collect_paths(item, wanted))
     return found
+
+
+def patch_summary_text(patches: list[Any]) -> str:
+    parts: list[str] = []
+    for patch in patches[:4]:
+        if not isinstance(patch, dict):
+            continue
+        target = patch.get("variable") or patch.get("parameter") or patch.get("model") or patch.get("operation")
+        value = patch.get("value")
+        if value is None:
+            parts.append(str(target))
+        else:
+            parts.append(f"{target}={value}")
+    return ", ".join(parts)
+
+
+def autonomous_sentaurus_lineage_panel(state: dict[str, Any], base_dir: Path) -> str:
+    checkpoint = state.get("checkpoint") if isinstance(state.get("checkpoint"), dict) else {}
+    effect = checkpoint.get("latest_sentaurus_mutation_effect_analysis")
+    effect = effect if isinstance(effect, dict) else {}
+    archive = checkpoint.get("latest_sentaurus_lineage_archive")
+    archive = archive if isinstance(archive, dict) else {}
+    history = checkpoint.get("sentaurus_patch_history") if isinstance(checkpoint.get("sentaurus_patch_history"), list) else []
+    latest_history = history[-1] if history and isinstance(history[-1], dict) else {}
+    candidate = effect.get("candidate") if isinstance(effect.get("candidate"), dict) else {}
+    patches = latest_history.get("patches") if isinstance(latest_history.get("patches"), list) else candidate.get("patches") if isinstance(candidate.get("patches"), list) else []
+    if not any([effect, archive, patches]):
+        return ""
+    patch_text = patch_summary_text(patches) or "N/A"
+    entries = archive.get("entries") if isinstance(archive.get("entries"), list) else []
+    best = archive.get("best_entry") if isinstance(archive.get("best_entry"), dict) else {}
+    links = " ".join(
+        item
+        for item in [
+            link("effect", effect.get("output_path"), base_dir, "pill-link"),
+            link("overlay", effect.get("overlay_svg_path"), base_dir, "pill-link"),
+            link("lineage", archive.get("output_path"), base_dir, "pill-link"),
+        ]
+        if item
+    )
+    return f"""
+    <section class="band">
+      <h2>Sentaurus Patch Lineage</h2>
+      <div class="mini-grid">
+        <div class="mini"><span>Decision</span><strong>{h(effect.get('decision') or 'N/A')}</strong></div>
+        <div class="mini"><span>Patch</span><strong>{h(patch_text)}</strong></div>
+        <div class="mini"><span>Primary metric</span><strong>{h(effect.get('primary_metric') or 'N/A')}</strong></div>
+        <div class="mini"><span>Next target</span><strong>{h(effect.get('recommended_next_target') or 'N/A')}</strong></div>
+        <div class="mini"><span>Lineage</span><strong>{h(len(entries))} runs, best {h(best.get('lineage_id') or 'N/A')}</strong></div>
+      </div>
+      <div class="meta">{h(effect.get('rationale') or '')}</div>
+      <div>{links or 'No Sentaurus lineage links yet.'}</div>
+    </section>
+""".strip()
 
 
 def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output_path: Path) -> str:
@@ -1020,6 +1078,7 @@ def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output
         link(label, path, base_dir, "pill-link")
         for label, path in collect_paths(state)[:12]
     )
+    sentaurus_panel = autonomous_sentaurus_lineage_panel(state, base_dir)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1036,6 +1095,10 @@ def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output
     .stat, .band {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; }}
     .stat span {{ display: block; color: #64748b; font-size: 12px; }}
     .stat strong {{ display: block; margin-top: 4px; font-size: 18px; }}
+    .mini-grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }}
+    .mini {{ border: 1px solid #edf2f7; border-radius: 8px; padding: 10px; }}
+    .mini span {{ display: block; color: #64748b; font-size: 12px; }}
+    .mini strong {{ display: block; margin-top: 4px; word-break: break-word; }}
     table {{ width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }}
     th, td {{ border-bottom: 1px solid #edf2f7; padding: 9px; text-align: left; vertical-align: top; font-size: 13px; }}
     th {{ background: #f8fafc; color: #475569; }}
@@ -1046,6 +1109,8 @@ def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output
     .planned {{ background: #fef3c7; }}
     .pill-link {{ display: inline-block; margin: 0 4px 4px 0; color: #2454a6; text-decoration: none; }}
     pre {{ white-space: pre-wrap; background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px; border-radius: 6px; overflow: auto; }}
+    @media (max-width: 900px) {{ .stats, .mini-grid {{ grid-template-columns: 1fr 1fr; }} }}
+    @media (max-width: 560px) {{ .wrap {{ padding: 18px; }} .stats, .mini-grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -1066,6 +1131,7 @@ def render_autonomous_dashboard(state: dict[str, Any], source_path: Path, output
       <h2>Artifacts</h2>
       <div>{final_links or 'No linked artifacts yet.'}</div>
     </section>
+    {sentaurus_panel}
     <section class="band">
       <h2>Step Timeline</h2>
       <table>

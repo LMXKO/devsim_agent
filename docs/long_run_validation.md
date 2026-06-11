@@ -28,6 +28,7 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 - cancel-token handling at agent step boundaries;
 - suspicious curve observation, repair execution, benchmark, report, and dashboard output;
 - baseline-vs-mutation curve comparison followed by two finer mutation-refinement rounds;
+- Sentaurus baseline run, verified patch planning, mutation-effect analysis, effect-driven patch refinement, second patched run, lineage archive, and Pareto/best-entry evidence using the public-syntax fake contract;
 - queue pause, approval, resume, and explicit unverified-patch approval;
 - worker interruption recovery for queued long-run agent items.
 
@@ -39,7 +40,9 @@ python3.11 -m tcad_agent.tools.long_run_validation \
   --validation-id autonomous_e2e
 ```
 
-This mode uses lightweight local runners so it can run in CI while still asserting the same durable artifacts the production loop depends on: `autonomous_devsim_agent_state.json`, `heartbeat.json`, semantic deck diffs, report/dashboard files, mutation-refinement plans, overlays, queue rows, and `validation_state.json`.
+This mode uses lightweight local runners so it can run in CI while still asserting the same durable artifacts the production loop depends on: `autonomous_devsim_agent_state.json`, `heartbeat.json`, semantic deck diffs, report/dashboard files, mutation-refinement plans, Sentaurus patch/refinement work packages, overlays, lineage archives, queue rows, and `validation_state.json`.
+
+The Sentaurus E2E scenario is deliberately an interface and agent-control validation. It uses the public fixture and fake CSV/log artifacts to prove the agent can run baseline -> patch planner -> patched run -> curve/effect analyzer -> patch refiner -> patched run -> lineage/Pareto -> final benchmark. It does not simulate proprietary Sentaurus physics.
 
 Run everything:
 

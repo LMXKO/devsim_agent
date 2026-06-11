@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text
 from tcad_agent.sentaurus_patch_planner import (
     DeckContext,
@@ -17,6 +18,14 @@ from tcad_agent.sentaurus_patch_planner import (
     resolve_decks,
     variable_classes,
 )
+from tcad_agent.task_planner import parse_json_object
+
+
+class ChatClient(Protocol):
+    config: LLMConfig
+
+    def chat(self, system: str, user: str, temperature: float = 0.1) -> str:
+        ...
 
 
 class SentaurusPatchRefinementCandidate(BaseModel):
@@ -52,6 +61,7 @@ class SentaurusPatchRefinementPlan(BaseModel):
     deck_files_inspected: list[str] = Field(default_factory=list)
     candidates: list[SentaurusPatchRefinementCandidate] = Field(default_factory=list)
     selected_candidate: SentaurusPatchRefinementCandidate | None = None
+    agent_policy: dict[str, Any] = Field(default_factory=dict)
     final_summary: dict[str, Any] = Field(default_factory=dict)
     output_path: str | None = None
     failure_reason: str | None = None
@@ -63,6 +73,8 @@ class SentaurusPatchRefinerRequest(BaseModel):
     output_path: Path | None = None
     max_candidates: int = Field(default=4, ge=1, le=16)
     allow_high_risk: bool = False
+    use_llm: bool = False
+    allow_llm_fallback: bool = True
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -402,23 +414,135 @@ def select_candidate(
     return sorted(eligible, key=lambda item: item.score, reverse=True)[0]
 
 
-def build_sentaurus_patch_refinement_plan(request: SentaurusPatchRefinerRequest) -> SentaurusPatchRefinementPlan:
+def eligible_candidates(
+    candidates: list[SentaurusPatchRefinementCandidate],
+    *,
+    allow_high_risk: bool,
+) -> list[SentaurusPatchRefinementCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.patches
+        and candidate.verified_patch_count == len(candidate.patches)
+        and (allow_high_risk or (candidate.risk_level != "high" and not candidate.requires_user_confirmation))
+    ]
+
+
+def choose_candidate_with_agent(
+    *,
+    candidates: list[SentaurusPatchRefinementCandidate],
+    analysis: dict[str, Any],
+    goal_text_value: str,
+    allow_high_risk: bool,
+    llm_client: ChatClient | None,
+) -> tuple[SentaurusPatchRefinementCandidate | None, dict[str, Any]]:
+    eligible = eligible_candidates(candidates, allow_high_risk=allow_high_risk)
+    fallback = sorted(eligible, key=lambda item: item.score, reverse=True)[0] if eligible else None
+    policy: dict[str, Any] = {
+        "policy": "sentaurus_refinement_candidate_selection",
+        "status": "not_used",
+        "fallback_candidate_id": fallback.candidate_id if fallback else None,
+        "selected_candidate_id": fallback.candidate_id if fallback else None,
+        "reason": "deterministic_score_order",
+    }
+    if not eligible:
+        policy["status"] = "no_eligible_candidates"
+        return None, policy
+    if llm_client is None:
+        return fallback, policy
+
+    payload = {
+        "goal_text": goal_text_value,
+        "effect_analysis": {
+            "decision": analysis.get("decision"),
+            "primary_metric": analysis.get("primary_metric"),
+            "improved_metrics": analysis.get("improved_metrics"),
+            "regressed_metrics": analysis.get("regressed_metrics"),
+            "tradeoff_violations": analysis.get("tradeoff_violations"),
+            "recommended_next_target": analysis.get("recommended_next_target"),
+            "rationale": analysis.get("rationale"),
+        },
+        "eligible_candidates": [
+            {
+                "candidate_id": candidate.candidate_id,
+                "action": candidate.action,
+                "score": candidate.score,
+                "risk_level": candidate.risk_level,
+                "hypothesis": candidate.hypothesis,
+                "expected_observation": candidate.expected_observation,
+                "stop_condition": candidate.stop_condition,
+                "patches": candidate.patches,
+                "validation_records": candidate.validation_records,
+            }
+            for candidate in eligible
+        ],
+    }
+    system = (
+        "You are a TCAD engineering agent selecting the next Sentaurus deck patch from verified candidates only. "
+        "Do not invent patches. Choose exactly one candidate_id from eligible_candidates. "
+        "Prefer the candidate that best tests the user's goal while respecting BV/Ron/field/leakage tradeoffs."
+    )
+    user = (
+        "Return JSON only with keys: selected_candidate_id, rationale, expected_observation, stop_condition, rejected_candidate_ids.\n\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+    raw = llm_client.chat(system, user, temperature=0.1)
+    parsed = parse_json_object(raw) or {}
+    selected_id = str(parsed.get("selected_candidate_id") or "")
+    by_id = {candidate.candidate_id: candidate for candidate in eligible}
+    selected = by_id.get(selected_id)
+    policy.update(
+        {
+            "status": "completed" if selected else "invalid_selection",
+            "model": getattr(llm_client.config, "model", None),
+            "raw_response": raw,
+            "parsed_response": parsed,
+            "selected_candidate_id": selected.candidate_id if selected else fallback.candidate_id if fallback else None,
+            "reason": parsed.get("rationale") or "model selection" if selected else "model selected an ineligible or unknown candidate; deterministic fallback used",
+            "rejected_candidate_ids": parsed.get("rejected_candidate_ids") if isinstance(parsed.get("rejected_candidate_ids"), list) else [],
+        }
+    )
+    return selected or fallback, policy
+
+
+def llm_client_for_request(request: SentaurusPatchRefinerRequest, llm_client: ChatClient | None) -> tuple[ChatClient | None, dict[str, Any]]:
+    if not request.use_llm:
+        return None, {"llm_enabled": False}
+    if llm_client is not None:
+        return llm_client, {"llm_enabled": True, "source": "injected"}
+    try:
+        actual = LLMClient()
+        if not actual.config.base_url or not actual.config.model:
+            return None, {"llm_enabled": True, "source": "env", "status": "unconfigured"}
+        return actual, {"llm_enabled": True, "source": "env", "model": actual.config.model}
+    except Exception as exc:
+        return None, {"llm_enabled": True, "source": "env", "status": "failed", "failure_reason": str(exc)}
+
+
+def build_sentaurus_patch_refinement_plan(
+    request: SentaurusPatchRefinerRequest,
+    *,
+    llm_client: ChatClient | None = None,
+) -> SentaurusPatchRefinementPlan:
     source = request.source_state_path.expanduser().resolve()
     try:
         state = read_json(source)
         analysis = state.get("sentaurus_mutation_effect_analysis") if isinstance(state.get("sentaurus_mutation_effect_analysis"), dict) else {}
         goal_text_value = request.goal_text or state_goal_text(state)
+        actual_llm_client, llm_policy = llm_client_for_request(request, llm_client)
         if not analysis:
             plan = SentaurusPatchRefinementPlan(
                 status="insufficient_evidence",
                 source_state_path=str(source),
                 goal_text=goal_text_value,
+                agent_policy=llm_policy,
                 failure_reason="Source state has no sentaurus_mutation_effect_analysis.",
             )
         else:
             planner_request = SentaurusPatchPlannerRequest(goal_text=goal_text_value, source_state_path=source)
             project_root, contexts, warnings = resolve_decks(planner_request, state)
             decision = str(analysis.get("decision") or "")
+            failure_reason = None
             if decision == "blocked_for_pareto_review":
                 candidates: list[SentaurusPatchRefinementCandidate] = []
                 selected = None
@@ -426,8 +550,24 @@ def build_sentaurus_patch_refinement_plan(request: SentaurusPatchRefinerRequest)
             elif decision == "continue_refine":
                 candidates = continue_same_direction_candidates(analysis=analysis, max_candidates=request.max_candidates)
                 validate_refinement_candidates(candidates, contexts)
-                selected = select_candidate(candidates, allow_high_risk=request.allow_high_risk)
-                status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
+                if request.use_llm:
+                    selected, selection_policy = choose_candidate_with_agent(
+                        candidates=candidates,
+                        analysis=analysis,
+                        goal_text_value=goal_text_value,
+                        allow_high_risk=request.allow_high_risk,
+                        llm_client=actual_llm_client,
+                    )
+                    llm_policy = {**llm_policy, **selection_policy}
+                    if selection_policy.get("status") == "invalid_selection" and not request.allow_llm_fallback:
+                        selected = None
+                        status = "failed"
+                        failure_reason = "LLM selected an unknown or ineligible Sentaurus refinement candidate."
+                    else:
+                        status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
+                else:
+                    selected = select_candidate(candidates, allow_high_risk=request.allow_high_risk)
+                    status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
             elif decision in {"switch_target", "reject_candidate"}:
                 candidates = switch_target_candidates(
                     source_state_path=source,
@@ -437,8 +577,24 @@ def build_sentaurus_patch_refinement_plan(request: SentaurusPatchRefinerRequest)
                     max_candidates=request.max_candidates,
                     allow_high_risk=request.allow_high_risk,
                 )
-                selected = select_candidate(candidates, allow_high_risk=request.allow_high_risk)
-                status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
+                if request.use_llm:
+                    selected, selection_policy = choose_candidate_with_agent(
+                        candidates=candidates,
+                        analysis=analysis,
+                        goal_text_value=goal_text_value,
+                        allow_high_risk=request.allow_high_risk,
+                        llm_client=actual_llm_client,
+                    )
+                    llm_policy = {**llm_policy, **selection_policy}
+                    if selection_policy.get("status") == "invalid_selection" and not request.allow_llm_fallback:
+                        selected = None
+                        status = "failed"
+                        failure_reason = "LLM selected an unknown or ineligible Sentaurus refinement candidate."
+                    else:
+                        status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
+                else:
+                    selected = select_candidate(candidates, allow_high_risk=request.allow_high_risk)
+                    status = "completed" if selected else "blocked_for_user_confirmation" if candidates else "no_actionable_candidates"
             else:
                 candidates = []
                 selected = None
@@ -452,6 +608,8 @@ def build_sentaurus_patch_refinement_plan(request: SentaurusPatchRefinerRequest)
                 deck_files_inspected=[ctx.rel_file for ctx in contexts],
                 candidates=candidates,
                 selected_candidate=selected,
+                agent_policy=llm_policy,
+                failure_reason=failure_reason,
                 final_summary={
                     "decision": decision,
                     "candidate_count": len(candidates),

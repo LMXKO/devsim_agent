@@ -210,10 +210,13 @@ Use the refiner after an analyzer result has been written into a patched state:
 python3.11 -m tcad_agent.tools.sentaurus_patch_refiner \
   --state /tmp/sentaurus_patch/sentaurus_state.json \
   --goal "继续降低漏电，同时不要牺牲 BV/Ron/field peak" \
+  --use-llm \
   --output /tmp/sentaurus_patch_refinement.json
 ```
 
 The refiner never guesses proprietary syntax. It reuses the semantic patch schema and validates the next candidate against the current copied deck. For `continue_refine`, numeric variable/assignment edits are advanced by a half step beyond the last verified old-to-new movement. For `switch_target` or `reject_candidate`, it asks the planner for alternative verified candidates and filters out the repeated patch.
+
+With `--use-llm`, the model can choose among already verified candidates and write a rationale, expected observation, and stop condition. It cannot introduce a new patch or bypass high-risk confirmation gates. `--no-llm-fallback` makes an invalid model selection fail closed.
 
 Build the lineage archive directly when debugging a multi-run chain:
 

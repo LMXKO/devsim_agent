@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from datetime import datetime
 from enum import Enum
@@ -26,6 +27,7 @@ from tcad_agent.run_queue import (
     run_queue_daemon,
     run_queue_worker,
 )
+from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text
 from tcad_agent.task_spec import PROJECT_ROOT
 
 
@@ -579,6 +581,195 @@ def scenario_mutation_refinement_multiround(
     )
 
 
+def write_sentaurus_curve(path: Path, *, leakage: float, breakdown: float, field: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "voltage_v,current_a,electric_field_v_per_cm",
+                f"0,{leakage},{field * 0.05}",
+                f"-50,{leakage * 5},{field * 0.45}",
+                f"{breakdown},1e-6,{field}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def apply_sentaurus_patches_to_project(project_copy: Path, patches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for patch in patches:
+        file_name = str(patch.get("file") or "")
+        if not file_name:
+            records.append({"applied": False, "verified": False, "error": "missing file", "patch": patch})
+            continue
+        deck_path = project_copy / file_name
+        if not deck_path.exists():
+            records.append({"applied": False, "verified": False, "error": f"missing deck file: {file_name}", "patch": patch})
+            continue
+        before = deck_path.read_text(encoding="utf-8")
+        after, record, _ = apply_sentaurus_semantic_patch_text(before, patch, source_path=file_name)
+        deck_path.write_text(after, encoding="utf-8")
+        record["file"] = file_name
+        records.append(record)
+    return records
+
+
+def scenario_sentaurus_autonomous_refinement(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    fixture = PROJECT_ROOT / "tcad_agent" / "examples" / "sentaurus_fixtures" / "power_diode_bv"
+    source_project = scenario_dir / "source_project"
+    shutil.copytree(fixture, source_project)
+    calls: list[dict[str, Any]] = []
+
+    def lifetime_value(project_copy: Path) -> float:
+        text = (project_copy / "device.cmd").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) == 3 and parts[0] == "set" and parts[1] == "LIFETIME_SCALE":
+                return float(parts[2])
+        return 1.0
+
+    def fake_sentaurus(tool_request: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(tool_request))
+        run_index = len(calls)
+        run_dir = scenario_dir / "sentaurus_runs" / f"sentaurus_{run_index:03d}"
+        project_copy = run_dir / "project"
+        shutil.copytree(source_project, project_copy)
+        patches = [patch for patch in tool_request.get("patches") or [] if isinstance(patch, dict)]
+        patch_records = apply_sentaurus_patches_to_project(project_copy, patches)
+        lifetime = lifetime_value(project_copy)
+        leakage = 1e-9 / max(lifetime, 1.0)
+        field = 8e5 * (1.0 - min((lifetime - 1.0) * 0.02, 0.04))
+        breakdown = -100.0 - min((lifetime - 1.0) * 2.0, 4.0)
+        curve_path = project_copy / "power_diode_bv_extract.csv"
+        write_sentaurus_curve(curve_path, leakage=leakage, breakdown=breakdown, field=field)
+        log_path = project_copy / "power_diode_bv_des.log"
+        log_path.write_text("Sentaurus fake validation backend completed\n", encoding="utf-8")
+        state_path = run_dir / "sentaurus_state.json"
+        metrics = {
+            "solver_backend": "sentaurus",
+            "tcad_solver_invoked": True,
+            "curve_points": 3,
+            "curve_x_key": "voltage_v",
+            "curve_y_key": "current_a",
+            "curve_field_key": "electric_field_v_per_cm",
+            "breakdown_current_threshold_a": 1e-6,
+            "leakage_abs_current_at_target_a": leakage,
+            "breakdown_voltage_at_threshold_v": breakdown,
+            "max_electric_field_v_per_cm": field,
+            "specific_on_resistance_ohm_cm2": 0.05,
+            "sentaurus_patches_verified": sum(1 for record in patch_records if record.get("verified")),
+        }
+        write_json(
+            state_path,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": run_dir.name,
+                "run_dir": str(run_dir),
+                "project_path": str(source_project),
+                "project_copy_path": str(project_copy),
+                "request": {
+                    "goal_text": tool_request.get("goal_text"),
+                    "project_path": str(source_project),
+                    "deck_files": tool_request.get("deck_files") or ["device.cmd"],
+                    "patches": patches,
+                },
+                "quality_report": {"status": "passed", "issues": [], "metrics": metrics},
+                "final_summary": {
+                    "artifacts": {
+                        "project_copy": str(project_copy),
+                        "sentaurus_curve_csv": str(curve_path),
+                        "log": str(log_path),
+                    },
+                    "metrics": metrics,
+                    "parameters": {"deck_files": ["device.cmd"]},
+                },
+                "sentaurus_patch_records": patch_records,
+            },
+        )
+        return {"status": "completed", "state_path": str(state_path)}
+
+    benchmark_path = scenario_dir / "sentaurus_benchmark.json"
+
+    def fake_benchmark(tool_request: dict[str, Any]) -> dict[str, Any]:
+        write_json(
+            benchmark_path,
+            {
+                "tool_name": "physical_benchmark",
+                "status": "completed",
+                "source_state_path": tool_request.get("source"),
+                "counts": {"errors": 0, "warnings": 0},
+            },
+        )
+        return {"status": "completed", "benchmark_path": str(benchmark_path)}
+
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Use Sentaurus contract mode to reduce reverse leakage while preserving BV/Ron/field peak.",
+            agent_id="sentaurus_autonomous_refinement_agent",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=max(request.agent_max_steps, 8),
+            sentaurus_project_path=source_project,
+            sentaurus_request={"flow": ["sdevice"], "deck_files": ["device.cmd"]},
+            enable_experiment_design=True,
+            max_experiment_design_rounds=2,
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={"sentaurus_run": fake_sentaurus, "physical_benchmark": fake_benchmark},
+    )
+    final_state = Path(str(state.final_state_path or state.latest_state_path))
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    artifacts = (final_payload.get("final_summary") or {}).get("artifacts") or {}
+    lineage = final_payload.get("sentaurus_lineage_archive") if isinstance(final_payload.get("sentaurus_lineage_archive"), dict) else {}
+    patch_values = [
+        patch.get("value")
+        for call in calls[1:]
+        for patch in call.get("patches", [])
+        if isinstance(patch, dict) and patch.get("variable") == "LIFETIME_SCALE"
+    ]
+    step_kinds = [step.kind for step in state.steps]
+    assertions = [
+        require(state.status == DevsimAgentStatus.COMPLETED, "Sentaurus autonomous contract scenario completed"),
+        require(len(calls) == 3, "baseline, first patch, and refined patch Sentaurus runs executed"),
+        require(DevsimAgentActionKind.PLAN_SENTAURUS_PATCH in step_kinds, "Sentaurus patch planner ran"),
+        require(DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT in step_kinds, "Sentaurus patch refiner ran from curve evidence"),
+        require(patch_values[-2:] == ["2", "2.5"], "Sentaurus patch values progressed from first patch to half-step refinement"),
+        require(len(lineage.get("entries") or []) == 3, "Sentaurus lineage archive contains baseline plus two patch runs"),
+        require(bool(artifacts.get("sentaurus_lineage_archive")), "final Sentaurus state links lineage archive"),
+        require(bool(artifacts.get("sentaurus_baseline_mutation_overlay")), "final Sentaurus state links curve overlay"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("source_project", source_project, kind="directory"),
+            artifact("final_sentaurus_state", final_state),
+            artifact("sentaurus_patch_plan", state.checkpoint.get("sentaurus_patch_plan_path")),
+            artifact("sentaurus_refinement_plan", state.checkpoint.get("sentaurus_refinement_plan_path")),
+            artifact("sentaurus_lineage_archive", artifacts.get("sentaurus_lineage_archive")),
+            artifact("sentaurus_overlay", artifacts.get("sentaurus_baseline_mutation_overlay"), kind="svg"),
+        ],
+        {
+            "agent_status": state.status,
+            "step_kinds": [kind.value for kind in step_kinds],
+            "sentaurus_run_count": len(calls),
+            "patch_values": patch_values,
+            "lineage_entries": len(lineage.get("entries") or []),
+            "best_lineage_entry": (lineage.get("best_entry") or {}).get("lineage_id"),
+        },
+    )
+
+
 def scenario_queue_confirmation_resume(
     scenario_dir: Path,
     request: LongRunValidationRequest,
@@ -786,6 +977,7 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "agent_cancel_boundary": ("Agent observes cancel token at step boundary", scenario_agent_cancel_boundary),
     "agent_repair_report": ("Agent repairs suspicious curve and writes report", scenario_agent_repair_report),
     "mutation_refinement_multiround": ("Agent performs multi-round mutation refinement", scenario_mutation_refinement_multiround),
+    "sentaurus_autonomous_refinement": ("Agent performs Sentaurus patch/effect/refinement lineage loop", scenario_sentaurus_autonomous_refinement),
     "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
     "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),
     "real_autonomous_agent": ("Real LLM/DEVSIM autonomous agent run", scenario_real_autonomous_agent),
@@ -797,6 +989,7 @@ DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
     "agent_cancel_boundary",
     "agent_repair_report",
     "mutation_refinement_multiround",
+    "sentaurus_autonomous_refinement",
     "queue_confirmation_resume",
     "queue_interruption_recovery",
 ]

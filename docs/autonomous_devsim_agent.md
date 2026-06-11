@@ -130,7 +130,7 @@ The next decision consumes that analysis:
 - `blocked_for_pareto_review` triggers configured objective/constraint evaluation or pauses for review;
 - `switch_target` and `reject_candidate` trigger `plan_sentaurus_refinement` to ask the planner for a different verified target and filter out the repeated patch direction.
 
-Refinement work packages are written under `sentaurus_patch_refinements/` and selected candidates are stored in `checkpoint.pending_sentaurus_patch_candidate`, so the normal Sentaurus execution path and confirmation gates still apply.
+Refinement work packages are written under `sentaurus_patch_refinements/` and selected candidates are stored in `checkpoint.pending_sentaurus_patch_candidate`, so the normal Sentaurus execution path and confirmation gates still apply. When `use_llm=true`, the model can select among verified refinement candidates and record its engineering rationale, but it cannot create new deck patches or bypass the verification/risk gate.
 
 High-risk geometry/process/model changes still pause for confirmation.
 

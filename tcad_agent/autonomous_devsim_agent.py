@@ -1796,6 +1796,8 @@ def execute_action(
             "goal_text": state.goal_text,
             "output_path": str(output_path),
             "allow_high_risk": bool(action.request.get("allow_high_risk", False)),
+            "use_llm": request.use_llm,
+            "allow_llm_fallback": request.allow_llm_fallback,
         }
         if runner is None:
             result = build_sentaurus_patch_refinement_plan(SentaurusPatchRefinerRequest.model_validate(payload)).model_dump(mode="json")
