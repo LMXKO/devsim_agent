@@ -16,6 +16,7 @@ from tcad_agent.curve_diagnostics import (
     metric_regressed,
     write_curve_overlay_svg,
 )
+from tcad_agent.mutation_vocabulary import mutation_class_ids
 from tcad_agent.engineering_objectives import (
     EngineeringObjective,
     ObjectiveCandidate,
@@ -58,7 +59,9 @@ class SentaurusMutationEffectResult(BaseModel):
     baseline_shape: CurveShapeDiagnostic | None = None
     mutation_shape: CurveShapeDiagnostic | None = None
     curve_comparison: dict[str, Any] = Field(default_factory=dict)
+    curve_engineering_review: dict[str, Any] = Field(default_factory=dict)
     overlay_svg_path: str | None = None
+    pareto_decision: dict[str, Any] = Field(default_factory=dict)
     recommended_next_action: str = "inspect_evidence"
     recommended_next_target: str | None = None
     rationale: str = ""
@@ -305,17 +308,7 @@ def pareto_summary(
 def recommended_target(candidate: dict[str, Any], primary_metric: str | None, worth_continuing: bool) -> str | None:
     if worth_continuing:
         text = candidate_text(candidate)
-        for token in [
-            "lifetime",
-            "trap_density",
-            "drift_doping",
-            "field_plate",
-            "guard_ring",
-            "oxide_thickness",
-            "implant_dose",
-            "junction_depth",
-            "trench_corner_radius",
-        ]:
+        for token in mutation_class_ids():
             if token in text:
                 return token
     if primary_metric in FIELD_ALIASES:
@@ -358,6 +351,86 @@ def compare_curve_shapes(
     return baseline_shape, mutation_shape, comparison
 
 
+def relative_change(baseline: float | None, mutation: float | None) -> float | None:
+    if baseline is None or mutation is None:
+        return None
+    return (mutation - baseline) / max(abs(baseline), 1.0e-300)
+
+
+def interval_midpoint(values: list[float] | None) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def direction_label(delta: float | None, *, lower_is_better: bool = False, tolerance: float = 0.02) -> str:
+    if delta is None:
+        return "unknown"
+    if abs(delta) <= tolerance:
+        return "flat"
+    improved = delta < 0 if lower_is_better else delta > 0
+    return "improved" if improved else "regressed"
+
+
+def engineering_curve_review(
+    baseline_shape: CurveShapeDiagnostic,
+    mutation_shape: CurveShapeDiagnostic,
+    curve_comparison: dict[str, Any],
+) -> dict[str, Any]:
+    base_leak_low = min(baseline_shape.leakage_interval_y_abs or []) if baseline_shape.leakage_interval_y_abs else None
+    mut_leak_low = min(mutation_shape.leakage_interval_y_abs or []) if mutation_shape.leakage_interval_y_abs else None
+    base_leak_high = max(baseline_shape.leakage_interval_y_abs or []) if baseline_shape.leakage_interval_y_abs else None
+    mut_leak_high = max(mutation_shape.leakage_interval_y_abs or []) if mutation_shape.leakage_interval_y_abs else None
+    leakage_delta = relative_change(base_leak_low, mut_leak_low)
+    base_bracket_mid = interval_midpoint(baseline_shape.threshold_bracket_x)
+    mut_bracket_mid = interval_midpoint(mutation_shape.threshold_bracket_x)
+    bracket_shift = None if base_bracket_mid is None or mut_bracket_mid is None else mut_bracket_mid - base_bracket_mid
+    field_delta = relative_change(baseline_shape.field_peak_value, mutation_shape.field_peak_value)
+    field_x_shift = None
+    if baseline_shape.field_peak_x is not None and mutation_shape.field_peak_x is not None:
+        field_x_shift = mutation_shape.field_peak_x - baseline_shape.field_peak_x
+    knee_shift = None
+    if baseline_shape.knee_x is not None and mutation_shape.knee_x is not None:
+        knee_shift = mutation_shape.knee_x - baseline_shape.knee_x
+    flags: list[str] = []
+    if mutation_shape.monotonic_abs_y_violations > baseline_shape.monotonic_abs_y_violations:
+        flags.append("monotonicity_worsened")
+    if baseline_shape.threshold_bracket_x and not mutation_shape.threshold_bracket_x:
+        flags.append("lost_threshold_bracket")
+    if baseline_shape.field_peak_value is not None and mutation_shape.field_peak_value is None:
+        flags.append("lost_field_peak_extraction")
+    if mutation_shape.points < max(2, baseline_shape.points // 2):
+        flags.append("mutation_curve_sparse")
+    summary_bits = [
+        f"leakage window {direction_label(leakage_delta, lower_is_better=True)}",
+        f"field peak {direction_label(field_delta, lower_is_better=True)}",
+    ]
+    if bracket_shift is not None:
+        summary_bits.append(f"BV bracket shift {bracket_shift:.6g} V")
+    if knee_shift is not None:
+        summary_bits.append(f"knee shift {knee_shift:.6g}")
+    if flags:
+        summary_bits.append("flags: " + ", ".join(flags))
+    return {
+        "schema_version": "actsoft.tcad.sentaurus_curve_engineering_review.v1",
+        "leakage_interval_low": {"baseline": base_leak_low, "mutation": mut_leak_low, "relative_delta": leakage_delta},
+        "leakage_interval_high": {"baseline": base_leak_high, "mutation": mut_leak_high},
+        "bv_bracket_midpoint": {"baseline": base_bracket_mid, "mutation": mut_bracket_mid, "shift_v": bracket_shift},
+        "field_peak": {
+            "baseline_value": baseline_shape.field_peak_value,
+            "mutation_value": mutation_shape.field_peak_value,
+            "relative_delta": field_delta,
+            "baseline_x": baseline_shape.field_peak_x,
+            "mutation_x": mutation_shape.field_peak_x,
+            "x_shift": field_x_shift,
+        },
+        "knee_shift": knee_shift,
+        "shape_flags": flags,
+        "summary": "; ".join(summary_bits),
+        "raw_curve_comparison": curve_comparison,
+    }
+
+
 def decision_from_evidence(
     *,
     primary_delta: dict[str, Any] | None,
@@ -371,6 +444,8 @@ def decision_from_evidence(
         return "reject_candidate", False, "do_not_continue", "Patched Sentaurus run regressed quality/status."
     if tradeoffs:
         return "blocked_for_pareto_review", False, "pareto_or_constraint_review", "Primary movement is not enough to ignore the observed tradeoff regressions."
+    if primary_improved and primary_delta and not pareto.get("mutation_on_pareto_front"):
+        return "blocked_for_pareto_review", False, "pareto_or_constraint_review", "Mutation is not on the Pareto front across comparable metrics."
     if primary_improved or status_better:
         action = "continue_same_direction" if primary_delta else "rerun_with_curve_extraction"
         rationale = "Primary Sentaurus metric improved without blocking tradeoffs." if primary_delta else "Run status improved; collect/compare curves before finer physical edits."
@@ -380,6 +455,41 @@ def decision_from_evidence(
             return "continue_refine", True, "continue_same_direction", "Mutation dominates baseline across comparable objective metrics."
         return "switch_target", False, "switch_patch_direction", "Primary Sentaurus metric did not improve."
     return "insufficient_evidence", False, "collect_curve_or_metrics", "Missing comparable Sentaurus curve/metric evidence."
+
+
+def build_pareto_decision(
+    *,
+    decision: str,
+    worth_continuing: bool,
+    recommended_next_action: str,
+    pareto: dict[str, Any],
+    tradeoffs: list[dict[str, Any]],
+    curve_review: dict[str, Any],
+) -> dict[str, Any]:
+    review_required = decision in {"blocked_for_pareto_review", "reject_candidate"} or bool(tradeoffs)
+    if decision == "continue_refine":
+        action = "continue_refine"
+    elif decision == "switch_target":
+        action = "switch_target"
+    elif decision == "reject_candidate":
+        action = "reject_or_rollback"
+    elif decision == "blocked_for_pareto_review":
+        action = "review_constraints_before_next_patch"
+    else:
+        action = "collect_more_evidence"
+    return {
+        "schema_version": "actsoft.tcad.sentaurus_pareto_decision.v1",
+        "action": action,
+        "worth_continuing": worth_continuing,
+        "review_required": review_required,
+        "recommended_next_action": recommended_next_action,
+        "mutation_on_pareto_front": pareto.get("mutation_on_pareto_front"),
+        "mutation_dominates_baseline": pareto.get("mutation_dominates_baseline"),
+        "baseline_on_pareto_front": pareto.get("baseline_on_pareto_front"),
+        "tradeoff_count": len(tradeoffs),
+        "curve_flags": curve_review.get("shape_flags") or [],
+        "reason": curve_review.get("summary") or "metric-only Pareto decision",
+    }
 
 
 def analyze_sentaurus_mutation_effect(request: SentaurusMutationEffectRequest) -> SentaurusMutationEffectResult:
@@ -415,6 +525,7 @@ def analyze_sentaurus_mutation_effect(request: SentaurusMutationEffectRequest) -
         status_worse = status_regressed(baseline_state, mutation_state)
         tradeoffs = infer_tradeoff_violations(deltas, primary)
         pareto = pareto_summary(baseline_metrics, mutation_metrics, deltas)
+        curve_review = engineering_curve_review(baseline_shape, mutation_shape, curve_comparison)
         decision, worth, next_action, rationale = decision_from_evidence(
             primary_delta=primary_delta,
             primary_improved=primary_improved,
@@ -422,6 +533,14 @@ def analyze_sentaurus_mutation_effect(request: SentaurusMutationEffectRequest) -
             status_worse=status_worse,
             tradeoffs=tradeoffs,
             pareto=pareto,
+        )
+        pareto_decision = build_pareto_decision(
+            decision=decision,
+            worth_continuing=worth,
+            recommended_next_action=next_action,
+            pareto=pareto,
+            tradeoffs=tradeoffs,
+            curve_review=curve_review,
         )
         result = SentaurusMutationEffectResult(
             status="completed",
@@ -446,7 +565,9 @@ def analyze_sentaurus_mutation_effect(request: SentaurusMutationEffectRequest) -
                 "mutation_csv": mutation_curve,
                 "overlay_svg": overlay_svg,
             },
+            curve_engineering_review=curve_review,
             overlay_svg_path=overlay_svg,
+            pareto_decision=pareto_decision,
             recommended_next_action=next_action,
             recommended_next_target=recommended_target(request.candidate, primary, worth),
             rationale=rationale,

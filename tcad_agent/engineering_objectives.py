@@ -61,6 +61,7 @@ class EngineeringObjectiveResult(BaseModel):
     candidates: list[ObjectiveCandidate] = Field(default_factory=list)
     best_candidate: ObjectiveCandidate | None = None
     pareto_front: list[ObjectiveCandidate] = Field(default_factory=list)
+    decision: dict[str, Any] = Field(default_factory=dict)
     failure_reason: str | None = None
 
 
@@ -233,6 +234,41 @@ def assign_pareto_front(candidates: list[ObjectiveCandidate], objectives: list[E
     return updated
 
 
+def build_objective_decision(
+    candidates: list[ObjectiveCandidate],
+    best: ObjectiveCandidate | None,
+    pareto_front: list[ObjectiveCandidate],
+) -> dict[str, Any]:
+    feasible = [candidate for candidate in candidates if candidate.feasible]
+    required_violations = [
+        {"candidate_id": candidate.candidate_id, "violations": candidate.violations}
+        for candidate in candidates
+        if any(item.get("required") for item in candidate.violations)
+    ]
+    if not candidates:
+        action = "collect_candidates"
+        rationale = "No objective candidates were available."
+    elif best is None:
+        action = "reject_or_collect_more_evidence"
+        rationale = "No feasible candidate has a complete objective score."
+    elif required_violations:
+        action = "review_constraints"
+        rationale = "At least one candidate violates required constraints; continue only from feasible Pareto candidates."
+    else:
+        action = "continue_with_best_candidate"
+        rationale = "A feasible scored candidate is available on the objective surface."
+    return {
+        "schema_version": "actsoft.tcad.engineering_objective_decision.v1",
+        "action": action,
+        "best_candidate_id": best.candidate_id if best else None,
+        "best_on_pareto_front": bool(best and any(item.candidate_id == best.candidate_id for item in pareto_front)),
+        "feasible_candidate_ids": [candidate.candidate_id for candidate in feasible],
+        "pareto_front_ids": [candidate.candidate_id for candidate in pareto_front],
+        "required_violation_count": sum(len(item["violations"]) for item in required_violations),
+        "rationale": rationale,
+    }
+
+
 def evaluate_engineering_objectives(
     source: Path,
     *,
@@ -253,6 +289,7 @@ def evaluate_engineering_objectives(
         evaluated = assign_pareto_front(evaluated, actual_objectives)
         feasible_scored = [candidate for candidate in evaluated if candidate.feasible and candidate.score is not None]
         best = sorted(feasible_scored, key=lambda item: float(item.score))[0] if feasible_scored else None
+        pareto_front = [candidate for candidate in evaluated if candidate.pareto_front]
         result = EngineeringObjectiveResult(
             status="completed",
             source_state_path=str(state_path),
@@ -260,7 +297,8 @@ def evaluate_engineering_objectives(
             constraints=actual_constraints,
             candidates=evaluated,
             best_candidate=best,
-            pareto_front=[candidate for candidate in evaluated if candidate.pareto_front],
+            pareto_front=pareto_front,
+            decision=build_objective_decision(evaluated, best, pareto_front),
         )
         target = (output_path or state_path.with_name("engineering_objectives.json")).resolve()
         result.output_path = str(target)

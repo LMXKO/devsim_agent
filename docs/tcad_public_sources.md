@@ -12,6 +12,19 @@ python3.11 -m tcad_agent.tools.device_templates sources --kind sources
 
 The registry intentionally keeps license and access notes close to each source. Open-source examples can be wrapped by adapters when the license is compatible. Vendor training pages and public PDFs are methodology references only unless their terms explicitly allow project import.
 
+## Evidence Gate
+
+`build_public_evidence_dossier(goal_text, simulator=..., template_ids=...)` turns the registry into a planning gate. The dossier is written into autonomous checkpoints as `checkpoint.public_evidence_dossier` and into Sentaurus patch plans as `public_evidence_dossier`.
+
+The dossier contains:
+
+- matched public source cards and category ids;
+- convergence strategy, required models, expected metrics, and signoff boundaries;
+- live lookup queries for operations not already covered by local deck IR or registry evidence;
+- guardrails that forbid copying proprietary software, licenses, PDKs, calibrated model files, private decks, or treating fake backends as physics evidence.
+
+This gate is intentionally registry-seeded and deterministic for tests. In real runs, if a requested simulator operation or device workflow is outside the local deck evidence plus registry coverage, the agent should perform live lookup or pause instead of inventing syntax or process semantics.
+
 ## Seven Seed Categories
 
 | Category | Local template ids | Best public seeds | Current boundary |

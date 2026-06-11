@@ -194,13 +194,15 @@ python3.11 -m tcad_agent.tools.sentaurus_mutation_effect \
   --output /tmp/sentaurus_mutation_effect.json
 ```
 
-The analyzer reads `quality_report.metrics`, `final_summary.artifacts.sentaurus_curve_csv`, and curve shape metadata. It reports primary metric movement, improved/regressed metrics, BV bracket movement, leakage interval, field peak value/location, overlay SVG path, Pareto summary, and a decision:
+The analyzer reads `quality_report.metrics`, `final_summary.artifacts.sentaurus_curve_csv`, and curve shape metadata. It reports primary metric movement, improved/regressed metrics, BV bracket movement, leakage interval, field peak value/location, overlay SVG path, an engineer-style curve review, Pareto summary, a machine-readable Pareto decision, and a decision:
 
 - `continue_refine`: primary metric or run quality improved without blocking tradeoffs;
 - `blocked_for_pareto_review`: primary direction helped but BV/Ron/field/leakage constraints regressed beyond tolerance;
 - `switch_target`: primary metric did not improve;
 - `reject_candidate`: patched run regressed quality/status;
 - `insufficient_evidence`: comparable metrics or CSV evidence are missing.
+
+The open mutation vocabulary is schema-backed in `tcad_agent.mutation_vocabulary`. Current Sentaurus candidate classes include `field_plate`, `drift_doping`, `lifetime`, `region_specific_lifetime`, `trap_density`, `guard_ring`, `junction_depth`, `oxide_thickness`, `implant_dose`, and `trench_corner_radius`. High-risk geometry/process/model entries remain confirmation-gated even when their semantic patch validates against the deck.
 
 ## Patch Refiner And Lineage
 

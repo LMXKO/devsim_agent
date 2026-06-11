@@ -90,6 +90,8 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(state.status, DevsimAgentStatus.PLANNED)
         self.assertEqual(state.steps[0].kind, DevsimAgentActionKind.RUN_TOOL)
         self.assertEqual(state.checkpoint["planned_action"]["tool_name"], "pn_junction_iv_sweep")
+        self.assertTrue(state.checkpoint["public_evidence_gate_done"])
+        self.assertIn("public_evidence_dossier", state.checkpoint)
         self.assertTrue((self.root / "agents" / "agent_plan" / "autonomous_devsim_agent_state.json").exists())
 
     def test_execute_runs_tool_repairs_benchmarks_and_writes_conclusion(self) -> None:

@@ -112,6 +112,10 @@ class SentaurusMutationEffectTest(unittest.TestCase):
         self.assertEqual(result.primary_metric, "leakage_abs_current_at_target_a")
         self.assertTrue(result.primary_improved)
         self.assertFalse(result.tradeoff_violations)
+        self.assertEqual(result.pareto_decision["action"], "continue_refine")
+        self.assertFalse(result.pareto_decision["review_required"])
+        self.assertIn("leakage window improved", result.curve_engineering_review["summary"])
+        self.assertIn("field peak improved", result.curve_engineering_review["summary"])
         self.assertTrue(Path(result.output_path).exists())
         self.assertTrue(Path(result.overlay_svg_path).exists())
 
@@ -144,6 +148,8 @@ class SentaurusMutationEffectTest(unittest.TestCase):
         self.assertFalse(result.worth_continuing)
         self.assertEqual(result.tradeoff_violations[0]["metric"], "max_electric_field_v_per_cm")
         self.assertEqual(result.recommended_next_action, "pareto_or_constraint_review")
+        self.assertTrue(result.pareto_decision["review_required"])
+        self.assertEqual(result.pareto_decision["action"], "review_constraints_before_next_patch")
 
     def test_switches_target_when_primary_metric_worsens(self) -> None:
         baseline = write_sentaurus_state(
@@ -173,6 +179,7 @@ class SentaurusMutationEffectTest(unittest.TestCase):
         self.assertEqual(result.decision, "switch_target")
         self.assertFalse(result.primary_improved)
         self.assertIn("leakage_abs_current_at_target_a", result.regressed_metrics)
+        self.assertEqual(result.pareto_decision["action"], "switch_target")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.mutation_vocabulary import classify_mutation_variable, vocabulary_evidence_for
+from tcad_agent.public_sources import build_public_evidence_dossier
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.sentaurus_deck import (
     SentaurusDeckBlock,
@@ -48,6 +50,7 @@ class SentaurusPatchPlan(BaseModel):
     candidates: list[SentaurusPatchCandidate] = Field(default_factory=list)
     selected_candidate: SentaurusPatchCandidate | None = None
     evidence_summary: dict[str, Any] = Field(default_factory=dict)
+    public_evidence_dossier: dict[str, Any] = Field(default_factory=dict)
     final_summary: dict[str, Any] = Field(default_factory=dict)
     output_path: str | None = None
     failure_reason: str | None = None
@@ -435,29 +438,7 @@ def bias_candidate(ctx: DeckContext, tags: dict[str, bool], goal_text: str) -> S
 
 
 def variable_classes(name: str) -> set[str]:
-    upper = name.upper()
-    classes: set[str] = set()
-    if "DOP" in upper and "DRIFT" in upper:
-        classes.add("drift_doping")
-    if "LIFETIME" in upper or upper.startswith("TAU") or "_TAU" in upper:
-        classes.add("lifetime")
-        if any(token in upper for token in ["P_BODY", "N_DRIFT", "REGION", "ANODE", "CATHODE", "BASE", "EMITTER", "COLLECTOR"]):
-            classes.add("region_specific_lifetime")
-    if "TRAP" in upper and any(token in upper for token in ["DENS", "CONC", "N"]):
-        classes.add("trap_density")
-    if "FIELD" in upper and "PLATE" in upper:
-        classes.add("field_plate")
-    if "GUARD" in upper and "RING" in upper:
-        classes.add("guard_ring")
-    if "OXIDE" in upper or upper.startswith("TOX") or "_TOX" in upper:
-        classes.add("oxide_thickness")
-    if "IMPLANT" in upper and "DOSE" in upper:
-        classes.add("implant_dose")
-    if "JUNCTION" in upper and ("DEPTH" in upper or upper.endswith("_XJ")):
-        classes.add("junction_depth")
-    if "TRENCH" in upper and ("RADIUS" in upper or "CORNER" in upper):
-        classes.add("trench_corner_radius")
-    return classes
+    return classify_mutation_variable(name)
 
 
 def variable_mutation_direction(var_class: str, tags: dict[str, bool]) -> tuple[float, str, str, str, str, float] | None:
@@ -543,7 +524,10 @@ def variable_candidates(ctx: DeckContext, tags: dict[str, bool]) -> list[Sentaur
                 stop_condition=stop,
                 fallback_alternatives=["compare baseline/mutation overlay", "run a smaller factor if direction helps", "switch to model or extraction debugging if curve shape is unchanged"],
                 rationale=f"Variable {assignment.key} is present in the user deck and matches the extensible Sentaurus mutation vocabulary class `{var_class}`.",
-                evidence_used=[deck_evidence(ctx), {"kind": "mutation_vocabulary", "class": var_class, "variable": assignment.key, "factor": factor, "goal_tags": tags}],
+                evidence_used=[
+                    deck_evidence(ctx),
+                    {**vocabulary_evidence_for(var_class), "variable": assignment.key, "factor": factor, "goal_tags": tags},
+                ],
                 confidence=score,
             )
             candidates.append(candidate)
@@ -622,6 +606,7 @@ def build_candidates(goal_text: str, state: dict[str, Any] | None, contexts: lis
 def plan_sentaurus_patches(request: SentaurusPatchPlannerRequest) -> SentaurusPatchPlan:
     source_state_path = str(request.source_state_path.expanduser().resolve()) if request.source_state_path else None
     state = load_final_state(source_state_path) if source_state_path else None
+    public_evidence = build_public_evidence_dossier(request.goal_text, simulator="sentaurus").model_dump(mode="json")
     try:
         project_root, contexts, warnings = resolve_decks(request, state)
         if not contexts:
@@ -630,7 +615,8 @@ def plan_sentaurus_patches(request: SentaurusPatchPlannerRequest) -> SentaurusPa
                 goal_text=request.goal_text,
                 source_state_path=source_state_path,
                 project_path=str(project_root) if project_root else None,
-                evidence_summary={"warnings": warnings, "state": state_evidence(state)},
+                evidence_summary={"warnings": warnings, "state": state_evidence(state), "public_evidence_gate": public_evidence.get("evidence_gate")},
+                public_evidence_dossier=public_evidence,
                 failure_reason="No parseable Sentaurus deck files were available.",
             )
         else:
@@ -650,11 +636,14 @@ def plan_sentaurus_patches(request: SentaurusPatchPlannerRequest) -> SentaurusPa
                 deck_files_inspected=[ctx.rel_file for ctx in contexts],
                 candidates=candidates,
                 selected_candidate=selected,
+                public_evidence_dossier=public_evidence,
                 evidence_summary={
                     "goal_tags": goal_tags(request.goal_text, state),
                     "state": state_evidence(state),
                     "deck_count": len(contexts),
                     "warnings": warnings,
+                    "public_evidence_gate": public_evidence.get("evidence_gate"),
+                    "public_source_ids": [card.get("source_id") for card in public_evidence.get("source_cards", [])],
                 },
                 final_summary={
                     "candidate_count": len(candidates),
@@ -675,4 +664,3 @@ def plan_sentaurus_patches(request: SentaurusPatchPlannerRequest) -> SentaurusPa
         plan.output_path = str(output_path)
         write_json(output_path, plan.model_dump(mode="json"))
     return plan
-

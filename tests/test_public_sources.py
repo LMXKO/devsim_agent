@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from tcad_agent.public_sources import (
+    build_public_evidence_dossier,
     get_public_tcad_category,
     get_public_tcad_source,
     list_public_tcad_categories,
@@ -50,6 +51,20 @@ class PublicTCADSourcesTest(unittest.TestCase):
         self.assertEqual([category["category_id"] for category in categories], ["gan_algan_hemt"])
         self.assertGreaterEqual(len(sources), 3)
         self.assertIn("genius_tcad_open", {source["source_id"] for source in sources})
+
+    def test_public_evidence_dossier_gates_agent_planning(self) -> None:
+        dossier = build_public_evidence_dossier(
+            "Use Sentaurus to reduce LDMOS leakage without hurting BV/Ron field plate tradeoffs.",
+            simulator="sentaurus",
+            template_ids=["power_mosfet_bv_ron"],
+        )
+
+        self.assertEqual(dossier.status, "completed")
+        self.assertIn("ldmos_igbt_power", dossier.selected_category_ids)
+        self.assertTrue(dossier.evidence_gate["passed"])
+        self.assertTrue(dossier.evidence_gate["requires_live_lookup_for_new_operations"])
+        self.assertTrue(any(card.source_id == "sentaurus_quasistationary_training" for card in dossier.source_cards))
+        self.assertTrue(any("licensed installation" in " ".join(card.usage_notes) for card in dossier.source_cards))
 
 
 if __name__ == "__main__":

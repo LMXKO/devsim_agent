@@ -61,6 +61,9 @@ class EngineeringObjectivesTest(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.best_candidate.candidate_id, "balanced")
         self.assertFalse(next(item for item in result.candidates if item.candidate_id == "fast_but_leaky").feasible)
+        self.assertEqual(result.decision["action"], "review_constraints")
+        self.assertEqual(result.decision["best_candidate_id"], "balanced")
+        self.assertIn("balanced", result.decision["feasible_candidate_ids"])
         self.assertTrue(output_exists)
 
     def test_pareto_front_keeps_tradeoff_candidates(self) -> None:
@@ -90,6 +93,8 @@ class EngineeringObjectivesTest(unittest.TestCase):
         front = {item.candidate_id for item in result.pareto_front}
 
         self.assertEqual(front, {"high_bv", "low_ron"})
+        self.assertEqual(result.decision["action"], "continue_with_best_candidate")
+        self.assertTrue(result.decision["best_on_pareto_front"])
 
 
 if __name__ == "__main__":

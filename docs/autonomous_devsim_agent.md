@@ -122,7 +122,9 @@ For Sentaurus states, the same experiment-design budget first goes through `plan
 - `checkpoint.pending_sentaurus_patch_candidate` when a safe verified candidate is selected;
 - `checkpoint.blocked_sentaurus_patch_candidates` when only confirmation-gated candidates exist.
 
-If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`. The same state also receives `sentaurus_lineage_archive.json`, which compactly records the multi-run patch trail, key metrics, Pareto front, and best entry.
+Each autonomous run also writes `checkpoint.public_evidence_dossier` before planning. The Sentaurus planner copies that gate into the patch plan, including matched public sources, convergence playbooks, model/metric expectations, and the rule that new simulator-specific operations require live lookup or local deck evidence before execution.
+
+If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`. The analysis includes an engineer-style curve review for leakage-window, BV-bracket, knee, and field-peak movement, plus a machine-readable Pareto decision. The same state also receives `sentaurus_lineage_archive.json`, which compactly records the multi-run patch trail, key metrics, Pareto front, and best entry.
 
 The next decision consumes that analysis:
 

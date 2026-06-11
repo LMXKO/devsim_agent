@@ -43,6 +43,8 @@ class SentaurusPatchPlannerTest(unittest.TestCase):
 
         self.assertEqual(plan.status, "completed")
         self.assertTrue(Path(plan.output_path).exists())
+        self.assertTrue(plan.public_evidence_dossier["evidence_gate"]["passed"])
+        self.assertIn("sentaurus_quasistationary_training", plan.evidence_summary["public_source_ids"])
         candidates = {candidate.candidate_id: candidate for candidate in plan.candidates}
         convergence = candidates["device.cmd:convergence_step_control"]
         self.assertEqual(convergence.verified_patch_count, len(convergence.patches))
@@ -101,6 +103,54 @@ Physics {
         self.assertIsNone(plan.selected_candidate)
         self.assertEqual(plan.candidates[0].risk_level, "high")
         self.assertTrue(plan.candidates[0].requires_user_confirmation)
+
+    def test_open_mutation_vocabulary_builds_verified_schema_candidates(self) -> None:
+        project = self.root / "open_vocab_project"
+        project.mkdir()
+        (project / "device.cmd").write_text(
+            """
+set GUARD_RING_SPACING 2.0
+set JUNCTION_DEPTH 0.8
+set OXIDE_THICKNESS 0.05
+set IMPLANT_DOSE 1e13
+set TRENCH_CORNER_RADIUS 0.2
+set TRAP_DENSITY 1e12
+set N_DRIFT_TAU 1e-6
+set NDRIFT_DOPING 1e15
+
+Physics {
+  Mobility( DopingDep )
+}
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+        plan = plan_sentaurus_patches(
+            SentaurusPatchPlannerRequest(
+                goal_text="Improve BV, field peak, leakage, Ron, guard ring, junction depth, oxide thickness, implant dose, trench radius, trap density and region lifetime.",
+                project_path=project,
+                deck_files=["device.cmd"],
+                max_candidates=24,
+                allow_high_risk=True,
+            )
+        )
+
+        ids = " ".join(candidate.candidate_id for candidate in plan.candidates)
+
+        for class_id in [
+            "guard_ring",
+            "junction_depth",
+            "oxide_thickness",
+            "implant_dose",
+            "trench_corner_radius",
+            "trap_density",
+            "region_specific_lifetime",
+            "drift_doping",
+        ]:
+            with self.subTest(class_id=class_id):
+                self.assertIn(class_id, ids)
+        self.assertTrue(all(candidate.verified_patch_count == len(candidate.patches) for candidate in plan.candidates))
+        self.assertTrue(any(item.get("kind") == "mutation_vocabulary" for candidate in plan.candidates for item in candidate.evidence_used))
 
     def test_autonomous_agent_plans_and_executes_safe_sentaurus_patch_candidate(self) -> None:
         project = self.root / "sentaurus_project"

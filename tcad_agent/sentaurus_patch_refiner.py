@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from tcad_agent.llm import LLMClient, LLMConfig
+from tcad_agent.mutation_vocabulary import mutation_class_ids
 from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text
 from tcad_agent.sentaurus_patch_planner import (
     DeckContext,
@@ -131,18 +132,7 @@ def candidate_target_classes(candidate: dict[str, Any]) -> set[str]:
         if variable:
             classes.update(variable_classes(str(variable)))
     text = json.dumps(candidate, ensure_ascii=False, sort_keys=True).lower()
-    for token in [
-        "lifetime",
-        "region_specific_lifetime",
-        "trap_density",
-        "drift_doping",
-        "field_plate",
-        "guard_ring",
-        "oxide_thickness",
-        "implant_dose",
-        "junction_depth",
-        "trench_corner_radius",
-    ]:
+    for token in mutation_class_ids():
         if token in text:
             classes.add(token)
     return classes
@@ -459,6 +449,8 @@ def choose_candidate_with_agent(
             "improved_metrics": analysis.get("improved_metrics"),
             "regressed_metrics": analysis.get("regressed_metrics"),
             "tradeoff_violations": analysis.get("tradeoff_violations"),
+            "curve_engineering_review": analysis.get("curve_engineering_review"),
+            "pareto_decision": analysis.get("pareto_decision"),
             "recommended_next_target": analysis.get("recommended_next_target"),
             "rationale": analysis.get("rationale"),
         },

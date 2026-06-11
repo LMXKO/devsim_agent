@@ -82,14 +82,15 @@ The long-running DEVSIM agent and repair loop are designed around structured age
 - `autonomous_devsim_agent` is the direct long-horizon runtime for “run DEVSIM, observe, decide, repair, benchmark, report, continue”.
 - It exposes dynamic tool schemas to configured OpenAI-compatible models, while still accepting structured JSON actions as a fallback.
 - It can ingest user DEVSIM Python decks, apply verified semantic deck patches, emit diffs, run objective/Pareto checks, write heartbeat/cancel state, and render an autonomous timeline dashboard.
+- Every autonomous run creates a `public_evidence_dossier` before patch/signoff planning: it records matched public sources, convergence playbooks, model/metric expectations, and guardrails for operations that require live lookup rather than guessing.
 - `mission_agent` decomposes the goal and routes work through the supervisor, convergence checks, golden-curve comparison, physical benchmark, repair planning, and repair execution.
 - `supervisor` can let an agent override the deterministic next action, while rejecting unsupported tool kinds or shell commands.
 - `repair_agent` observes the run state, quality issues, metrics, curve diagnostics, deck mutations, physical benchmark context, and recent repair case memory before choosing one next action.
 - `repair_executor` applies the selected request/deck patch, records the agent observation, hypothesis, tool plan, safety review, benchmark result, mutation-effect analysis, and next target.
 - `autonomous_devsim_agent` can turn a successful baseline-vs-mutation overlay into the next finer request/deck patch and execute it within the configured refinement budget.
 - When enabled, `autonomous_devsim_agent` can also run `plan_experiment_design`, which ranks convergence, golden/measured correlation, repair, and mutation candidates from the latest evidence instead of following a single fixed rule.
-- For Sentaurus states, enabled experiment design first runs `sentaurus_patch_planner`: it reads the copied/user deck, maps the natural-language goal to verified semantic patch candidates, records validation diffs, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`.
-- After a Sentaurus patch run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched metrics/curves, flags BV/Ron/field/leakage tradeoffs, writes overlay artifacts, and decides whether to continue, switch direction, or pause for Pareto/constraint review.
+- For Sentaurus states, enabled experiment design first runs `sentaurus_patch_planner`: it reads the copied/user deck, maps the natural-language goal to verified semantic patch candidates from the shared mutation vocabulary, records validation diffs and public evidence, and can execute the selected low/medium-risk candidate as the next `sentaurus_run`.
+- After a Sentaurus patch run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched metrics/curves, writes an engineer-style curve review for leakage window, BV bracket, knee, and field-peak movement, flags BV/Ron/field/leakage tradeoffs, writes overlay artifacts, and decides whether to continue, switch direction, reject, or pause for Pareto/constraint review.
 - `sentaurus_patch_refiner` consumes that decision: `continue_refine` becomes a smaller verified follow-up patch, while `switch_target`/`reject_candidate` ask the planner for a different verified target instead of repeating the same edit.
 - Each patched Sentaurus state writes `sentaurus_lineage_archive.json`, a compact multi-run trail with patch fields, effect decisions, key metrics, overlays, Pareto front, and best entry.
 - Every autonomous step updates `checkpoint.agent_hypothesis_tree` with the current hypothesis, expected observation, stop condition, evidence used, verdict, and fallback alternatives.
@@ -395,7 +396,7 @@ python3.11 -m tcad_agent.tools.long_run_validation \
   --validation-id autonomous_e2e
 ```
 
-The `autonomous_e2e` suite checks confirmation gates, cancellation, repair/report output, multi-round mutation refinement, the Sentaurus planner/effect/refiner/lineage loop against the public-syntax fake contract, queue approval/resume, and interrupted-worker recovery. The Sentaurus scenario validates autonomous control flow and artifacts, not real Sentaurus physics. For real overnight LLM/DEVSIM runs, use `--mode real --use-llm --real-agent-request-json ...`; generated evidence stays under `runs/long_run_validation/<validation_id>/`.
+The `autonomous_e2e` suite checks confirmation gates, cancellation, public evidence dossier creation, repair/report output, multi-round mutation refinement, the Sentaurus planner/effect/refiner/lineage loop against the public-syntax fake contract, queue approval/resume, and interrupted-worker recovery. The Sentaurus scenario validates autonomous control flow and artifacts, not real Sentaurus physics. For real overnight LLM/DEVSIM runs, use `--mode real --use-llm --real-agent-request-json ...`; generated evidence stays under `runs/long_run_validation/<validation_id>/`.
 
 Plan or execute a repair with the agent policy:
 

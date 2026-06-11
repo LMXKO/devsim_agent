@@ -513,6 +513,8 @@ def sentaurus_patch_lines(state: dict[str, Any]) -> list[str]:
     deltas = effect.get("metric_deltas") if isinstance(effect.get("metric_deltas"), dict) else {}
     primary = effect.get("primary_metric")
     primary_delta = deltas.get(primary) if primary and isinstance(deltas.get(primary), dict) else {}
+    curve_review = effect.get("curve_engineering_review") if isinstance(effect.get("curve_engineering_review"), dict) else {}
+    pareto_decision = effect.get("pareto_decision") if isinstance(effect.get("pareto_decision"), dict) else {}
     entries = archive.get("entries") if isinstance(archive.get("entries"), list) else []
     best = archive.get("best_entry") if isinstance(archive.get("best_entry"), dict) else {}
     lines = ["", "## Sentaurus Patch Lineage", ""]
@@ -523,6 +525,8 @@ def sentaurus_patch_lines(state: dict[str, Any]) -> list[str]:
             f"- 选择原因：{format_value(effect.get('rationale'))}。",
             f"- 主指标：`{format_value(primary)}`，baseline `{format_value(primary_delta.get('baseline'))}` -> mutation `{format_value(primary_delta.get('mutation'))}`。",
             f"- 改善指标：`{format_value(effect.get('improved_metrics') or [])}`；退化指标：`{format_value(effect.get('regressed_metrics') or [])}`。",
+            f"- 曲线判断：{format_value(curve_review.get('summary'))}。",
+            f"- Pareto 决策：`{format_value(pareto_decision.get('action'))}`；review required `{format_value(pareto_decision.get('review_required'))}`。",
             f"- 下一步建议：`{format_value(effect.get('recommended_next_action'))}`；下一目标：`{format_value(effect.get('recommended_next_target'))}`。",
             f"- Lineage：`{len(entries)}` 轮；Pareto front `{format_value(archive.get('pareto_front') or [])}`；当前 best `{format_value(best.get('lineage_id'))}`。",
         ]

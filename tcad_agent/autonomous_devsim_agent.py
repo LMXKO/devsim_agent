@@ -17,6 +17,7 @@ from tcad_agent.engineering_objectives import EngineeringConstraint, Engineering
 from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
+from tcad_agent.public_sources import build_public_evidence_dossier
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.repair_executor import run_repair_executor
 from tcad_agent.sentaurus_lineage import SentaurusLineageArchiveRequest, build_sentaurus_lineage_archive
@@ -255,6 +256,14 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
     now = utc_timestamp()
     cancel_file = request.cancel_file or agent_dir / "cancel.requested"
     heartbeat_path = request.heartbeat_path or agent_dir / "heartbeat.json"
+    route = route_device_goal(request.goal_text)
+    template_ids = [route.template.template_id] if route.template else []
+    simulator = "sentaurus" if request.sentaurus_project_path else "devsim"
+    public_evidence = build_public_evidence_dossier(
+        request.goal_text,
+        simulator=simulator,
+        template_ids=template_ids,
+    ).model_dump(mode="json")
     return AutonomousDevsimAgentState(
         status=DevsimAgentStatus.RUNNING if request.execute else DevsimAgentStatus.PLANNED,
         agent_id=agent_id,
@@ -274,6 +283,8 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
                 "deterministic_fallback": request.allow_llm_fallback,
                 "repair_agent_policy": request.use_agent_policy,
             },
+            "public_evidence_gate_done": True,
+            "public_evidence_dossier": public_evidence,
         },
         next_action="choose first DEVSIM agent tool call",
     )
@@ -676,6 +687,7 @@ def build_agent_context(
         "latest_observation": observe_state(state.latest_state_path),
         "agent_hypothesis_tree": state.checkpoint.get("agent_hypothesis_tree"),
         "checkpoint": state.checkpoint,
+        "public_evidence_dossier": state.checkpoint.get("public_evidence_dossier"),
         "recent_steps": compact_steps(state),
         "initial_tool_name": request.initial_tool_name,
         "initial_request": request.initial_request,
@@ -729,6 +741,8 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
         },
         "guardrails": [
             "一次只选择一个下一步 action。",
+            "规划 simulator-specific patch 前必须使用 public_evidence_dossier 与本地 deck/state 证据；没有证据时先补证据而不是猜。",
+            "public_evidence_dossier 只能作为公开方法/来源索引，不能当成私有 PDK、商业模型或校准 deck。",
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
@@ -1685,6 +1699,7 @@ def execute_action(
         state.checkpoint["engineering_objectives_path"] = result.get("output_path")
         state.checkpoint["pareto_front"] = result.get("pareto_front") or []
         state.checkpoint["best_candidate"] = result.get("best_candidate")
+        state.checkpoint["engineering_objective_decision"] = result.get("decision") or {}
         if "Sentaurus patch" in action.reason:
             state.checkpoint["sentaurus_tradeoff_review_source_path"] = source
             state.checkpoint["sentaurus_tradeoff_review"] = result
@@ -1774,6 +1789,7 @@ def execute_action(
         state.checkpoint["experiment_design_runs"] = int(state.checkpoint.get("experiment_design_runs") or 0) + 1
         state.checkpoint["sentaurus_patch_plan_path"] = result.get("output_path")
         state.checkpoint["sentaurus_patch_plan_source_path"] = source
+        state.checkpoint["sentaurus_public_evidence_dossier"] = result.get("public_evidence_dossier") or state.checkpoint.get("public_evidence_dossier")
         state.checkpoint["experiment_design_source_path"] = source
         state.checkpoint["sentaurus_patch_candidates"] = result.get("candidates") or []
         selected = result.get("selected_candidate")

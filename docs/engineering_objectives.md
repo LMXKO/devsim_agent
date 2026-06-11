@@ -29,6 +29,7 @@ The tool writes `engineering_objectives.json` with:
 - feasible/infeasible status;
 - weighted score;
 - Pareto-front flag;
-- best feasible candidate.
+- best feasible candidate;
+- `decision`, a machine-readable continue/review/reject/collect-more-evidence summary for the agent loop.
 
 The experiment index records this file as `engineering_objective_evaluation`.

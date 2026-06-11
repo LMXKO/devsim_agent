@@ -30,6 +30,33 @@ class PublicTCADCategory(BaseModel):
     signoff_boundary: str
 
 
+class PublicEvidenceSourceCard(BaseModel):
+    source_id: str
+    name: str
+    url: str
+    source_type: str
+    access: str
+    useful_for: list[str] = Field(default_factory=list)
+    evidence_status: str = "registry_reference"
+    usage_notes: list[str] = Field(default_factory=list)
+
+
+class PublicEvidenceDossier(BaseModel):
+    schema_version: str = "actsoft.tcad.public_evidence_dossier.v1"
+    status: str
+    goal_text: str
+    simulator: str | None = None
+    selected_category_ids: list[str] = Field(default_factory=list)
+    source_cards: list[PublicEvidenceSourceCard] = Field(default_factory=list)
+    convergence_strategy: list[str] = Field(default_factory=list)
+    required_models: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    signoff_boundaries: list[str] = Field(default_factory=list)
+    live_lookup_queries: list[str] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
+    evidence_gate: dict[str, Any] = Field(default_factory=dict)
+
+
 def public_tcad_sources() -> list[PublicTCADSource]:
     return [
         PublicTCADSource(
@@ -467,3 +494,130 @@ def validate_public_tcad_registry() -> list[str]:
         if not category.promotion_steps:
             errors.append(f"category_without_promotion_steps:{category.category_id}")
     return errors
+
+
+def normalized_goal_text(goal_text: str) -> str:
+    return goal_text.lower().replace("_", " ").replace("-", " ")
+
+
+CATEGORY_GOAL_KEYWORDS: dict[str, list[str]] = {
+    "mosfet_id_dibl": ["mosfet", "id-vg", "idvg", "id-vd", "idvd", "dibl", "vth", "threshold", "subthreshold", "gm"],
+    "diode_sbd_breakdown": ["diode", "sbd", "schottky", "reverse leakage", "breakdown", "bv", "耐压", "击穿", "漏电"],
+    "ldmos_igbt_power": ["ldmos", "igbt", "power mos", "power device", "ron", "field plate", "guard ring", "trench", "终端"],
+    "gan_algan_hemt": ["gan", "algan", "hemt", "2deg", "polarization", "current collapse", "dynamic ron"],
+    "bjt_gummel_output": ["bjt", "gummel", "beta", "early voltage", "collector"],
+    "finfet_soi_variability": ["finfet", "soi", "nanosheet", "variability", "density gradient", "quantum"],
+    "moscap_capacitance": ["moscap", "mos capacitor", "c-v", "cv", "capacitance", "oxide", "cox", "flatband"],
+}
+
+
+def score_public_category(goal_text: str, category: PublicTCADCategory, template_ids: list[str] | None = None) -> int:
+    text = normalized_goal_text(goal_text)
+    score = 0
+    if template_ids and any(template_id in category.device_template_ids for template_id in template_ids):
+        score += 8
+    for token in CATEGORY_GOAL_KEYWORDS.get(category.category_id, []):
+        if token in text:
+            score += 3
+    for task in category.tasks:
+        if normalized_goal_text(task) in text:
+            score += 2
+    for metric in category.metrics:
+        if normalized_goal_text(metric) in text:
+            score += 1
+    return score
+
+
+def select_public_evidence_categories(
+    goal_text: str,
+    *,
+    template_ids: list[str] | None = None,
+    max_categories: int = 3,
+) -> list[PublicTCADCategory]:
+    scored = [
+        (score_public_category(goal_text, category, template_ids), category)
+        for category in public_tcad_categories()
+    ]
+    selected = [category for score, category in sorted(scored, key=lambda item: item[0], reverse=True) if score > 0]
+    if selected:
+        return selected[:max_categories]
+    if template_ids:
+        matched = [
+            category
+            for category in public_tcad_categories()
+            if any(template_id in category.device_template_ids for template_id in template_ids)
+        ]
+        if matched:
+            return matched[:max_categories]
+    return []
+
+
+def source_card(source: PublicTCADSource, category_ids: list[str], simulator: str | None) -> PublicEvidenceSourceCard:
+    notes = [
+        "Use as public methodology or runnable open-source seed only; do not vendor private decks or commercial model files.",
+        "Verify any simulator-specific operation against local project evidence before applying semantic patches.",
+    ]
+    if simulator and simulator.lower() == "sentaurus":
+        notes.append("Sentaurus entries are adapter evidence only; real execution requires a user-owned licensed installation/profile.")
+    return PublicEvidenceSourceCard(
+        source_id=source.source_id,
+        name=source.name,
+        url=source.url,
+        source_type=source.source_type,
+        access=source.access,
+        useful_for=source.useful_for,
+        usage_notes=[*notes, *source.notes[:2], f"Selected by categories: {', '.join(category_ids)}."],
+    )
+
+
+def build_public_evidence_dossier(
+    goal_text: str,
+    *,
+    simulator: str | None = None,
+    template_ids: list[str] | None = None,
+    max_categories: int = 3,
+) -> PublicEvidenceDossier:
+    categories = select_public_evidence_categories(
+        goal_text,
+        template_ids=template_ids,
+        max_categories=max_categories,
+    )
+    category_ids = [category.category_id for category in categories]
+    source_ids = list(dict.fromkeys(source_id for category in categories for source_id in category.source_ids))
+    sources = _sources_by_id()
+    cards = [source_card(sources[source_id], category_ids, simulator) for source_id in source_ids if source_id in sources]
+    convergence = list(dict.fromkeys(item for category in categories for item in category.convergence_strategy))
+    required_models = list(dict.fromkeys(item for category in categories for item in category.required_models))
+    metrics = list(dict.fromkeys(item for category in categories for item in category.metrics))
+    signoff = [category.signoff_boundary for category in categories]
+    queries = []
+    if categories:
+        queries.extend(f"{category.display_name} TCAD public example extraction convergence" for category in categories)
+    if simulator:
+        queries.append(f"{simulator} public training command extraction curve CSV")
+    return PublicEvidenceDossier(
+        status="completed" if cards else "no_public_category_match",
+        goal_text=goal_text,
+        simulator=simulator,
+        selected_category_ids=category_ids,
+        source_cards=cards,
+        convergence_strategy=convergence,
+        required_models=required_models,
+        metrics=metrics,
+        signoff_boundaries=signoff,
+        live_lookup_queries=queries,
+        guardrails=[
+            "Do not infer proprietary deck syntax from public summaries.",
+            "Do not copy Sentaurus software, license strings, PDKs, calibrated model files, or private decks into the repository.",
+            "For any operation not covered by local deck IR plus public evidence, pause or require live lookup before patch execution.",
+            "Treat fake/contract backends as interface validation only, not physics evidence.",
+        ],
+        evidence_gate={
+            "gate": "public_evidence_before_patch_or_signoff",
+            "mode": "registry_seeded_offline_with_live_lookup_plan",
+            "passed": bool(cards),
+            "requires_live_lookup_for_new_operations": True,
+            "source_count": len(cards),
+            "category_count": len(categories),
+        },
+    )

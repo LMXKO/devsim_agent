@@ -1017,6 +1017,8 @@ def autonomous_sentaurus_lineage_panel(state: dict[str, Any], base_dir: Path) ->
     if not any([effect, archive, patches]):
         return ""
     patch_text = patch_summary_text(patches) or "N/A"
+    curve_review = effect.get("curve_engineering_review") if isinstance(effect.get("curve_engineering_review"), dict) else {}
+    pareto_decision = effect.get("pareto_decision") if isinstance(effect.get("pareto_decision"), dict) else {}
     entries = archive.get("entries") if isinstance(archive.get("entries"), list) else []
     best = archive.get("best_entry") if isinstance(archive.get("best_entry"), dict) else {}
     links = " ".join(
@@ -1037,8 +1039,10 @@ def autonomous_sentaurus_lineage_panel(state: dict[str, Any], base_dir: Path) ->
         <div class="mini"><span>Primary metric</span><strong>{h(effect.get('primary_metric') or 'N/A')}</strong></div>
         <div class="mini"><span>Next target</span><strong>{h(effect.get('recommended_next_target') or 'N/A')}</strong></div>
         <div class="mini"><span>Lineage</span><strong>{h(len(entries))} runs, best {h(best.get('lineage_id') or 'N/A')}</strong></div>
+        <div class="mini"><span>Pareto</span><strong>{h(pareto_decision.get('action') or 'N/A')}</strong></div>
       </div>
       <div class="meta">{h(effect.get('rationale') or '')}</div>
+      <div class="meta">{h(curve_review.get('summary') or '')}</div>
       <div>{links or 'No Sentaurus lineage links yet.'}</div>
     </section>
 """.strip()
