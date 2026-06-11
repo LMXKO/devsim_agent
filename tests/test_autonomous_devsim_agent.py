@@ -14,6 +14,7 @@ from tcad_agent.autonomous_devsim_agent import (
     deterministic_action,
     observe_state,
     run_autonomous_devsim_agent,
+    state_needs_repair_before_signoff_planning,
 )
 from tcad_agent.evidence_lookup import PublicEvidenceLookupResult
 from tcad_agent.llm import LLMConfig
@@ -582,6 +583,20 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(calls, ["benchmark", "objectives"])
         self.assertEqual(state.checkpoint["engineering_objectives_path"], str(self.root / "objectives.json"))
         self.assertEqual(state.checkpoint["pareto_front"][0]["candidate_id"], "objective_passed")
+
+    def test_signoff_gap_suspicious_state_continues_to_planning(self) -> None:
+        observation = {
+            "quality_status": "suspicious",
+            "issue_codes": ["power_mos_2d_layout_signoff_gaps"],
+            "metrics": {"signoff_gaps": ["mesh_convergence", "golden_or_measured_correlation"]},
+        }
+
+        self.assertFalse(state_needs_repair_before_signoff_planning(observation))
+        self.assertTrue(
+            state_needs_repair_before_signoff_planning(
+                {"quality_status": "suspicious", "issue_codes": ["current_not_monotonic"], "metrics": {}}
+            )
+        )
 
     def test_agent_plans_and_executes_curve_guided_mutation_refinement(self) -> None:
         baseline_dir = self.root / "runs" / "baseline_power"

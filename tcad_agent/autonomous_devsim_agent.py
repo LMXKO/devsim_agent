@@ -523,6 +523,33 @@ def observe_state(path_value: str | None) -> dict[str, Any]:
     }
 
 
+SIGNOFF_GAP_WARNING_CODES = {
+    "power_mos_2d_layout_signoff_gaps",
+    "power_mosfet_signoff_missing_evidence",
+    "compact_baseline_not_signoff_evidence",
+    "deck_signoff_convergence_evidence_missing",
+    "deck_signoff_golden_evidence_missing",
+    "tool_convergence_evidence_missing",
+    "golden_or_measured_correlation_missing",
+}
+
+
+def state_needs_repair_before_signoff_planning(observation: dict[str, Any]) -> bool:
+    quality_status = str(observation.get("quality_status") or "").lower()
+    if quality_status == "failed":
+        return True
+    if quality_status != "suspicious":
+        return False
+    issue_codes = {str(code) for code in observation.get("issue_codes") or [] if code}
+    metrics = observation.get("metrics") if isinstance(observation.get("metrics"), dict) else {}
+    has_signoff_gap = bool(metrics.get("signoff_gaps")) or any(
+        token in code for code in issue_codes for token in ["signoff", "golden", "convergence"]
+    )
+    if has_signoff_gap and (not issue_codes or issue_codes.issubset(SIGNOFF_GAP_WARNING_CODES)):
+        return False
+    return True
+
+
 def dashboard_supported(path_value: str | None) -> bool:
     if not path_value:
         return False
@@ -1078,7 +1105,7 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             request={"allow_high_risk": request.allow_user_confirmation_actions},
             reason="Latest state is a Sentaurus run; plan verified semantic deck patches from the natural-language goal before generic repair/reporting.",
         )
-    if quality_status in {"failed", "suspicious"}:
+    if state_needs_repair_before_signoff_planning(observation):
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
             source_state_path=state.latest_state_path,

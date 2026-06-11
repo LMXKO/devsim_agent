@@ -164,7 +164,8 @@ def run_power_mosfet_signoff(request: PowerMOSFETSignoffRequest) -> PowerMOSFETS
             baseline = run_extended_device_sweep(ExtendedDeviceRequest.model_validate(baseline_request))
             baseline_state_path = state_path_for_extended_result(baseline)
             artifacts["baseline_state"] = baseline_state_path
-            artifacts.update({f"baseline_{key}": value for key, value in (baseline.final_summary.get("artifacts") or {}).items()})
+            baseline_summary = baseline.final_summary or {}
+            artifacts.update({f"baseline_{key}": value for key, value in (baseline_summary.get("artifacts") or {}).items()})
             benchmark = run_physical_benchmark(Path(baseline_state_path), output_path=run_dir / "physical_benchmark.json")
             benchmark_payload = benchmark.model_dump(mode="json")
             artifacts["physical_benchmark"] = benchmark.benchmark_path or str(run_dir / "physical_benchmark.json")

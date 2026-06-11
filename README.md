@@ -139,6 +139,12 @@ Validate long-run behavior:
 python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --validation-id autonomous_e2e
 ```
 
+Run only the natural-language Power MOSFET marathon:
+
+```bash
+python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --scenario-id natural_language_power_marathon
+```
+
 Generate a dashboard or report:
 
 ```bash

@@ -99,6 +99,27 @@ class PowerMOSFETSignoffTest(unittest.TestCase):
         self.assertEqual(plan.selected_candidate.action_kind, "plan_mutation_refinement")
         self.assertEqual(plan.curve_engineering_review["decision"], "continue_refine")
 
+    def test_failed_baseline_without_summary_keeps_original_failure_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "failed_baseline"
+            run_dir.mkdir()
+            fake_baseline = Mock()
+            fake_baseline.run_dir = run_dir
+            fake_baseline.final_summary = None
+            with patch("tcad_agent.power_mosfet_signoff.run_extended_device_sweep", return_value=fake_baseline):
+                with patch("tcad_agent.power_mosfet_signoff.run_physical_benchmark", side_effect=RuntimeError("baseline unavailable")):
+                    state = run_power_mosfet_signoff(
+                        PowerMOSFETSignoffRequest(
+                            run_id="failed_baseline_signoff",
+                            run_root=Path(tmp),
+                            execute=True,
+                            run_convergence=False,
+                        )
+                    )
+
+        self.assertEqual(state.status, "failed")
+        self.assertEqual(state.failure_reason, "baseline unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()

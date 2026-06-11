@@ -16,11 +16,15 @@ from tcad_agent.autonomous_devsim_agent import (
     DevsimAgentStatus,
     run_autonomous_devsim_agent,
 )
+from tcad_agent.agent_cockpit import generate_agent_cockpit
+from tcad_agent.agent_goal_router import AgentGoalRouteRequest, route_agent_goal
 from tcad_agent.experiment_index import list_records, rebuild_index
 from tcad_agent.physical_benchmark import run_physical_benchmark
+from tcad_agent.power_mosfet_signoff import PowerMOSFETSignoffRequest, run_power_mosfet_signoff
 from tcad_agent.run_queue import (
     QueueStatus,
     claim_next_items,
+    default_runner_registry as queue_default_runner_registry,
     enqueue_run,
     get_item,
     recover_owner_running_items,
@@ -770,6 +774,227 @@ def scenario_sentaurus_autonomous_refinement(
     )
 
 
+def scenario_natural_language_power_marathon(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    for generated in ["agent_tools", "agents", "cockpit", "runs", "signoff", "signoff_baselines"]:
+        target = scenario_dir / generated
+        if target.exists():
+            shutil.rmtree(target)
+    goal = "AI 长时间自主操作 DEVSIM/Sentaurus 完成功率器件 BV/Ron/漏电/field peak 优化任务"
+    route_path = scenario_dir / "agent_goal_route.json"
+    route = route_agent_goal(
+        AgentGoalRouteRequest(
+            goal_text=goal,
+            execute=True,
+            max_steps=max(request.agent_max_steps, 8),
+            run_root=scenario_dir / "route",
+        ),
+        output_path=route_path,
+    )
+    initial_request = dict(route.autonomous_request.get("initial_request") or {})
+    initial_request.update(
+        {
+            "device_type": "power_mosfet_bv_ron",
+            "fidelity": "devsim_2d_field_plate",
+            "evidence_level": "tcad_executable",
+            "run_id": "marathon_power_2d",
+            "run_root": str(scenario_dir / "agent_tools"),
+            "start": 0.0,
+            "stop": -20.0,
+            "step": 10.0,
+            "quality_min_points": 3,
+            "timeout_seconds": 180.0,
+        }
+    )
+    agent_payload = dict(route.autonomous_request)
+    agent_payload.update(
+        {
+            "goal_text": goal,
+            "agent_id": "natural_language_power_marathon_agent",
+            "agent_root": scenario_dir / "agents",
+            "execute": True,
+            "use_llm": False,
+            "allow_llm_fallback": request.allow_llm_fallback,
+            "max_steps": max(request.agent_max_steps, 8),
+            "initial_tool_name": "extended_device_sweep",
+            "initial_request": initial_request,
+            "require_capability_audit": True,
+            "enable_experiment_design": True,
+            "max_experiment_design_rounds": 1,
+            "auto_execute_experiment_design": True,
+            "generate_report": False,
+            "generate_dashboard": False,
+        }
+    )
+    signoff_calls: list[dict[str, Any]] = []
+
+    def fast_power_signoff(tool_request: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(tool_request)
+        signoff_calls.append(payload)
+        payload["execute"] = True
+        payload["run_convergence"] = False
+        payload["run_root"] = str(scenario_dir / "signoff")
+        baseline_request = dict(payload.get("baseline_request") or {})
+        baseline_request["run_id"] = f"{payload.get('run_id') or 'marathon_power_signoff'}_baseline_fast"
+        baseline_request["run_root"] = str(scenario_dir / "signoff_baselines")
+        payload["baseline_request"] = baseline_request
+        state = run_power_mosfet_signoff(PowerMOSFETSignoffRequest.model_validate(payload))
+        return state.model_dump(mode="json")
+
+    registry = queue_default_runner_registry()
+    registry["power_mosfet_signoff"] = fast_power_signoff
+    state = run_autonomous_devsim_agent(AutonomousDevsimRequest.model_validate(agent_payload), runner_registry=registry)
+
+    agent_state_path = Path(state.agent_dir) / "autonomous_devsim_agent_state.json"
+    final_state = Path(str(state.final_state_path or state.latest_state_path))
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    signoff_gate = final_payload.get("signoff_gate") if isinstance(final_payload.get("signoff_gate"), dict) else {}
+    candidates = state.checkpoint.get("agent_experiment_candidates") if isinstance(state.checkpoint.get("agent_experiment_candidates"), list) else []
+    candidate_ids = [item.get("candidate_id") for item in candidates if isinstance(item, dict)]
+    selected = state.checkpoint.get("pending_agent_experiment_candidate")
+    selected_candidate_id = selected.get("candidate_id") if isinstance(selected, dict) else None
+    tool_names = [step.action.get("tool_name") for step in state.steps if isinstance(step.action, dict)]
+
+    cockpit_state_path = scenario_dir / "cockpit" / "marathon_cockpit_state.json"
+    cockpit_payload = json.loads(agent_state_path.read_text(encoding="utf-8")) if agent_state_path.exists() else {}
+    cockpit_payload["signoff_gate"] = signoff_gate
+    summary = cockpit_payload.get("final_summary") if isinstance(cockpit_payload.get("final_summary"), dict) else {}
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    if final_state.exists():
+        artifacts["power_mosfet_signoff_state"] = str(final_state.resolve())
+    if final_payload.get("artifacts"):
+        artifacts.update({f"signoff_{key}": value for key, value in final_payload.get("artifacts", {}).items()})
+    summary["artifacts"] = artifacts
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+    if signoff_gate:
+        metrics["signoff_verdict"] = signoff_gate.get("verdict")
+    summary["metrics"] = metrics
+    cockpit_payload["final_summary"] = summary
+    cockpit_payload["next_action"] = final_payload.get("next_action") or cockpit_payload.get("next_action")
+    write_json(cockpit_state_path, cockpit_payload)
+    cockpit = generate_agent_cockpit(cockpit_state_path, scenario_dir / "cockpit" / "agent_cockpit.html")
+
+    resume_state_path = write_curve_state(
+        scenario_dir / "runs" / "resume_probe" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="resume_probe",
+        request={"run_id": "resume_probe"},
+        quality_status="passed",
+        metrics={"leakage_current_a": 1e-9, "curve_points": 3},
+        csv_rows=["0,0,0", "-5,5e-10,5e4", "-10,1e-9,1e5"],
+    )
+    resume_calls: list[dict[str, Any]] = []
+
+    def resume_runner(tool_request: dict[str, Any]) -> dict[str, Any]:
+        resume_calls.append(dict(tool_request))
+        return {"status": "completed", "state_path": str(resume_state_path)}
+
+    planned = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Plan a resume-boundary probe before executing.",
+            agent_id="marathon_resume_probe",
+            agent_root=scenario_dir / "agents",
+            execute=False,
+            use_llm=False,
+            max_steps=3,
+            initial_tool_name="extended_device_sweep",
+            initial_request={"run_id": "resume_probe"},
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={"extended_device_sweep": resume_runner},
+    )
+    resumed = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Plan a resume-boundary probe before executing.",
+            agent_id="marathon_resume_probe",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            resume=True,
+            use_llm=False,
+            max_steps=5,
+            initial_tool_name="extended_device_sweep",
+            initial_request={"run_id": "resume_probe"},
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={
+            "extended_device_sweep": resume_runner,
+            "physical_benchmark": lambda tool_request: {"status": "completed", "benchmark_path": str(scenario_dir / "resume_benchmark.json")},
+        },
+    )
+    cancel_file = scenario_dir / "agents" / "marathon_cancel_probe" / "cancel.requested"
+    cancel_file.parent.mkdir(parents=True, exist_ok=True)
+    cancel_file.write_text("cancel\n", encoding="utf-8")
+    cancelled = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Cancel before starting an autonomous tool step.",
+            agent_id="marathon_cancel_probe",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=2,
+            initial_tool_name="extended_device_sweep",
+            cancel_file=cancel_file,
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={},
+    )
+
+    step_kinds = [step.kind for step in state.steps]
+    assertions = [
+        require(route.status == "matched", "natural-language agent goal routed to an executable template"),
+        require(route.selected_template_id == "power_mosfet_bv_ron", "router selected the Power MOSFET/LDMOS BV/Ron template"),
+        require(route.primary_tool == "autonomous_devsim_agent", "router selected the autonomous agent as primary tool"),
+        require(state.status == DevsimAgentStatus.COMPLETED, "natural-language marathon agent completed"),
+        require(DevsimAgentActionKind.AUDIT_CAPABILITY in step_kinds, "agent audited capability coverage before running"),
+        require("extended_device_sweep" in tool_names, "agent executed the DEVSIM 2D Power MOSFET runner"),
+        require("power_mosfet_signoff" in tool_names, "agent selected and executed the Power MOSFET signoff runner"),
+        require("power_mosfet_2d_signoff_evidence_pack" in candidate_ids, "experiment design exposed the Power MOSFET signoff evidence candidate"),
+        require(selected_candidate_id == "power_mosfet_2d_signoff_evidence_pack", "signoff evidence candidate became the selected pending candidate"),
+        require(bool(signoff_calls), "signoff runner was invoked by the autonomous agent"),
+        require(signoff_gate.get("verdict") == "conditional", "signoff gate remained conditional until convergence/golden evidence is supplied"),
+        require(cockpit.status == "completed", "minimal cockpit was generated from marathon lineage"),
+        require(planned.status == DevsimAgentStatus.PLANNED, "resume probe first persisted a planned action"),
+        require(resumed.status == DevsimAgentStatus.COMPLETED, "resume probe completed from prior planned state"),
+        require(cancelled.status == DevsimAgentStatus.CANCELLED, "cancel probe stopped at an agent step boundary"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_goal_route", route_path),
+            artifact("agent_state", agent_state_path),
+            artifact("heartbeat", state.heartbeat_path),
+            artifact("final_signoff_state", final_state),
+            artifact("cockpit_state", cockpit_state_path),
+            artifact("agent_cockpit", cockpit.output_path, kind="html"),
+            artifact("resume_agent_state", Path(planned.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("cancel_heartbeat", cancelled.heartbeat_path),
+        ],
+        {
+            "route_template": route.selected_template_id,
+            "route_runner": route.selected_runner_id,
+            "initial_fidelity": initial_request.get("fidelity"),
+            "agent_status": state.status,
+            "step_kinds": [kind.value for kind in step_kinds],
+            "tool_names": [name for name in tool_names if name],
+            "experiment_candidate_ids": candidate_ids,
+            "selected_experiment_candidate": selected_candidate_id,
+            "signoff_call_count": len(signoff_calls),
+            "signoff_verdict": signoff_gate.get("verdict"),
+            "cockpit_sections": cockpit.sections,
+            "resume_status": resumed.status,
+            "resume_tool_calls": len(resume_calls),
+            "cancel_status": cancelled.status,
+        },
+    )
+
+
 def scenario_queue_confirmation_resume(
     scenario_dir: Path,
     request: LongRunValidationRequest,
@@ -978,6 +1203,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "agent_repair_report": ("Agent repairs suspicious curve and writes report", scenario_agent_repair_report),
     "mutation_refinement_multiround": ("Agent performs multi-round mutation refinement", scenario_mutation_refinement_multiround),
     "sentaurus_autonomous_refinement": ("Agent performs Sentaurus patch/effect/refinement lineage loop", scenario_sentaurus_autonomous_refinement),
+    "natural_language_power_marathon": (
+        "Natural-language goal drives Power MOSFET DEVSIM, signoff, cockpit, resume, and cancel",
+        scenario_natural_language_power_marathon,
+    ),
     "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
     "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),
     "real_autonomous_agent": ("Real LLM/DEVSIM autonomous agent run", scenario_real_autonomous_agent),
@@ -990,6 +1219,7 @@ DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
     "agent_repair_report",
     "mutation_refinement_multiround",
     "sentaurus_autonomous_refinement",
+    "natural_language_power_marathon",
     "queue_confirmation_resume",
     "queue_interruption_recovery",
 ]

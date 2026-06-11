@@ -48,6 +48,7 @@ class LongRunValidationTest(unittest.TestCase):
                 "agent_repair_report",
                 "mutation_refinement_multiround",
                 "sentaurus_autonomous_refinement",
+                "natural_language_power_marathon",
                 "queue_confirmation_resume",
                 "queue_interruption_recovery",
             },
@@ -67,6 +68,19 @@ class LongRunValidationTest(unittest.TestCase):
         )
         self.assertTrue(
             any(artifact["name"] == "report" and artifact["exists"] for artifact in scenario_by_id["agent_repair_report"]["artifacts"])
+        )
+        marathon = scenario_by_id["natural_language_power_marathon"]["details"]
+        self.assertEqual(marathon["route_template"], "power_mosfet_bv_ron")
+        self.assertEqual(marathon["initial_fidelity"], "devsim_2d_field_plate")
+        self.assertEqual(marathon["selected_experiment_candidate"], "power_mosfet_2d_signoff_evidence_pack")
+        self.assertEqual(marathon["signoff_verdict"], "conditional")
+        self.assertEqual(marathon["resume_status"], "completed")
+        self.assertEqual(marathon["cancel_status"], "cancelled")
+        self.assertTrue(
+            any(
+                artifact["name"] == "agent_cockpit" and artifact["exists"]
+                for artifact in scenario_by_id["natural_language_power_marathon"]["artifacts"]
+            )
         )
         self.assertEqual(
             scenario_by_id["queue_confirmation_resume"]["details"]["completed_status"],
