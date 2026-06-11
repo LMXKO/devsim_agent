@@ -16,6 +16,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", "--output-path", dest="output_path", type=Path, default=None)
     parser.add_argument("--max-candidates", type=int, default=8)
     parser.add_argument("--allow-high-risk", action="store_true")
+    parser.add_argument("--enable-live-lookup", action="store_true", help="Fetch registry public sources and include findings in the evidence dossier.")
+    parser.add_argument("--live-lookup-max-sources", type=int, default=6)
     return parser.parse_args()
 
 
@@ -28,6 +30,8 @@ def request_from_args(args: argparse.Namespace) -> SentaurusPatchPlannerRequest:
         output_path=args.output_path,
         max_candidates=args.max_candidates,
         allow_high_risk=args.allow_high_risk,
+        enable_live_lookup=args.enable_live_lookup,
+        live_lookup_max_sources=args.live_lookup_max_sources,
     )
 
 

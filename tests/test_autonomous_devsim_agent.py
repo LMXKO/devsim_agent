@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import tcad_agent.autonomous_devsim_agent as agent_mod
 from tcad_agent.autonomous_devsim_agent import (
     AutonomousDevsimAgentState,
     AutonomousDevsimRequest,
@@ -14,6 +15,7 @@ from tcad_agent.autonomous_devsim_agent import (
     observe_state,
     run_autonomous_devsim_agent,
 )
+from tcad_agent.evidence_lookup import PublicEvidenceLookupResult
 from tcad_agent.llm import LLMConfig
 
 
@@ -429,6 +431,56 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertTrue(state.checkpoint["deck_patch_unverified"])
         self.assertEqual(state.steps[-1].kind, DevsimAgentActionKind.ASK_USER)
 
+    def test_live_evidence_gap_pauses_before_tool_execution(self) -> None:
+        original_lookup = agent_mod.run_public_evidence_lookup
+
+        def fake_lookup(request: object) -> PublicEvidenceLookupResult:
+            return PublicEvidenceLookupResult(
+                status="completed_with_lookup_gaps",
+                goal_text="Sentaurus operation with missing public evidence",
+                simulator="sentaurus",
+                live=True,
+                source_ids=["sentaurus_quasistationary_training"],
+                failed_source_ids=["sentaurus_quasistationary_training"],
+                evidence_gate={
+                    "gate": "live_public_evidence_lookup",
+                    "mode": "live_fetch",
+                    "passed": False,
+                    "source_count": 1,
+                    "verified_count": 0,
+                    "failed_count": 1,
+                },
+            )
+
+        tool_calls: list[dict[str, object]] = []
+        agent_mod.run_public_evidence_lookup = fake_lookup
+        try:
+            request = AutonomousDevsimRequest(
+                goal_text="Sentaurus operation with missing public evidence",
+                agent_id="agent_live_gap",
+                agent_root=self.root / "agents",
+                execute=True,
+                use_llm=True,
+                enable_live_evidence_lookup=True,
+                initial_tool_name="pn_junction_iv_sweep",
+                generate_report=False,
+                generate_dashboard=False,
+            )
+
+            state = agent_mod.run_autonomous_devsim_agent(
+                request,
+                runner_registry={"pn_junction_iv_sweep": lambda request: tool_calls.append(request) or {"status": "completed"}},
+                llm_client=FakeAgentClient('{"action": {"kind": "run_tool", "tool_name": "pn_junction_iv_sweep"}}'),
+            )
+        finally:
+            agent_mod.run_public_evidence_lookup = original_lookup
+
+        self.assertEqual(state.status, DevsimAgentStatus.WAITING_FOR_USER)
+        self.assertEqual(tool_calls, [])
+        self.assertEqual(state.steps[-1].kind, DevsimAgentActionKind.ASK_USER)
+        self.assertEqual(state.steps[-1].action["request"]["gate"], "public_evidence_lookup")
+        self.assertFalse(state.checkpoint["public_evidence_lookup_gate_passed"])
+
     def test_capability_audit_records_coverage_work_package(self) -> None:
         request = AutonomousDevsimRequest(
             goal_text="GaN HEMT current collapse transient signoff",
@@ -449,6 +501,10 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertIn("capability_audit", state.checkpoint)
         self.assertIn("coverage_work_package", state.checkpoint)
         self.assertEqual(state.checkpoint["coverage_work_package"]["template_id"], "gan_hemt_id_bv")
+        self.assertIn("runner_promotion_plan", state.checkpoint)
+        self.assertTrue(Path(state.checkpoint["runner_promotion_plan_path"]).exists())
+        self.assertEqual(state.checkpoint["runner_promotion_plan"]["template_id"], "gan_hemt_id_bv")
+        self.assertIn("runner_contract", [stage["stage_id"] for stage in state.checkpoint["runner_promotion_plan"]["stages"]])
 
     def test_objective_evaluation_runs_before_success_when_requested(self) -> None:
         passed_state = self.write_tool_state("objective_passed", "passed")

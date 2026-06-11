@@ -15,6 +15,8 @@ from tcad_agent.deck_ir import parse_devsim_deck_file, write_semantic_deck_patch
 from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
 from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
+from tcad_agent.evidence_lookup import PublicEvidenceLookupRequest, run_public_evidence_lookup
+from tcad_agent.industrial_runner_promotion import build_industrial_runner_promotion_plan
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
 from tcad_agent.public_sources import build_public_evidence_dossier
@@ -124,6 +126,9 @@ class AutonomousDevsimRequest(BaseModel):
     use_llm: bool = True
     allow_llm_fallback: bool = True
     use_agent_policy: bool = True
+    enable_live_evidence_lookup: bool = False
+    live_evidence_max_sources: int = Field(default=6, ge=1, le=24)
+    allow_live_evidence_gaps: bool = False
     allow_user_confirmation_actions: bool = False
     supervisor_max_cycles: int = Field(default=3, ge=1)
     repair_max_rounds: int = Field(default=3, ge=1)
@@ -259,11 +264,31 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
     route = route_device_goal(request.goal_text)
     template_ids = [route.template.template_id] if route.template else []
     simulator = "sentaurus" if request.sentaurus_project_path else "devsim"
+    live_lookup_result: dict[str, Any] | None = None
+    if request.enable_live_evidence_lookup:
+        live_lookup = run_public_evidence_lookup(
+            PublicEvidenceLookupRequest(
+                goal_text=request.goal_text,
+                simulator=simulator,
+                template_ids=template_ids,
+                live=True,
+                max_sources=request.live_evidence_max_sources,
+                output_path=agent_dir / "public_evidence_lookup.json",
+            )
+        )
+        live_lookup_result = live_lookup.model_dump(mode="json")
     public_evidence = build_public_evidence_dossier(
         request.goal_text,
         simulator=simulator,
         template_ids=template_ids,
+        live_lookup_result=live_lookup_result,
     ).model_dump(mode="json")
+    live_lookup_gate = (
+        live_lookup_result.get("evidence_gate")
+        if isinstance(live_lookup_result, dict) and isinstance(live_lookup_result.get("evidence_gate"), dict)
+        else None
+    )
+    live_lookup_passed = bool(live_lookup_gate.get("passed")) if isinstance(live_lookup_gate, dict) else None
     return AutonomousDevsimAgentState(
         status=DevsimAgentStatus.RUNNING if request.execute else DevsimAgentStatus.PLANNED,
         agent_id=agent_id,
@@ -285,6 +310,8 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
             },
             "public_evidence_gate_done": True,
             "public_evidence_dossier": public_evidence,
+            "public_evidence_lookup": live_lookup_result,
+            "public_evidence_lookup_gate_passed": live_lookup_passed,
         },
         next_action="choose first DEVSIM agent tool call",
     )
@@ -832,6 +859,16 @@ def sentaurus_tool_request(request: AutonomousDevsimRequest) -> dict[str, Any]:
     return payload
 
 
+def live_evidence_lookup_gap(state: AutonomousDevsimAgentState) -> dict[str, Any] | None:
+    lookup = state.checkpoint.get("public_evidence_lookup")
+    if not isinstance(lookup, dict) or not lookup.get("live"):
+        return None
+    gate = lookup.get("evidence_gate")
+    if not isinstance(gate, dict) or bool(gate.get("passed")):
+        return None
+    return lookup
+
+
 def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> DevsimAgentAction:
     observation = observe_state(state.latest_state_path)
     quality_status = observation.get("quality_status")
@@ -841,6 +878,27 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             request={"goal_text": request.goal_text},
             reason="Audit device template coverage before treating the goal as executable TCAD work.",
         )
+    live_gap = live_evidence_lookup_gap(state)
+    if live_gap and not request.allow_live_evidence_gaps:
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.ASK_USER,
+            request={
+                "gate": "public_evidence_lookup",
+                "question": "Live public evidence lookup did not verify a source for this operation. Confirm before the agent continues.",
+                "lookup_status": live_gap.get("status"),
+                "source_ids": live_gap.get("source_ids") or [],
+                "failed_source_ids": live_gap.get("failed_source_ids") or [],
+                "evidence_gate": live_gap.get("evidence_gate") or {},
+            },
+            reason="Live public evidence lookup has gaps; pause instead of inventing simulator or process semantics.",
+        )
+    if live_gap and request.allow_live_evidence_gaps and not state.checkpoint.get("public_evidence_gap_override"):
+        state.checkpoint["public_evidence_gap_override"] = {
+            "accepted": True,
+            "accepted_at": utc_timestamp(),
+            "lookup_status": live_gap.get("status"),
+            "reason": "User allowed the agent to continue despite live public evidence gaps.",
+        }
     if request.source_deck_path and not state.checkpoint.get("deck_ingested"):
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.INGEST_DECK,
@@ -1130,6 +1188,9 @@ def decide_next_action(
         "fallback_used": True,
         "deterministic_action": fallback.model_dump(mode="json"),
     }
+    if fallback.kind == DevsimAgentActionKind.ASK_USER and fallback.request.get("gate") == "public_evidence_lookup":
+        decision["status"] = "hard_public_evidence_gate"
+        return fallback, decision
     if not request.use_llm:
         return fallback, decision
     chat_client = llm_client or LLMClient()
@@ -1556,6 +1617,16 @@ def execute_action(
                 "next_implementation_steps": route.template.next_implementation_steps,
                 "missing_capabilities": route.template.missing_capabilities,
             }
+            promotion_path = Path(state.agent_dir) / "runner_promotion_plan.json"
+            promotion = build_industrial_runner_promotion_plan(
+                state.goal_text,
+                template_id=route.template.template_id,
+                simulator="sentaurus" if request.sentaurus_project_path else "devsim",
+                live_lookup_result=state.checkpoint.get("public_evidence_lookup") if isinstance(state.checkpoint.get("public_evidence_lookup"), dict) else None,
+                output_path=promotion_path,
+            )
+            state.checkpoint["runner_promotion_plan_path"] = promotion.output_path
+            state.checkpoint["runner_promotion_plan"] = promotion.model_dump(mode="json")
         if route.template and not route.executable:
             state.checkpoint["runner_first_work_package"] = {
                 "template_id": route.template.template_id,

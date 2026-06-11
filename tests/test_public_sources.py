@@ -53,16 +53,31 @@ class PublicTCADSourcesTest(unittest.TestCase):
         self.assertIn("genius_tcad_open", {source["source_id"] for source in sources})
 
     def test_public_evidence_dossier_gates_agent_planning(self) -> None:
+        live_lookup = {
+            "status": "completed",
+            "verified_source_ids": ["sentaurus_quasistationary_training"],
+            "findings": [
+                {
+                    "source_id": "sentaurus_quasistationary_training",
+                    "status": "verified",
+                    "methodology_claims": ["sentaurus_quasistationary_step_control"],
+                }
+            ],
+        }
         dossier = build_public_evidence_dossier(
             "Use Sentaurus to reduce LDMOS leakage without hurting BV/Ron field plate tradeoffs.",
             simulator="sentaurus",
             template_ids=["power_mosfet_bv_ron"],
+            live_lookup_result=live_lookup,
         )
 
         self.assertEqual(dossier.status, "completed")
         self.assertIn("ldmos_igbt_power", dossier.selected_category_ids)
         self.assertTrue(dossier.evidence_gate["passed"])
         self.assertTrue(dossier.evidence_gate["requires_live_lookup_for_new_operations"])
+        self.assertEqual(dossier.live_lookup_status, "completed")
+        self.assertEqual(dossier.verified_source_ids, ["sentaurus_quasistationary_training"])
+        self.assertEqual(dossier.evidence_gate["live_verified_source_count"], 1)
         self.assertTrue(any(card.source_id == "sentaurus_quasistationary_training" for card in dossier.source_cards))
         self.assertTrue(any("licensed installation" in " ".join(card.usage_notes) for card in dossier.source_cards))
 

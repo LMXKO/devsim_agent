@@ -37,6 +37,8 @@ class DeviceTemplatesTest(unittest.TestCase):
         self.assertTrue(result.executable)
         self.assertTrue(result.runnable)
         self.assertTrue(result.signoff_ready)
+        self.assertTrue(result.runner_promotion_required)
+        self.assertIn("runner_contract", result.runner_promotion_stage_ids)
         self.assertEqual(result.template.support, TemplateSupport.EXECUTABLE)
         self.assertEqual(result.request_hint["fidelity"], "physics_1d")
         self.assertIn("TCAD evidence", result.message)
@@ -76,6 +78,8 @@ class DeviceTemplatesTest(unittest.TestCase):
         self.assertTrue(result.runnable)
         self.assertEqual(result.suggested_tool, "extended_device_sweep")
         self.assertEqual(result.capability_warnings, [])
+        self.assertTrue(result.runner_promotion_required)
+        self.assertIn("golden_correlation_and_signoff", result.runner_promotion_stage_ids)
 
 
 if __name__ == "__main__":

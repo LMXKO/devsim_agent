@@ -65,6 +65,8 @@ Useful options:
 - `--max-steps`: total autonomous tool steps before the agent fails closed;
 - `--no-llm`: use deterministic policy only;
 - `--no-llm-fallback`: fail instead of falling back when the model action is invalid;
+- `--enable-live-evidence-lookup`: fetch matched public registry URLs before planning; findings are written to `public_evidence_lookup.json` and merged into `checkpoint.public_evidence_dossier`;
+- `--allow-live-evidence-gaps`: continue only after an explicit operator decision when live lookup could not verify public evidence; the checkpoint records the override;
 - `--allow-user-confirmation-actions`: allow high-risk actions that would otherwise pause;
 - `--source-state-path`: resume from an existing TCAD state;
 - `--source-deck-path` and `--deck-patches-json`: parse and patch a user deck before running tools;
@@ -76,7 +78,7 @@ Useful options:
 - `--max-experiment-design-rounds`: cap automatic experiment-design rounds;
 - `--no-auto-experiment-design`: write the experiment-design work package without executing the selected candidate;
 - `--cancel-file` and `--heartbeat-path`: cooperate with external long-run controls;
-- `--require-capability-audit`: record executable/fidelity/signoff coverage before running;
+- `--require-capability-audit`: record executable/fidelity/signoff coverage before running, including a `runner_promotion_plan` for industrial or surrogate routes;
 - `--resume --agent-id ...`: resume an existing agent state.
 
 ## Queue Integration

@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic policy only.")
     parser.add_argument("--no-llm-fallback", action="store_true", help="Fail if the LLM action is invalid/unavailable.")
     parser.add_argument("--no-agent-repair-policy", action="store_true", help="Disable LLM repair policy inside repair_executor.")
+    parser.add_argument("--enable-live-evidence-lookup", action="store_true", help="Fetch registry public sources before planning.")
+    parser.add_argument("--live-evidence-max-sources", type=int, default=6)
+    parser.add_argument("--allow-live-evidence-gaps", action="store_true", help="Continue after an explicit live evidence lookup gap.")
     parser.add_argument("--allow-user-confirmation-actions", action="store_true")
     parser.add_argument("--supervisor-max-cycles", type=int, default=3)
     parser.add_argument("--repair-max-rounds", type=int, default=3)
@@ -104,6 +107,9 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         use_llm=not args.no_llm,
         allow_llm_fallback=not args.no_llm_fallback,
         use_agent_policy=not args.no_agent_repair_policy,
+        enable_live_evidence_lookup=args.enable_live_evidence_lookup,
+        live_evidence_max_sources=args.live_evidence_max_sources,
+        allow_live_evidence_gaps=args.allow_live_evidence_gaps,
         allow_user_confirmation_actions=args.allow_user_confirmation_actions,
         supervisor_max_cycles=args.supervisor_max_cycles,
         repair_max_rounds=args.repair_max_rounds,

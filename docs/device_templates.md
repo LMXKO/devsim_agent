@@ -26,7 +26,20 @@ python3.11 -m tcad_agent.tools.device_templates route \
 
 The route result includes the matched template, support state, suggested executable tool when available, default request hints, missing capabilities, and next implementation steps.
 It also includes `tcad_fidelity` and `signoff_workflow`, so downstream agents can tell a real TCAD evidence path from a compact planning route.
-For public-source seeding, route results can also include `public_source_category_ids`, `public_sources`, and `recommended_convergence`.
+For public-source seeding, route results can also include `public_source_category_ids`, `public_sources`, `recommended_convergence`, `runner_promotion_required`, and `runner_promotion_stage_ids`.
+
+## Runner Promotion
+
+Industrial `physics_1d`, compact, or planned routes can produce an explicit promotion work package:
+
+```bash
+python3.11 -m tcad_agent.tools.industrial_runner_promotion \
+  --goal "GaN HEMT current collapse and BV signoff" \
+  --template-id gan_hemt_id_bv \
+  --output /tmp/gan_runner_promotion.json
+```
+
+The plan breaks promotion into public-evidence/license gate, runner contract, geometry/mesh/model implementation, metric extraction, convergence/quality gates, golden correlation/signoff, and autonomous E2E validation. Capability audit in `autonomous_devsim_agent` writes the same package to `checkpoint.runner_promotion_plan`.
 
 ## Public Sources
 

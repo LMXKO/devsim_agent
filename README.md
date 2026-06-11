@@ -15,6 +15,7 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
 - Agent experiment design from benchmark gaps, curve evidence, deck mutations, and signoff evidence.
+- Live public evidence lookup with hard pause gates, plus runner-promotion work packages for new simulator/device operations.
 - Run queue, heartbeat, cancel token, approval pause/resume, and interruption recovery.
 - Minimal web cockpit for natural-language tasks, progress, artifacts, patch lineage, and conclusions.
 - Local Sentaurus adapter for licensed user environments, with verified semantic deck patches and lineage.
@@ -89,6 +90,13 @@ Route public device templates:
 ```bash
 python3.11 -m tcad_agent.tools.device_templates route \
   --goal "LDMOS BV and Ron tradeoff with field peak review"
+```
+
+Fetch public evidence and build an industrial runner-promotion work package:
+
+```bash
+python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
+python3.11 -m tcad_agent.tools.industrial_runner_promotion --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
 ```
 
 Validate long-run behavior:

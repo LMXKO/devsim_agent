@@ -63,6 +63,8 @@ class DeviceRouteResult(BaseModel):
     public_source_category_ids: list[str] = Field(default_factory=list)
     public_sources: list[dict[str, Any]] = Field(default_factory=list)
     recommended_convergence: list[str] = Field(default_factory=list)
+    runner_promotion_required: bool = False
+    runner_promotion_stage_ids: list[str] = Field(default_factory=list)
     message: str
 
 
@@ -479,6 +481,16 @@ def route_device_goal(goal_text: str) -> DeviceRouteResult:
         elif template.support == TemplateSupport.PLANNED:
             capability_warnings.append("该工业模板尚未实现可执行 TCAD runner、质量规则和 benchmark 证据链。")
             capability_warnings.extend(template.missing_capabilities[:3])
+        promotion_required = template.support != TemplateSupport.EXECUTABLE or template.tcad_fidelity.startswith("physics_1d")
+        promotion_stage_ids = [
+            "public_evidence_and_license_gate",
+            "runner_contract",
+            "geometry_mesh_model_implementation",
+            "metric_extraction",
+            "convergence_and_quality",
+            "golden_correlation_and_signoff",
+            "autonomous_e2e_validation",
+        ] if promotion_required else []
         return DeviceRouteResult(
             status=RouteStatus.MATCHED,
             goal_text=goal_text,
@@ -504,6 +516,8 @@ def route_device_goal(goal_text: str) -> DeviceRouteResult:
                 for source in public_sources_for_template(template.template_id)
             ],
             recommended_convergence=template.recommended_convergence,
+            runner_promotion_required=promotion_required,
+            runner_promotion_stage_ids=promotion_stage_ids,
             message=(
                 f"Matched {template.display_name}; use {template.executable_tool} as TCAD evidence."
                 if template.support == TemplateSupport.EXECUTABLE

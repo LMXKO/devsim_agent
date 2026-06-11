@@ -53,6 +53,9 @@ class PublicEvidenceDossier(BaseModel):
     metrics: list[str] = Field(default_factory=list)
     signoff_boundaries: list[str] = Field(default_factory=list)
     live_lookup_queries: list[str] = Field(default_factory=list)
+    live_lookup_status: str | None = None
+    live_evidence_findings: list[dict[str, Any]] = Field(default_factory=list)
+    verified_source_ids: list[str] = Field(default_factory=list)
     guardrails: list[str] = Field(default_factory=list)
     evidence_gate: dict[str, Any] = Field(default_factory=dict)
 
@@ -576,6 +579,7 @@ def build_public_evidence_dossier(
     simulator: str | None = None,
     template_ids: list[str] | None = None,
     max_categories: int = 3,
+    live_lookup_result: dict[str, Any] | None = None,
 ) -> PublicEvidenceDossier:
     categories = select_public_evidence_categories(
         goal_text,
@@ -595,6 +599,15 @@ def build_public_evidence_dossier(
         queries.extend(f"{category.display_name} TCAD public example extraction convergence" for category in categories)
     if simulator:
         queries.append(f"{simulator} public training command extraction curve CSV")
+    live_findings = []
+    verified_source_ids: list[str] = []
+    live_status = None
+    if isinstance(live_lookup_result, dict):
+        live_status = str(live_lookup_result.get("status") or "")
+        raw_findings = live_lookup_result.get("findings")
+        live_findings = [item for item in raw_findings if isinstance(item, dict)] if isinstance(raw_findings, list) else []
+        raw_verified = live_lookup_result.get("verified_source_ids")
+        verified_source_ids = [str(item) for item in raw_verified if item] if isinstance(raw_verified, list) else []
     return PublicEvidenceDossier(
         status="completed" if cards else "no_public_category_match",
         goal_text=goal_text,
@@ -606,6 +619,9 @@ def build_public_evidence_dossier(
         metrics=metrics,
         signoff_boundaries=signoff,
         live_lookup_queries=queries,
+        live_lookup_status=live_status,
+        live_evidence_findings=live_findings,
+        verified_source_ids=verified_source_ids,
         guardrails=[
             "Do not infer proprietary deck syntax from public summaries.",
             "Do not copy Sentaurus software, license strings, PDKs, calibrated model files, or private decks into the repository.",
@@ -619,5 +635,7 @@ def build_public_evidence_dossier(
             "requires_live_lookup_for_new_operations": True,
             "source_count": len(cards),
             "category_count": len(categories),
+            "live_lookup_status": live_status,
+            "live_verified_source_count": len(verified_source_ids),
         },
     )

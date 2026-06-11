@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.evidence_lookup import PublicEvidenceLookupRequest, run_public_evidence_lookup
 from tcad_agent.mutation_vocabulary import classify_mutation_variable, vocabulary_evidence_for
 from tcad_agent.public_sources import build_public_evidence_dossier
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
@@ -64,6 +65,8 @@ class SentaurusPatchPlannerRequest(BaseModel):
     output_path: Path | None = None
     max_candidates: int = Field(default=8, ge=1, le=24)
     allow_high_risk: bool = False
+    enable_live_lookup: bool = False
+    live_lookup_max_sources: int = Field(default=6, ge=1, le=24)
 
 
 @dataclass
@@ -606,7 +609,23 @@ def build_candidates(goal_text: str, state: dict[str, Any] | None, contexts: lis
 def plan_sentaurus_patches(request: SentaurusPatchPlannerRequest) -> SentaurusPatchPlan:
     source_state_path = str(request.source_state_path.expanduser().resolve()) if request.source_state_path else None
     state = load_final_state(source_state_path) if source_state_path else None
-    public_evidence = build_public_evidence_dossier(request.goal_text, simulator="sentaurus").model_dump(mode="json")
+    live_lookup_result = None
+    if request.enable_live_lookup:
+        live_lookup = run_public_evidence_lookup(
+            PublicEvidenceLookupRequest(
+                goal_text=request.goal_text,
+                simulator="sentaurus",
+                live=True,
+                max_sources=request.live_lookup_max_sources,
+                output_path=(request.output_path.with_name("sentaurus_public_evidence_lookup.json") if request.output_path else None),
+            )
+        )
+        live_lookup_result = live_lookup.model_dump(mode="json")
+    public_evidence = build_public_evidence_dossier(
+        request.goal_text,
+        simulator="sentaurus",
+        live_lookup_result=live_lookup_result,
+    ).model_dump(mode="json")
     try:
         project_root, contexts, warnings = resolve_decks(request, state)
         if not contexts:

@@ -8,6 +8,8 @@ Use it from the CLI:
 python3.11 -m tcad_agent.tools.device_templates sources
 python3.11 -m tcad_agent.tools.device_templates sources --kind categories
 python3.11 -m tcad_agent.tools.device_templates sources --kind sources
+python3.11 -m tcad_agent.tools.public_evidence_lookup --goal "Sentaurus LDMOS BV field plate" --simulator sentaurus
+python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "Sentaurus LDMOS BV field plate" --simulator sentaurus
 ```
 
 The registry intentionally keeps license and access notes close to each source. Open-source examples can be wrapped by adapters when the license is compatible. Vendor training pages and public PDFs are methodology references only unless their terms explicitly allow project import.
@@ -23,7 +25,7 @@ The dossier contains:
 - live lookup queries for operations not already covered by local deck IR or registry evidence;
 - guardrails that forbid copying proprietary software, licenses, PDKs, calibrated model files, private decks, or treating fake backends as physics evidence.
 
-This gate is intentionally registry-seeded and deterministic for tests. In real runs, if a requested simulator operation or device workflow is outside the local deck evidence plus registry coverage, the agent should perform live lookup or pause instead of inventing syntax or process semantics.
+This gate is registry-seeded and deterministic by default. `public_evidence_lookup --live` fetches registry URLs, extracts titles/snippets, and labels methodology claims such as Sentaurus step-control patterns or DEVSIM example coverage. In real runs, if a requested simulator operation or device workflow is outside the local deck evidence plus verified public evidence, the agent should perform live lookup or pause instead of inventing syntax or process semantics.
 
 ## Seven Seed Categories
 
