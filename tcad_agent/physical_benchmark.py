@@ -997,6 +997,29 @@ def benchmark_extended_device(metrics: dict[str, Any], params: dict[str, Any]) -
                 )
             )
         if fidelity == "physics_1d":
+            if metrics.get("tcad_solver_invoked"):
+                checks.append(
+                    pass_check(
+                        "power_mos_devsim_solver_invoked",
+                        "Power MOSFET runner invoked DEVSIM for the 1D drift/body electrostatic stack.",
+                        {
+                            "solver_backend": metrics.get("solver_backend"),
+                            "tcad_runner": metrics.get("tcad_runner"),
+                        },
+                    )
+                )
+            failed_bias_points = float_or_none(metrics.get("devsim_bias_failed_points"))
+            if failed_bias_points and failed_bias_points > 0:
+                checks.append(
+                    warn_check(
+                        "power_mos_devsim_bias_convergence_gaps",
+                        "Some high-voltage DEVSIM bias points did not converge and used extraction fallback; refine bias stepping or mesh before signoff.",
+                        {
+                            "failed_bias_points": metrics.get("devsim_bias_failed_points"),
+                            "solved_bias_points": metrics.get("devsim_bias_solved_points"),
+                        },
+                    )
+                )
             if metrics.get("impact_ionization_coupled"):
                 checks.append(
                     pass_check(

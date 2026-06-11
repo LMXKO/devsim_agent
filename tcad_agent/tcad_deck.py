@@ -383,6 +383,7 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
             "source_doping_cm3": compact_number(request.get("power_mos_source_doping_cm3")),
             "body_doping_cm3": compact_number(request.get("power_mos_body_doping_cm3")),
             "drift_region_doping_cm3": compact_number(request.get("power_mos_drift_region_doping_cm3")),
+            "drain_doping_cm3": compact_number(request.get("power_mos_drain_doping_cm3")),
             "implant_dose_cm2": compact_number(request.get("power_mos_implant_dose_cm2")),
         }
         geometry = {
@@ -399,10 +400,19 @@ def extended_device_deck(goal_text: str, request: dict[str, Any]) -> dict[str, A
             "refined_regions": ["body_drift_junction", "drain_drift_junction", "field_plate_edge"],
             "expected_followup": "high_voltage_field_peak_mesh_convergence",
         }
+    simulator = (
+        "devsim"
+        if fidelity == "devsim_1d"
+        else "devsim_1d_power_mos_runner"
+        if device_type == "power_mosfet_bv_ron" and fidelity == "physics_1d"
+        else "physics_1d_model"
+        if fidelity == "physics_1d"
+        else "compact_model"
+    )
     return {
         "device_family": device_type,
         "dimensionality": "1d" if is_executable_physics else "compact",
-        "simulator": "devsim" if fidelity == "devsim_1d" else "physics_1d_model" if fidelity == "physics_1d" else "compact_model",
+        "simulator": simulator,
         "intent_zh": "扩展器件模板仿真与关键指标提取",
         "regions": regions,
         "contacts": contacts,

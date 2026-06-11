@@ -41,6 +41,16 @@ python3.11 -m tcad_agent.tools.industrial_runner_promotion \
 
 The plan breaks promotion into public-evidence/license gate, runner contract, geometry/mesh/model implementation, metric extraction, convergence/quality gates, golden correlation/signoff, and autonomous E2E validation. Capability audit in `autonomous_devsim_agent` writes the same package to `checkpoint.runner_promotion_plan`.
 
+Power MOSFET / LDMOS now exposes the first promoted real runner:
+
+```bash
+python3.11 -m tcad_agent.tools.extended_device_sweep \
+  --device-type power_mosfet_bv_ron \
+  --fidelity physics_1d
+```
+
+The runner invokes DEVSIM through `tcad_agent.examples.power_mosfet_1d.run`, emits `runner_contract.json`, CSV, SVG, log, summary, and DEVSIM export artifacts, and records high-voltage bias convergence gaps as warning evidence. It is a 1D drift/body electrostatic runner with auditable field-plate/termination extraction, not a final 2D/3D layout signoff substitute.
+
 ## Public Sources
 
 The seven public source categories are recorded in `tcad_agent.public_sources` and documented in [tcad_public_sources.md](tcad_public_sources.md). They cover:

@@ -32,6 +32,9 @@ class IndustrialRunnerPromotionPlan(BaseModel):
     current_tool: str | None = None
     current_fidelity: str | None = None
     promotion_required: bool = False
+    real_runner_available: bool = False
+    real_runner_id: str | None = None
+    real_runner_command: str | None = None
     evidence_dossier: dict[str, Any] = Field(default_factory=dict)
     stages: list[RunnerPromotionStage] = Field(default_factory=list)
     acceptance_tests: list[str] = Field(default_factory=list)
@@ -69,8 +72,27 @@ def source_ids_for_template(template: DeviceTaskTemplate) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def real_runner_descriptor(template: DeviceTaskTemplate) -> dict[str, Any]:
+    if template.template_id == "power_mosfet_bv_ron":
+        return {
+            "available": True,
+            "runner_id": "power_mosfet_bv_ron_devsim_1d",
+            "command": (
+                "python3.11 -m tcad_agent.tools.extended_device_sweep "
+                "--device-type power_mosfet_bv_ron --fidelity physics_1d"
+            ),
+            "notes": [
+                "Invokes tcad_agent.examples.power_mosfet_1d.run through extended_device_sweep.",
+                "DEVSIM solves the 1D source/body/drift/drain electrostatic stack.",
+                "High-voltage bias convergence gaps are recorded as warning evidence for agent repair.",
+            ],
+        }
+    return {"available": False, "runner_id": None, "command": None, "notes": []}
+
+
 def promotion_stages(template: DeviceTaskTemplate, goal_text: str, evidence_dossier: dict[str, Any]) -> list[RunnerPromotionStage]:
     source_ids = source_ids_for_template(template)
+    runner = real_runner_descriptor(template)
     category_steps: list[str] = []
     for category in public_categories_for_template(template.template_id):
         category_steps.extend(str(item) for item in category.get("promotion_steps", []) if item)
@@ -94,16 +116,23 @@ def promotion_stages(template: DeviceTaskTemplate, goal_text: str, evidence_doss
         RunnerPromotionStage(
             stage_id="runner_contract",
             title="Runner Contract",
+            status="completed" if runner["available"] else "planned",
             rationale="Create a stable agent-callable interface before physics implementation expands.",
             actions=[
-                f"Define request/state schema for `{template.template_id}` using current tool `{template.executable_tool or 'new_runner'}` as the seed.",
+                f"Use real runner `{runner['runner_id']}`."
+                if runner["available"]
+                else f"Define request/state schema for `{template.template_id}` using current tool `{template.executable_tool or 'new_runner'}` as the seed.",
                 "Declare required inputs, sweep axes, output CSV columns, log/artifact globs, and cancellation behavior.",
                 "Add fixture manifests for fake/interface-only execution when proprietary tools are unavailable.",
+                f"Smoke command: {runner['command']}" if runner["available"] else "Implement the first real runner command.",
             ],
             required_artifacts=["runner_contract.json", "fixture_manifest.json", "state_schema.json"],
             acceptance_criteria=[
                 "The runner can produce a deterministic state.json with metrics, artifacts, quality_report, and final_summary.",
                 "The contract can run without private software when using fake/interface-only fixtures.",
+                "Real runner artifacts include CSV, log, summary, runner_contract, and solver invocation evidence."
+                if runner["available"]
+                else "Real runner command is available from the agent registry.",
             ],
             source_ids=source_ids,
         ),
@@ -215,9 +244,11 @@ def build_industrial_runner_promotion_plan(
         ).model_dump(mode="json")
         required = promotion_required(template)
         stages = promotion_stages(template, goal_text, dossier)
+        runner = real_runner_descriptor(template)
         tests = [
             f"python3.11 -m tcad_agent.tools.device_templates route --goal {json.dumps(goal_text, ensure_ascii=False)}",
             "python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal <goal> --template-id <template>",
+            runner["command"] if runner["available"] else "python3.11 -m tcad_agent.tools.extended_device_sweep --device-type <device> --fidelity physics_1d",
             "python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --validation-id <runner>_promotion",
             "python3.11 -m unittest tests.test_physical_benchmark tests.test_autonomous_devsim_agent",
         ]
@@ -230,10 +261,19 @@ def build_industrial_runner_promotion_plan(
             current_tool=template.executable_tool,
             current_fidelity=template.tcad_fidelity,
             promotion_required=required,
+            real_runner_available=bool(runner["available"]),
+            real_runner_id=runner["runner_id"],
+            real_runner_command=runner["command"],
             evidence_dossier=dossier,
             stages=stages,
             acceptance_tests=tests,
-            next_action="implement_runner_contract" if required else "run_nominal_convergence_and_golden_correlation",
+            next_action=(
+                "run_real_runner_and_close_convergence_gaps"
+                if runner["available"] and required
+                else "implement_runner_contract"
+                if required
+                else "run_nominal_convergence_and_golden_correlation"
+            ),
         )
     except Exception as exc:
         plan = IndustrialRunnerPromotionPlan(status="failed", goal_text=goal_text, template_id=template_id, failure_reason=str(exc))

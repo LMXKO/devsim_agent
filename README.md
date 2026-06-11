@@ -11,6 +11,7 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 - Natural-language task routing into structured TCAD specs and executable requests.
 - Long-running `autonomous_devsim_agent` loop with observe/diagnose/plan/act steps.
 - DEVSIM-backed examples for PN, diode/BV, MOS C-V, MOSFET Id, Schottky, BJT, power-device planning, and related sweeps.
+- DEVSIM-backed Power MOSFET/LDMOS 1D drift/BV runner with runner contract, mesh/field artifacts, and convergence-gap evidence.
 - User DEVSIM deck ingestion, source IR extraction, semantic patching, diffs, and guarded execution.
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
@@ -97,6 +98,12 @@ Fetch public evidence and build an industrial runner-promotion work package:
 ```bash
 python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
 python3.11 -m tcad_agent.tools.industrial_runner_promotion --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
+```
+
+Run the promoted Power MOSFET/LDMOS runner:
+
+```bash
+python3.11 -m tcad_agent.tools.extended_device_sweep --device-type power_mosfet_bv_ron --fidelity physics_1d
 ```
 
 Validate long-run behavior:

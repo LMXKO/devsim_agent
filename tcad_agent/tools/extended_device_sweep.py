@@ -122,6 +122,7 @@ class ExtendedDeviceRequest(BaseModel):
     power_mos_gate_oxide_thickness_nm: float = Field(default=50.0, gt=0.0)
     power_mos_body_doping_cm3: float = Field(default=1.0e17, gt=0.0)
     power_mos_source_doping_cm3: float = Field(default=1.0e19, gt=0.0)
+    power_mos_drain_doping_cm3: float = Field(default=1.0e19, gt=0.0)
     power_mos_junction_mesh_spacing_um: float = Field(default=0.01, gt=0.0)
     power_mos_guard_ring_spacing_um: float = Field(default=1.0, gt=0.0)
     power_mos_junction_depth_um: float = Field(default=0.35, gt=0.0)
@@ -969,6 +970,117 @@ def run_schottky_devsim_1d(
     return rows, metrics, artifacts, log_text
 
 
+def run_power_mosfet_devsim_1d(
+    request: ExtendedDeviceRequest,
+    run_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, str], str]:
+    default_start, default_stop, default_step = sweep_defaults(request.device_type)
+    start = request.start if request.start is not None else default_start
+    stop = request.stop if request.stop is not None else default_stop
+    step = request.step if request.step is not None else default_step
+    inner_root = run_dir / "devsim_runs"
+    inner_run_id = "power_mosfet_1d"
+    command = [
+        sys.executable,
+        "-m",
+        "tcad_agent.examples.power_mosfet_1d.run",
+        "--start",
+        str(start),
+        "--stop",
+        str(stop),
+        "--step",
+        str(step),
+        "--drift-region-length-um",
+        str(request.power_mos_drift_region_length_um),
+        "--drift-region-doping-cm3",
+        str(request.power_mos_drift_region_doping_cm3),
+        "--body-doping-cm3",
+        str(request.power_mos_body_doping_cm3),
+        "--source-doping-cm3",
+        str(request.power_mos_source_doping_cm3),
+        "--drain-doping-cm3",
+        str(request.power_mos_drain_doping_cm3),
+        "--junction-depth-um",
+        str(request.power_mos_junction_depth_um),
+        "--implant-dose-cm2",
+        str(request.power_mos_implant_dose_cm2),
+        "--field-plate-length-um",
+        str(request.power_mos_field_plate_length_um),
+        "--guard-ring-spacing-um",
+        str(request.power_mos_guard_ring_spacing_um),
+        "--trench-corner-radius-um",
+        str(request.power_mos_trench_corner_radius_um),
+        "--gate-oxide-thickness-nm",
+        str(request.power_mos_gate_oxide_thickness_nm),
+        "--critical-field-v-per-cm",
+        str(request.power_mos_critical_field_v_per_cm),
+        "--electron-mobility-cm2-v-s",
+        str(request.power_mos_electron_mobility_cm2_v_s),
+        "--channel-resistance-ohm-cm2",
+        str(request.power_mos_channel_resistance_ohm_cm2),
+        "--carrier-lifetime-s",
+        str(request.power_mos_carrier_lifetime_s),
+        "--leakage-floor-a",
+        str(request.power_mos_leakage_floor_a),
+        "--trap-density-cm2",
+        str(request.power_mos_trap_density_cm2),
+        "--area-cm2",
+        str(request.area_cm2),
+        "--temperature-k",
+        str(request.temperature_k),
+        "--junction-mesh-spacing-um",
+        str(request.power_mos_junction_mesh_spacing_um),
+        "--run-id",
+        inner_run_id,
+        "--run-root",
+        str(inner_root),
+    ]
+    if request.power_mos_drift_region_lifetime_s is not None:
+        command.extend(["--drift-region-lifetime-s", str(request.power_mos_drift_region_lifetime_s)])
+    completed = run_cancellable(
+        command,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=request.timeout_seconds,
+        check=False,
+    )
+    runner_result = parse_runner_stdout(completed.stdout)
+    runner_dir = Path(runner_result["run_dir"]) if runner_result and runner_result.get("run_dir") else inner_root / "power_mosfet_1d" / inner_run_id
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Power MOSFET DEVSIM runner failed: "
+            f"returncode={completed.returncode}; stdout={tail(completed.stdout)}; stderr={tail(completed.stderr)}"
+        )
+    summary_path = runner_dir / "summary.json"
+    csv_path = runner_dir / "sweep.csv"
+    if not summary_path.exists() or not csv_path.exists():
+        raise FileNotFoundError(f"Power MOSFET DEVSIM runner did not produce expected artifacts under {runner_dir}")
+    runner_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    rows = read_csv_rows(csv_path)
+    metrics = dict(runner_summary.get("metrics") or {})
+    metrics.setdefault("device_type", request.device_type.value)
+    metrics.setdefault("fidelity", ExtendedDeviceFidelity.PHYSICS_1D.value)
+    metrics["tcad_solver_invoked"] = True
+    metrics["tcad_runner"] = "tcad_agent.examples.power_mosfet_1d.run"
+    artifacts = {
+        "devsim_csv": str(csv_path.resolve()),
+        "tecplot": str((runner_dir / "device_tecplot.dat").resolve()),
+        "devsim_log": str((runner_dir / "devsim.log").resolve()),
+        "devsim_summary": str(summary_path.resolve()),
+        "runner_contract": str((runner_dir / "runner_contract.json").resolve()),
+    }
+    log_text = "\n".join(
+        [
+            "extended_device_sweep launched Power MOSFET DEVSIM 1D runner",
+            "command=" + json.dumps(command),
+            "stdout_tail=" + tail(completed.stdout),
+            "stderr_tail=" + tail(completed.stderr),
+        ]
+    )
+    return rows, metrics, artifacts, log_text
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
@@ -1069,6 +1181,18 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
         if float(metrics.get("breakdown_voltage_v") or 0.0) >= 0:
             issues.append({"code": "power_mos_breakdown_wrong_sign", "severity": "error"})
         if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
+            if not metrics.get("tcad_solver_invoked"):
+                issues.append({"code": "power_mos_devsim_solver_not_invoked", "severity": "error"})
+            failed_bias_points = int(metrics.get("devsim_bias_failed_points") or 0)
+            if failed_bias_points:
+                issues.append(
+                    {
+                        "code": "power_mos_devsim_bias_points_not_converged",
+                        "severity": "warning",
+                        "failed_bias_points": failed_bias_points,
+                        "solved_bias_points": metrics.get("devsim_bias_solved_points"),
+                    }
+                )
             if not metrics.get("impact_ionization_coupled"):
                 issues.append({"code": "power_mos_impact_ionization_not_coupled", "severity": "error"})
             max_field = float(metrics.get("max_electric_field_v_per_cm") or 0.0)
@@ -1135,6 +1259,8 @@ def quality_report(request: ExtendedDeviceRequest, metrics: dict[str, Any], rows
             if status == "passed" and request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D
             else "accept compact extended-device result as a planning baseline"
             if status == "passed"
+            else "review physics-coupled extended-device warnings; refine bias stepping/mesh before signoff"
+            if request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D
             else "review compact extended-device warnings before using this result as evidence"
         ),
         "evidence_level": request.evidence_level,
@@ -1171,6 +1297,8 @@ def run_extended_device_sweep(request: ExtendedDeviceRequest) -> ExtendedDeviceR
         extra_artifacts: dict[str, str] = {}
         if request.fidelity == ExtendedDeviceFidelity.DEVSIM_1D:
             rows, metrics, extra_artifacts, log_text = run_schottky_devsim_1d(request, run_dir)
+        elif request.device_type == ExtendedDeviceType.POWER_MOSFET_BV_RON and request.fidelity == ExtendedDeviceFidelity.PHYSICS_1D:
+            rows, metrics, extra_artifacts, log_text = run_power_mosfet_devsim_1d(request, run_dir)
         else:
             rows, metrics = simulate_device(request)
             log_text = (

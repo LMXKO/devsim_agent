@@ -75,6 +75,7 @@ class TCADDeckSpecTest(unittest.TestCase):
 
         targets = {mutation["target"] for mutation in deck["planned_mutations"]}
         self.assertEqual(deck["device_family"], "power_mosfet_bv_ron")
+        self.assertEqual(deck["simulator"], "devsim_1d_power_mos_runner")
         self.assertEqual(targets, {"field_plate", "drift_doping", "lifetime"})
         self.assertEqual(deck["physics_models"]["carrier_lifetime_s"], 1e-6)
         compact = compact_tcad_deck_spec(deck)

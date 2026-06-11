@@ -46,6 +46,24 @@ class IndustrialRunnerPromotionTest(unittest.TestCase):
         self.assertTrue(any("polarization" in " ".join(stage.actions).lower() for stage in plan.stages))
         self.assertTrue(any("long_run_validation" in item for item in plan.acceptance_tests))
 
+    def test_power_mosfet_plan_exposes_real_devsim_runner(self) -> None:
+        plan = build_industrial_runner_promotion_plan(
+            "Power MOSFET LDMOS BV Ron field peak",
+            template_id="power_mosfet_bv_ron",
+            simulator="devsim",
+        )
+
+        self.assertEqual(plan.status, "completed")
+        self.assertTrue(plan.promotion_required)
+        self.assertTrue(plan.real_runner_available)
+        self.assertEqual(plan.real_runner_id, "power_mosfet_bv_ron_devsim_1d")
+        self.assertIn("extended_device_sweep", plan.real_runner_command)
+        self.assertNotIn("run_id", plan.real_runner_command)
+        self.assertEqual(plan.next_action, "run_real_runner_and_close_convergence_gaps")
+        stages = {stage.stage_id: stage for stage in plan.stages}
+        self.assertEqual(stages["runner_contract"].status, "completed")
+        self.assertTrue(any("power_mosfet_bv_ron_devsim_1d" in action for action in stages["runner_contract"].actions))
+
 
 if __name__ == "__main__":
     unittest.main()
