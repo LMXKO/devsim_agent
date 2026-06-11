@@ -4,7 +4,7 @@
 
 > AI autonomously operates DEVSIM-backed TCAD tools over many steps until it produces useful engineering evidence, asks for a required confirmation, or exhausts its budget.
 
-It is broader than the older PN-only `tools/autonomous_loop.py`. The old loop still exists as a narrow checkpointed runner for legacy PN tasks. The new runtime is an agent-first tool controller that can call registered TCAD tools, repair executor, physical benchmark, objective/Pareto evaluator, deck IR/semantic patch utilities, report/conclusion generation, and dashboard generation. The checkpoint records `agent_control`, `agent_decision_ledger`, and `agent_hypothesis_tree` so long runs remain auditable.
+It is broader than the older PN-only `tools/autonomous_loop.py`. The old loop still exists as a narrow checkpointed runner for legacy PN tasks. The new runtime is an agent-first tool controller that can call registered TCAD tools, repair executor, physical benchmark, objective/Pareto evaluator, deck IR/semantic patch utilities, Power MOSFET signoff workflow, external Sentaurus runner contracts, report/conclusion generation, and minimal cockpit generation. The checkpoint records `agent_control`, `agent_decision_ledger`, and `agent_hypothesis_tree` so long runs remain auditable.
 
 ## Loop Shape
 
@@ -21,7 +21,7 @@ Supported actions:
 
 - `audit_capability`: route the goal through the device-template capability catalog and record executable/fidelity/signoff gaps;
 - `run_supervisor`: route a natural-language goal into existing supported tools;
-- `run_tool`: run a registered TCAD runner such as `pn_junction_iv_sweep`, `mos_capacitor_cv_sweep`, `mosfet_2d_id_sweep`, `diode_breakdown_leakage_sweep`, `extended_device_sweep`, or industrial aliases such as `power_mosfet_bv_ron_2d_runner`;
+- `run_tool`: run a registered TCAD runner such as `pn_junction_iv_sweep`, `mos_capacitor_cv_sweep`, `mosfet_2d_id_sweep`, `diode_breakdown_leakage_sweep`, `extended_device_sweep`, `power_mosfet_signoff`, `industrial_external_tcad_runner`, or industrial aliases such as `power_mosfet_bv_ron_2d_runner`;
 - `run_repair_executor`: repair a failed or suspicious state with the repair agent policy and deterministic fallback;
 - `run_physical_benchmark`: gate physics, capability boundary, convergence, and measured/golden evidence;
 - `evaluate_objectives`: evaluate objectives, constraints, best candidate, and Pareto front before continuing;
@@ -36,6 +36,15 @@ Supported actions:
 - `ask_user`: stop for high-risk confirmation.
 
 When an OpenAI-compatible model supports native tool/function calling, the agent exposes the dynamic runner registry as tool schemas and includes the industrial runner registry in context. If tool calling is unavailable, it falls back to the structured JSON action protocol.
+
+For broad natural-language requests, use `agent_goal_router` first:
+
+```bash
+python3.11 -m tcad_agent.tools.agent_goal_router \
+  --goal "AI 长时间自主操作 DEVSIM/Sentaurus 完成功率器件优化任务"
+```
+
+The router emits the selected template, preferred runner, autonomous request, Sentaurus external-workspace gate when needed, and the evidence plan.
 
 ## CLI
 
@@ -114,6 +123,8 @@ The runtime is agent-first, but not unrestricted:
 
 - `tool_convergence` when mesh/model/bias convergence is missing;
 - `golden_curve_comparison` when a measured or golden curve path is available;
+- `power_mosfet_signoff` when a completed Power MOSFET 2D field-plate run still has mesh/golden/process evidence gaps;
+- `plan_mutation_refinement` when baseline-vs-mutation overlay/Pareto evidence says a direction helped and should be refined;
 - `run_repair_executor` when quality or benchmark checks are failed/suspicious;
 - mutation probes when the state exposes `tcad_deck_mutations`.
 

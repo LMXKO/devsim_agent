@@ -278,6 +278,9 @@ class TCADDeckSpecTest(unittest.TestCase):
         )
 
         self.assertTrue(result.all_patches_verified)
+        self.assertTrue(result.round_trip_verified)
+        self.assertTrue(result.source_section_index)
+        self.assertEqual(result.patch_lineage[0]["section"], "geometry")
         self.assertIn("def build_device(tox_nm=45, drain_stop=20):", result.patched_source)
         self.assertEqual(result.verified_patches[0]["reason"], "function_default")
 
@@ -289,6 +292,8 @@ class TCADDeckSpecTest(unittest.TestCase):
         )
 
         self.assertFalse(result.all_patches_verified)
+        self.assertTrue(result.round_trip_verified)
+        self.assertIn("unverified_fallback_append_present", result.round_trip_warnings)
         self.assertEqual(len(result.verified_patches), 0)
         self.assertEqual(len(result.unverified_patches), 1)
         self.assertEqual(result.applied_patches[0]["semantic_status"], "unverified_fallback_append")

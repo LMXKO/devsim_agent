@@ -635,6 +635,7 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
 
 def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.adaptive_optimizer import AdaptiveOptimizationRequest, run_adaptive_optimization
+    from tcad_agent.agent_cockpit import generate_agent_cockpit
     from tcad_agent.autonomous_devsim_agent import AutonomousDevsimRequest, run_autonomous_devsim_agent
     from tcad_agent.conclusion import generate_experiment_conclusion
     from tcad_agent.engineering_objectives import (
@@ -642,11 +643,13 @@ def default_runner_registry() -> dict[str, Runner]:
         EngineeringObjective,
         evaluate_engineering_objectives,
     )
+    from tcad_agent.industrial_external_runner import IndustrialExternalRunnerRequest, run_industrial_external_runner
     from tcad_agent.mesh_convergence import MeshConvergenceRequest, run_mesh_convergence
     from tcad_agent.mission_agent import run_mission_agent
     from tcad_agent.multidim_optimizer import MultiDimOptimizationRequest, run_multidim_optimization
     from tcad_agent.parameter_sweep import ParameterSweepRequest, run_parameter_sweep
     from tcad_agent.physical_benchmark import run_physical_benchmark
+    from tcad_agent.power_mosfet_signoff import PowerMOSFETSignoffRequest, run_power_mosfet_signoff
     from tcad_agent.dashboard import generate_experiment_dashboard
     from tcad_agent.reporting import generate_experiment_report
     from tcad_agent.schottky_calibration import SchottkyCalibrationRequest, run_schottky_calibration
@@ -817,6 +820,13 @@ def default_runner_registry() -> dict[str, Runner]:
         output_path = Path(str(request["output_path"])) if request.get("output_path") else None
         return generate_experiment_conclusion(Path(str(source)), output_path).model_dump(mode="json")
 
+    def agent_cockpit_runner(request: dict[str, Any]) -> dict[str, Any]:
+        source = request.get("source") or request.get("state") or request.get("source_state_path")
+        if not source:
+            raise ValueError("agent cockpit queue item requires source/state")
+        output_path = Path(str(request["output_path"])) if request.get("output_path") else None
+        return generate_agent_cockpit(Path(str(source)), output_path).model_dump(mode="json")
+
     registry: dict[str, Runner] = {
         "supervisor": supervisor_runner,
         "mission_agent": mission_runner,
@@ -838,6 +848,9 @@ def default_runner_registry() -> dict[str, Runner]:
         "gan_hemt_id_bv_runner": extended_device_alias("gan_hemt_id_bv", "physics_1d"),
         "sic_power_diode_bv_leakage_runner": extended_device_alias("sic_power_diode_bv_leakage", "physics_1d"),
         "igbt_output_turnoff_runner": extended_device_alias("igbt_output_turnoff", "physics_1d"),
+        "industrial_external_tcad_runner": lambda request: result_to_dict(
+            run_industrial_external_runner(IndustrialExternalRunnerRequest.model_validate(request))
+        ),
         "schottky_iv_calibration": schottky_calibration_runner,
         "golden_curve_comparison": golden_curve_runner,
         "tool_convergence": lambda request: result_to_dict(
@@ -849,8 +862,12 @@ def default_runner_registry() -> dict[str, Runner]:
         "multidim_optimizer": multidim_optimizer_runner,
         "engineering_objectives": engineering_objectives_runner,
         "physical_benchmark": physical_benchmark_runner,
+        "power_mosfet_signoff": lambda request: result_to_dict(
+            run_power_mosfet_signoff(PowerMOSFETSignoffRequest.model_validate(request))
+        ),
         "experiment_report": experiment_report_runner,
         "experiment_dashboard": experiment_dashboard_runner,
+        "agent_cockpit": agent_cockpit_runner,
         "experiment_conclusion": experiment_conclusion_runner,
         "sentaurus_run": lambda request: result_to_dict(
             run_sentaurus(SentaurusRunRequest.model_validate(request))

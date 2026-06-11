@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tcad_agent.curve_diagnostics import compare_state_mutation_effect
 from tcad_agent.mutation_refinement import state_mutations, state_request
 from tcad_agent.physical_benchmark import PhysicalBenchmarkResult, run_physical_benchmark
 from tcad_agent.repair_strategy import curve_guided_mutation_value, mutation_target, next_mutation_value
@@ -35,6 +36,8 @@ class AgentExperimentDesignPlan(BaseModel):
     benchmark_path: str | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
     signoff_verdict: str | None = None
+    curve_engineering_review: dict[str, Any] = Field(default_factory=dict)
+    mutation_effect_analysis: dict[str, Any] = Field(default_factory=dict)
     candidates: list[AgentExperimentCandidate] = Field(default_factory=list)
     selected_candidate: AgentExperimentCandidate | None = None
     failure_reason: str | None = None
@@ -231,6 +234,119 @@ def repair_candidate(source_state_path: Path, state: dict[str, Any], benchmark: 
     )
 
 
+def mutation_effect_from_state(source_state_path: Path, state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    existing = state.get("mutation_effect_analysis") or state.get("sentaurus_mutation_effect_analysis")
+    if isinstance(existing, dict) and existing:
+        return existing
+    baseline = (
+        request.get("repair_baseline_state_path")
+        or request.get("repair_source_state_path")
+        or state.get("repair_baseline_state_path")
+        or state.get("baseline_state_path")
+    )
+    if not baseline:
+        return {}
+    try:
+        overlay = source_state_path.parent / "agent_experiment_baseline_mutation_overlay.svg"
+        return compare_state_mutation_effect(Path(str(baseline)), source_state_path, overlay_output_path=overlay).model_dump(mode="json")
+    except Exception:
+        return {}
+
+
+def curve_review_from_effect(effect: dict[str, Any]) -> dict[str, Any]:
+    if not effect:
+        return {}
+    baseline_shape = effect.get("baseline_shape") or {}
+    mutation_shape = effect.get("mutation_shape") or {}
+    overlay = effect.get("curve_overlay") or {}
+    pareto = effect.get("pareto_decision") or effect.get("pareto_summary") or {}
+    return {
+        "decision": effect.get("decision"),
+        "primary_metric": effect.get("primary_metric"),
+        "primary_improved": effect.get("primary_improved"),
+        "worth_continuing": effect.get("worth_continuing"),
+        "improved_metrics": effect.get("improved_metrics") or [],
+        "regressed_metrics": effect.get("regressed_metrics") or [],
+        "tradeoff_violations": effect.get("tradeoff_violations") or [],
+        "baseline_knee_x": baseline_shape.get("knee_x"),
+        "mutation_knee_x": mutation_shape.get("knee_x"),
+        "baseline_field_peak_x": baseline_shape.get("field_peak_x"),
+        "mutation_field_peak_x": mutation_shape.get("field_peak_x"),
+        "overlay_svg": effect.get("overlay_svg_path") or overlay.get("overlay_svg"),
+        "pareto": pareto,
+    }
+
+
+def refinement_candidate_from_effect(source_state_path: Path, effect: dict[str, Any]) -> AgentExperimentCandidate | None:
+    if not effect:
+        return None
+    decision = str(effect.get("decision") or "")
+    target = effect.get("recommended_next_target") or effect.get("mutation_target")
+    if decision in {"continue_refine", "continue", "accept_and_refine"} or effect.get("worth_continuing"):
+        return AgentExperimentCandidate(
+            candidate_id="refine_effective_mutation_direction",
+            action_kind="plan_mutation_refinement",
+            score=0.94,
+            source_state_path=str(source_state_path),
+            evidence_gap="curve_effect_refinement",
+            reason="Baseline/mutation curve comparison says this direction helped; generate a smaller follow-up patch instead of restarting from generic rules.",
+            expected_effect=f"Refine {target or 'the effective mutation target'} while keeping Pareto regressions visible.",
+            request={},
+            risk_notes=[f"decision={decision}", f"target={target}"],
+        )
+    if decision in {"blocked_for_pareto_review", "reject_candidate"} or effect.get("tradeoff_violations"):
+        return AgentExperimentCandidate(
+            candidate_id="pareto_review_before_more_patches",
+            action_kind="ask_user",
+            score=0.91,
+            source_state_path=str(source_state_path),
+            evidence_gap="pareto_or_constraint_review",
+            reason="Curve comparison found tradeoffs; pause for Pareto/constraint review before applying another geometry/process patch.",
+            expected_effect="Prevents optimizing leakage/BV/Ron by silently damaging another engineering objective.",
+            request={"mutation_effect_analysis": effect},
+            requires_user_confirmation=True,
+            risk_notes=[str(item) for item in (effect.get("regressed_metrics") or [])[:4]],
+        )
+    return None
+
+
+def power_mosfet_signoff_candidate(source_state_path: Path, state: dict[str, Any], request: dict[str, Any]) -> AgentExperimentCandidate | None:
+    metrics = final_metrics(state)
+    summary = state.get("final_summary") if isinstance(state.get("final_summary"), dict) else {}
+    if isinstance(summary.get("metrics"), dict):
+        metrics.update(summary["metrics"])
+    quality = state.get("quality_report") if isinstance(state.get("quality_report"), dict) else {}
+    if isinstance(quality.get("metrics"), dict):
+        metrics.update(quality["metrics"])
+    device_type = metrics.get("device_type") or request.get("device_type")
+    fidelity = metrics.get("fidelity") or request.get("fidelity")
+    signoff_gaps = metrics.get("signoff_gaps") or []
+    if device_type != "power_mosfet_bv_ron" or fidelity != "devsim_2d_field_plate":
+        return None
+    if not signoff_gaps:
+        return None
+    baseline_request = dict(request)
+    baseline_request.setdefault("run_id", f"{source_state_path.parent.name}_signoff_baseline")
+    return AgentExperimentCandidate(
+        candidate_id="power_mosfet_2d_signoff_evidence_pack",
+        action_kind="run_tool",
+        tool_name="power_mosfet_signoff",
+        score=0.92,
+        source_state_path=str(source_state_path),
+        evidence_gap="power_mosfet_2d_signoff_gaps",
+        reason="Power MOSFET 2D runner completed but still has mesh/golden/process signoff gaps; run the bundled evidence workflow.",
+        expected_effect="Collects 2D baseline, physical benchmark, mesh/model convergence, and optional golden correlation into one gate.",
+        request={
+            "run_id": f"{source_state_path.parent.name}_signoff",
+            "baseline_request": baseline_request,
+            "run_convergence": True,
+            "execute": True,
+            "run_root": str(source_state_path.parent / "power_mosfet_signoff"),
+        },
+        risk_notes=[str(item) for item in signoff_gaps],
+    )
+
+
 def select_candidate(candidates: list[AgentExperimentCandidate]) -> AgentExperimentCandidate | None:
     executable = [candidate for candidate in candidates if candidate.tool_name or candidate.action_kind != "run_tool"]
     if not executable:
@@ -254,7 +370,15 @@ def build_agent_experiment_design_plan(
         missing = [str(item) for item in pack.get("missing_evidence") or []]
         warning_codes = [str(item) for item in summary.get("warning_codes") or []]
         blocking_codes = [str(item) for item in summary.get("blocking_codes") or []]
+        effect = mutation_effect_from_state(actual_source, state, request)
+        curve_review = curve_review_from_effect(effect)
         candidates: list[AgentExperimentCandidate] = []
+        refinement = refinement_candidate_from_effect(actual_source, effect)
+        if refinement:
+            candidates.append(refinement)
+        power_signoff = power_mosfet_signoff_candidate(actual_source, state, request)
+        if power_signoff:
+            candidates.append(power_signoff)
         if "convergence_evidence" in missing or "physics_1d_mesh_convergence_missing" in warning_codes:
             candidate = convergence_candidate(actual_source, state, request, score=0.9)
             if candidate:
@@ -275,6 +399,8 @@ def build_agent_experiment_design_plan(
             benchmark_path=benchmark.benchmark_path,
             evidence_gaps=missing,
             signoff_verdict=pack.get("verdict"),
+            curve_engineering_review=curve_review,
+            mutation_effect_analysis=effect,
             candidates=sorted(candidates, key=lambda candidate: candidate.score, reverse=True),
             selected_candidate=selected,
         )

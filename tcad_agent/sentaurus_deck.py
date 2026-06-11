@@ -38,6 +38,21 @@ class SentaurusDeckIR(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+def sentaurus_section_index(ir: SentaurusDeckIR) -> dict[str, list[dict[str, Any]]]:
+    output: dict[str, list[dict[str, Any]]] = {}
+    for section in ir.sections:
+        key = "/".join(section.path) if section.path else section.name
+        output.setdefault(key, []).append(
+            {
+                "start_line": section.start_line,
+                "end_line": section.end_line,
+                "depth": section.depth,
+                "assignment_keys": [assignment.key for assignment in section.assignments[:12]],
+            }
+        )
+    return output
+
+
 def parse_block_header(prefix: str) -> tuple[str, str]:
     cleaned = prefix.strip()
     if not cleaned:
@@ -583,4 +598,21 @@ def apply_sentaurus_semantic_patch_text(text: str, patch: dict[str, Any], *, sou
                 lineterm="",
             )
         )
-    return after_text, record, ir
+    patched_ir = parse_sentaurus_deck_text(after_text, source_path=source_path)
+    record["round_trip_verified"] = not patched_ir.warnings
+    record["round_trip_warnings"] = patched_ir.warnings
+    record["source_section_index"] = sentaurus_section_index(ir)
+    record["patched_section_index"] = sentaurus_section_index(patched_ir)
+    record["patch_lineage"] = [
+        {
+            "operation": record.get("operation"),
+            "line": record.get("line"),
+            "block_path": record.get("block_path"),
+            "section_path": record.get("section_path"),
+            "parameter": record.get("parameter") or record.get("variable") or record.get("model"),
+            "applied": record.get("applied"),
+            "verified": record.get("verified"),
+            "round_trip_verified": record.get("round_trip_verified"),
+        }
+    ]
+    return after_text, record, patched_ir

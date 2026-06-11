@@ -51,6 +51,14 @@ python3.11 -m tcad_agent.tools.extended_device_sweep \
 
 The 2D runner invokes DEVSIM through the existing 2D MOS layout seed, emits a runner contract, CSV, SVG, log, summary, inner DEVSIM CSV, Tecplot, and field-peak artifacts, and records remaining mesh/golden/process-cross-section gaps as warning evidence. The 1D drift/body runner remains available with `fidelity=physics_1d` for fast BV/Ron baseline iterations.
 
+Power MOSFET/LDMOS also has a bundled evidence-gate workflow:
+
+```bash
+python3.11 -m tcad_agent.tools.power_mosfet_signoff --run-id ldmos_gate_001
+```
+
+It collects the 2D baseline, physical benchmark, mesh/model convergence, optional golden/measured correlation, and a machine-readable signoff gate. If golden/measured evidence is absent, the verdict remains conditional or blocked.
+
 ## Public Sources
 
 The seven public source categories are recorded in `tcad_agent.public_sources` and documented in [tcad_public_sources.md](tcad_public_sources.md). They cover:
@@ -80,7 +88,7 @@ python3.11 -m tcad_agent.tools.device_templates sources --kind sources
 - Schottky diode IV: `extended_device_sweep` with `fidelity=devsim_1d` for the DEVSIM-backed thermionic-emission contact model path.
 - BJT Gummel/output: `extended_device_sweep` with `fidelity=physics_1d`, including a Gummel sweep, Ic-Vce output family, Early-effect evidence, beta extraction, and collector leakage.
 - power MOSFET/LDMOS BV/Ron: `extended_device_sweep` with `fidelity=devsim_2d_field_plate` by default, plus `fidelity=physics_1d` as a fast baseline.
-- GaN HEMT, SiC power diode, and IGBT expose agent-callable runner aliases backed by `extended_device_sweep` physics surrogates; their registry entries mark them as planning evidence until real solver decks are promoted.
+- GaN HEMT, SiC power diode, and IGBT expose two paths: fast `extended_device_sweep` physics surrogates for planning evidence, and `industrial_external_tcad_runner` contracts for user-owned Sentaurus workspaces. The external path is real solver integration only when the user supplies project/profile/license outside the repository.
 
 These executable templates carry TCAD fidelity labels such as `devsim_1d_drift_diffusion`, `devsim_1d_quasi_static_cv`, `devsim_1d_reverse_iv`, `devsim_2d_drift_diffusion`, `devsim_1d_thermionic_contact`, `devsim_2d_field_plate_layout_prototype`, and `physics_1d_bjt_transport`. Their signoff workflows require physical benchmark plus convergence and golden/measured comparison when requested.
 
@@ -90,7 +98,7 @@ Legacy JFET and photodiode compact routes remain in code for regression coverage
 
 ## Planned Industrial Templates
 
-FinFET/GAA, SiC power diode, GaN HEMT, and IGBT now route to executable `physics_1d` workflows with explicit fidelity and signoff caveats. They are useful for autonomous planning, benchmark wiring, and first-pass engineering evidence, but they still require model calibration, mesh-resolved runner promotion, convergence evidence, and golden/measured comparison before strong signoff claims.
+FinFET/GAA, SiC power diode, GaN HEMT, and IGBT now route to executable `physics_1d` workflows with explicit fidelity and signoff caveats. For GaN, SiC, and IGBT, the registry also exposes external Sentaurus runner contracts. These contracts do not vendor software, licenses, PDKs, commercial model files, or private decks; they only define how the agent drives a user-owned workspace and records logs, curves, deck IR, and lineage.
 
 `supervisor` now uses this catalog to avoid routing specialized devices into the wrong executable tool. For example, "power MOSFET BV" routes to `extended_device_sweep` with `device_type=power_mosfet_bv_ron` instead of being run as a simple 2D MOSFET transfer curve.
 

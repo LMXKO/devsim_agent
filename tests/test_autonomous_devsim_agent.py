@@ -539,10 +539,9 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertIn("coverage_work_package", state.checkpoint)
         self.assertEqual(state.checkpoint["coverage_work_package"]["template_id"], "gan_hemt_id_bv")
         self.assertTrue(state.checkpoint["coverage_work_package"]["industrial_runner_coverage"])
-        self.assertEqual(
-            state.checkpoint["coverage_work_package"]["industrial_runner_coverage"][0]["maturity"],
-            "physics_surrogate",
-        )
+        maturities = {runner["maturity"] for runner in state.checkpoint["coverage_work_package"]["industrial_runner_coverage"]}
+        self.assertIn("real_external", maturities)
+        self.assertIn("physics_surrogate", maturities)
         self.assertIn("runner_promotion_plan", state.checkpoint)
         self.assertTrue(Path(state.checkpoint["runner_promotion_plan_path"]).exists())
         self.assertEqual(state.checkpoint["runner_promotion_plan"]["template_id"], "gan_hemt_id_bv")

@@ -9,14 +9,17 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 ## Core Capabilities
 
 - Natural-language task routing into structured TCAD specs and executable requests.
+- Top-level goal routing that turns broad "AI agent operates DEVSIM/Sentaurus" requests into an autonomous mission plan.
 - Agent-first `autonomous_devsim_agent` loop with decision ledger, hypothesis tree, dynamic toolbelt, and guardrail fallback.
 - DEVSIM-backed examples for PN, diode/BV, MOS C-V, MOSFET Id, Schottky, BJT, power-device planning, and related sweeps.
 - DEVSIM-backed Power MOSFET/LDMOS 2D field-plate runner plus 1D drift/BV baseline, runner contracts, mesh/field artifacts, and signoff-gap evidence.
 - Industrial runner registry for agent-callable Power MOSFET, GaN HEMT, SiC diode, and IGBT routes with explicit maturity/signoff boundaries.
+- External industrial runner contracts for user-owned Sentaurus workspaces; missing software/license/PDK stays outside git and becomes an explicit gate.
 - User DEVSIM deck ingestion, source IR extraction, semantic patching, diffs, and guarded execution.
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
 - Agent experiment design from benchmark gaps, curve evidence, deck mutations, and signoff evidence.
+- Power MOSFET 2D signoff evidence workflow for baseline, benchmark, convergence, optional golden correlation, and signoff gate.
 - Live public evidence lookup with hard pause gates, plus runner-promotion work packages for new simulator/device operations.
 - Run queue, heartbeat, cancel token, approval pause/resume, and interruption recovery.
 - Minimal web cockpit for natural-language tasks, progress, artifacts, patch lineage, and conclusions.
@@ -94,6 +97,13 @@ python3.11 -m tcad_agent.tools.device_templates route \
   --goal "LDMOS BV and Ron tradeoff with field peak review"
 ```
 
+Route a broad autonomous-agent goal:
+
+```bash
+python3.11 -m tcad_agent.tools.agent_goal_router \
+  --goal "AI 长时间自主操作 DEVSIM/Sentaurus 完成功率器件优化任务"
+```
+
 Fetch public evidence and build an industrial runner-promotion work package:
 
 ```bash
@@ -107,6 +117,22 @@ Run the promoted Power MOSFET/LDMOS 2D field-plate runner:
 python3.11 -m tcad_agent.tools.extended_device_sweep --device-type power_mosfet_bv_ron --fidelity devsim_2d_field_plate
 ```
 
+Build the Power MOSFET/LDMOS signoff evidence gate:
+
+```bash
+python3.11 -m tcad_agent.tools.power_mosfet_signoff --run-id ldmos_gate_001
+```
+
+Gate an external Sentaurus industrial runner without committing commercial assets:
+
+```bash
+python3.11 -m tcad_agent.tools.industrial_external_runner \
+  --goal "GaN HEMT BV current collapse" \
+  --template-id gan_hemt_id_bv \
+  --project /path/to/user_owned_sentaurus_project \
+  --profile ~/.actsoft/sentaurus_profile.json
+```
+
 Validate long-run behavior:
 
 ```bash
@@ -118,6 +144,7 @@ Generate a dashboard or report:
 ```bash
 python3.11 -m tcad_agent.tools.experiment_dashboard --state path/to/state.json
 python3.11 -m tcad_agent.tools.experiment_report --state path/to/state.json
+python3.11 -m tcad_agent.tools.agent_cockpit --state path/to/state.json
 ```
 
 ## Sentaurus Adapter

@@ -128,6 +128,11 @@ class DeckPatchResult(BaseModel):
     verified_patches: list[dict[str, Any]] = Field(default_factory=list)
     unverified_patches: list[dict[str, Any]] = Field(default_factory=list)
     all_patches_verified: bool = False
+    round_trip_verified: bool = False
+    round_trip_warnings: list[str] = Field(default_factory=list)
+    source_section_index: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    patched_section_index: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    patch_lineage: list[dict[str, Any]] = Field(default_factory=list)
     unified_diff: str = ""
     patched_source: str | None = None
     ir: DeckSourceIR | None = None
@@ -498,6 +503,22 @@ def parse_devsim_deck_file(path: Path) -> DeckSourceIR:
     return parse_devsim_deck_source(path.read_text(encoding="utf-8"), source_path=str(path.resolve()))
 
 
+def section_index(ir: DeckSourceIR | None) -> dict[str, list[dict[str, Any]]]:
+    if ir is None:
+        return {}
+    output: dict[str, list[dict[str, Any]]] = {}
+    for section in ir.sections:
+        output.setdefault(section.name, []).append(
+            {
+                "start_line": section.start_line,
+                "end_line": section.end_line,
+                "symbols": section.symbols[:12],
+                "calls": section.calls[:12],
+            }
+        )
+    return output
+
+
 def line_offsets(source: str) -> list[int]:
     offsets = [0]
     total = 0
@@ -811,15 +832,21 @@ def apply_semantic_deck_patch(
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
+        ir = parse_devsim_deck_source(source, source_path=source_path)
         return DeckPatchResult(
             source_path=source_path,
             unapplied_patches=patch_list,
             unified_diff="",
             patched_source=source,
-            ir=parse_devsim_deck_source(source, source_path=source_path),
+            ir=ir,
+            source_section_index=section_index(ir),
+            patched_section_index=section_index(ir),
+            round_trip_verified=False,
+            round_trip_warnings=[f"source_syntax_error:{exc.lineno}:{exc.msg}"],
             applied_patches=[],
         ).model_copy(update={"unapplied_patches": [{**patch, "reason": f"syntax_error:{exc.lineno}:{exc.msg}"} for patch in patch_list]})
 
+    source_ir = parse_devsim_deck_source(source, source_path=source_path)
     occupied: set[tuple[int, int]] = set()
     for patch in patch_list:
         locator = _PatchLocator(source, patch)
@@ -847,6 +874,8 @@ def apply_semantic_deck_patch(
     applied: list[dict[str, Any]] = []
     for start, end, text, patch, reason in sorted(replacements, key=lambda item: item[0], reverse=True):
         original = patched[start:end]
+        line = source[:start].count("\n") + 1
+        section = classify_section(original, list(patch_candidates(patch)), preferred=patch_section(patch))
         patched = patched[:start] + text + patched[end:]
         applied.append(
             {
@@ -854,6 +883,8 @@ def apply_semantic_deck_patch(
                 "request_path": patch.get("request_path"),
                 "value": patch.get("value"),
                 "reason": reason,
+                "line": line,
+                "section": section,
                 "original": original,
                 "replacement": text,
                 "effective": True,
@@ -870,6 +901,8 @@ def apply_semantic_deck_patch(
                     "request_path": patch.get("request_path"),
                     "value": patch.get("value"),
                     "reason": "fallback_append",
+                    "line": len(source.splitlines()) + 1,
+                    "section": patch_section(patch) or "other",
                     "original": None,
                     "replacement": normalized_name(str(patch.get("deck_path") or patch.get("request_path") or "patched_value")),
                     "effective": False,
@@ -890,6 +923,28 @@ def apply_semantic_deck_patch(
         {**patch, "semantic_status": "unverified_fallback_append"}
         for patch in unapplied
     ]
+    round_trip_warnings: list[str] = []
+    try:
+        ast.parse(patched)
+        round_trip_verified = True
+    except SyntaxError as exc:
+        round_trip_verified = False
+        round_trip_warnings.append(f"patched_syntax_error:{exc.lineno}:{exc.msg}")
+    if unapplied:
+        round_trip_warnings.append("unverified_fallback_append_present")
+    patched_ir = parse_devsim_deck_source(patched, source_path=source_path)
+    patch_lineage = [
+        {
+            "deck_path": patch.get("deck_path"),
+            "request_path": patch.get("request_path"),
+            "section": patch.get("section"),
+            "line": patch.get("line"),
+            "semantic_status": patch.get("semantic_status"),
+            "reason": patch.get("reason"),
+            "effective": patch.get("effective"),
+        }
+        for patch in applied
+    ]
     return DeckPatchResult(
         source_path=source_path,
         applied_patches=applied,
@@ -897,9 +952,14 @@ def apply_semantic_deck_patch(
         verified_patches=verified,
         unverified_patches=unverified,
         all_patches_verified=not unapplied and len(verified) == len(patch_list),
+        round_trip_verified=round_trip_verified and not patched_ir.parse_warnings,
+        round_trip_warnings=round_trip_warnings + patched_ir.parse_warnings,
+        source_section_index=section_index(source_ir),
+        patched_section_index=section_index(patched_ir),
+        patch_lineage=patch_lineage,
         unified_diff=diff,
         patched_source=patched,
-        ir=parse_devsim_deck_source(patched, source_path=source_path),
+        ir=patched_ir,
     )
 
 

@@ -816,6 +816,14 @@ def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_pat
             reason=reason,
             user_confirmation_required=requires_confirmation,
         )
+    if kind == DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value:
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
+            source_state_path=source_state_path,
+            request=request,
+            reason=reason,
+            user_confirmation_required=requires_confirmation,
+        )
     return DevsimAgentAction(
         kind=DevsimAgentActionKind.RUN_TOOL,
         tool_name=str(candidate.get("tool_name") or ""),
