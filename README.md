@@ -139,6 +139,12 @@ Validate long-run behavior:
 python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --validation-id autonomous_e2e
 ```
 
+Run a long-duration autonomous soak:
+
+```bash
+python3.11 -m tcad_agent.tools.agent_soak --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 0.5 --max-steps 40 --step-slice 4 --execute
+```
+
 Run only the natural-language Power MOSFET marathon:
 
 ```bash
@@ -214,6 +220,7 @@ Generated data is written under `runs/` and should not be committed.
 - [Public TCAD Sources](docs/tcad_public_sources.md)
 - [Engineering Objectives](docs/engineering_objectives.md)
 - [Long Run Validation](docs/long_run_validation.md)
+- [Agent Soak](docs/agent_soak.md)
 
 ## Publishing Hygiene
 
