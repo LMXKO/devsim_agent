@@ -16,6 +16,11 @@ The composer uses a Codex-like single action button: `Send` enqueues the mission
 
 The transcript shows:
 
+- compiled mission spec summary: selected tool, objectives, constraints, allowed mutation names, stop conditions, and risk gates;
+- soak lifecycle events such as start, cycle, recovery, memory writeback, and terminal state;
+- recovery decisions with the failure family, retry/pause result, request patch, and next action;
+- curve-guided next-step hints from curve shape, baseline-vs-mutation effect, and Pareto decisions;
+- memory writeback path when the agent appends a reusable run record;
 - a minimal autonomous-agent cockpit with the active hypothesis, pending candidate experiment, deck patch diff, and golden/measured calibration summary;
 - queue item status, attempts, result state path, and failures;
 - mission decomposition steps;
@@ -81,6 +86,8 @@ The page posts mission requests to `/api/missions`. By default those requests ar
 ```
 
 The in-page worker controls call the same durable queue worker used by `tcad_agent.tools.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite`; soak states remain under `runs/agent_soak/<queue_id>/`, with nested autonomous-agent state, heartbeat, cancel file, and cockpit artifacts.
+
+The page keeps this lifecycle readable without adding mode panels: mission spec, recovery, curve guidance, and memory events are rendered as compact transcript entries derived from durable JSON state.
 
 For compatibility, callers can explicitly post `"tool_name":"autonomous_devsim_agent"` or `"tool_name":"mission_agent"` to `/api/missions`, but the page itself does not expose a mode picker.
 

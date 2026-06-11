@@ -6,6 +6,14 @@ It runs the same autonomous agent in step slices, then persists a soak-level che
 
 The web UI posts natural-language missions to `agent_soak` by default. The user-facing flow is intentionally small: enter the TCAD goal, press Send, then watch the queue item, soak cycles, autonomous decisions, artifacts, and cockpit links in the transcript.
 
+The soak layer now adds the long-running agent scaffolding around the inner DEVSIM agent:
+
+- compiles the natural-language goal into a mission spec with objectives, constraints, allowed deck mutations, stop conditions, validation plan, and risk gates;
+- retrieves prior agent memory records before the run and appends a compact memory record when the run reaches a terminal state;
+- classifies failures into recovery families, records retry decisions, and patches the next autonomous request when a safe retry is available;
+- reads curve shape, baseline-vs-mutation effect, and Pareto decision evidence to recommend the next deck-patch direction;
+- writes lifecycle events for start, resume, cycle, recovery, curve guidance, and memory writeback.
+
 Run a short real LLM/DEVSIM soak:
 
 ```bash
@@ -37,6 +45,17 @@ python3.11 -m tcad_agent.tools.agent_soak \
 
 Cancel is file-based. Create the cancel file shown in `agent_soak_state.json`, or pass your own path with `--cancel-file`.
 
+Run the same mission through the queue-backed daemon:
+
+```bash
+python3.11 -m tcad_agent.tools.agent_soak_daemon \
+  --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" \
+  --daemon-id power_mosfet_daemon_001 \
+  --duration-hours 1 \
+  --max-steps 80 \
+  --execute
+```
+
 Artifacts are written under `runs/agent_soak/<soak_id>/` by default:
 
 - `agent_soak_state.json`;
@@ -44,5 +63,14 @@ Artifacts are written under `runs/agent_soak/<soak_id>/` by default:
 - nested `autonomous_devsim_agent_state.json`;
 - `agent_cockpit.html`;
 - per-cycle cockpit snapshots under `cockpit/`.
+
+Important state fields:
+
+- `mission_spec`: compiled goal, intent, objectives, constraints, mutation vocabulary, validation plan, and risk gates;
+- `agent_memory_context`: compact records retrieved before the run;
+- `recovery_events`: failure family, retry/pause decision, request patch, and next action;
+- `curve_guidance`: shape/effect/Pareto-driven next patch hint;
+- `lifecycle_events`: short chronological events for the web transcript and daemon heartbeat;
+- `memory_record_path`: JSONL memory file written under `runs/` unless `--memory-path` or `ACTSOFT_AGENT_MEMORY_PATH` is set.
 
 LLM endpoint settings are read from environment variables or `runs/llm_settings.json`. The `runs/` directory is ignored by git; do not commit endpoint URLs, model names, API keys, simulator licenses, PDKs, private decks, or commercial model files.

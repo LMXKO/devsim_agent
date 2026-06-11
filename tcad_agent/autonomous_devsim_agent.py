@@ -141,6 +141,10 @@ class AutonomousDevsimRequest(BaseModel):
     generate_report: bool = True
     generate_dashboard: bool = True
     require_capability_audit: bool = False
+    mission_spec: dict[str, Any] = Field(default_factory=dict)
+    agent_memory_context: list[dict[str, Any]] = Field(default_factory=list)
+    curve_guidance: dict[str, Any] = Field(default_factory=dict)
+    recovery_context: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DevsimAgentAction(BaseModel):
@@ -319,6 +323,10 @@ def create_initial_state(request: AutonomousDevsimRequest, agent_id: str, agent_
             "public_evidence_dossier": public_evidence,
             "public_evidence_lookup": live_lookup_result,
             "public_evidence_lookup_gate_passed": live_lookup_passed,
+            "mission_spec": request.mission_spec,
+            "agent_memory_context": request.agent_memory_context,
+            "curve_guidance": request.curve_guidance,
+            "recovery_context": request.recovery_context,
         },
         next_action="choose first DEVSIM agent tool call",
     )
@@ -338,6 +346,14 @@ def prepare_state(request: AutonomousDevsimRequest) -> tuple[AutonomousDevsimAge
             state.cancel_file = str(request.cancel_file)
         if request.heartbeat_path:
             state.heartbeat_path = str(request.heartbeat_path)
+        if request.mission_spec:
+            state.checkpoint["mission_spec"] = request.mission_spec
+        if request.agent_memory_context:
+            state.checkpoint["agent_memory_context"] = request.agent_memory_context
+        if request.curve_guidance:
+            state.checkpoint["curve_guidance"] = request.curve_guidance
+        if request.recovery_context:
+            state.checkpoint["recovery_context"] = request.recovery_context
         state.checkpoint["agent_state_path"] = str(actual_path)
         write_state(state, actual_path)
         return state, actual_path

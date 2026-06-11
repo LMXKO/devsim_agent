@@ -11,6 +11,7 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 - Natural-language task routing into structured TCAD specs and executable requests.
 - Top-level goal routing that turns broad "AI agent operates DEVSIM/Sentaurus" requests into an autonomous mission plan.
 - Agent-first `autonomous_devsim_agent` loop with decision ledger, hypothesis tree, dynamic toolbelt, and guardrail fallback.
+- Compiled mission specs that turn natural-language goals into objectives, constraints, mutations, stop conditions, and validation plans.
 - DEVSIM-backed examples for PN, diode/BV, MOS C-V, MOSFET Id, Schottky, BJT, power-device planning, and related sweeps.
 - DEVSIM-backed Power MOSFET/LDMOS 2D field-plate runner plus 1D drift/BV baseline, runner contracts, mesh/field artifacts, and signoff-gap evidence.
 - Industrial runner registry for agent-callable Power MOSFET, GaN HEMT, SiC diode, and IGBT routes with explicit maturity/signoff boundaries.
@@ -19,6 +20,7 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
 - Agent experiment design from benchmark gaps, curve evidence, deck mutations, and signoff evidence.
+- Agent memory, recovery classification, curve-guided next-action hints, and soak daemon lifecycle state.
 - Power MOSFET 2D signoff evidence workflow for baseline, benchmark, convergence, optional golden correlation, and signoff gate.
 - Live public evidence lookup with hard pause gates, plus runner-promotion work packages for new simulator/device operations.
 - Run queue, heartbeat, cancel token, approval pause/resume, and interruption recovery.
@@ -147,6 +149,12 @@ Run a long-duration autonomous soak:
 python3.11 -m tcad_agent.tools.agent_soak --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 0.5 --max-steps 40 --step-slice 4 --execute
 ```
 
+Run the same goal through the queue-backed soak daemon:
+
+```bash
+python3.11 -m tcad_agent.tools.agent_soak_daemon --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 1 --max-steps 80 --execute
+```
+
 Run only the natural-language Power MOSFET marathon:
 
 ```bash
@@ -218,6 +226,8 @@ Generated data is written under `runs/` and should not be committed.
 ## More Documentation
 
 - [Autonomous DEVSIM Agent](docs/autonomous_devsim_agent.md)
+- [Web Workbench](docs/web_app.md)
+- [Run Queue](docs/run_queue.md)
 - [Sentaurus Adapter](docs/sentaurus_adapter.md)
 - [Public TCAD Sources](docs/tcad_public_sources.md)
 - [Engineering Objectives](docs/engineering_objectives.md)

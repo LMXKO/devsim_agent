@@ -2,7 +2,7 @@
 
 `tcad_agent.tools.run_queue` is the durable experiment-management layer for long-running TCAD work.
 
-It stores queued runs in SQLite, leases work to workers, and keeps enough state to resume after process crashes or machine restarts. Built-in executable items include `supervisor`, `mission_agent`, and `autonomous_devsim_agent`, so a queue entry can represent either one delegated TCAD action or a long-horizon DEVSIM agent session.
+It stores queued runs in SQLite, leases work to workers, and keeps enough state to resume after process crashes or machine restarts. Built-in executable items include `supervisor`, `mission_agent`, `autonomous_devsim_agent`, and `agent_soak`, so a queue entry can represent either one delegated TCAD action or a long-horizon DEVSIM agent session.
 
 ## What It Provides
 
@@ -16,6 +16,7 @@ It stores queued runs in SQLite, leases work to workers, and keeps enough state 
 - history listing and filtering by status or tool.
 - polling daemon mode for long-running background execution with idle and stop-file exits.
 - default runners for mission/supervisor, device tools, convergence, sweeps, optimization, benchmarks, engineering objectives, and reports.
+- queue-backed `agent_soak` runs that carry mission spec, recovery, memory, curve guidance, and lifecycle state.
 
 ## Enqueue A Supervisor Goal
 
@@ -52,6 +53,22 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
 ```
 
 This is the closest queue-level entry point for the product goal: an AI agent that can keep operating DEVSIM for a long task instead of only launching one fixed runner. The worker injects `queue_id`, a stable `agent_id`, a cancel token path, and a heartbeat path into queued autonomous-agent requests.
+
+## Enqueue A Long-Running Agent Soak
+
+Use `agent_soak` when the queue item should own a multi-slice autonomous mission with natural-language mission compilation, recovery, memory writeback, curve guidance, cockpit snapshots, and lifecycle state.
+
+```bash
+python3.11 -m tcad_agent.tools.run_queue enqueue \
+  --queue-id q_power_soak \
+  --tool agent_soak \
+  --request-json '{"goal_text":"AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak","execute":true,"duration_hours":1,"max_steps":80,"step_slice":4,"autonomous_request":{"use_llm":true,"allow_llm_fallback":true}}' \
+  --priority 40 \
+  --max-attempts 2 \
+  --budget-seconds 21600
+```
+
+For a one-command queue-backed wrapper, use `tcad_agent.tools.agent_soak_daemon`; it enqueues the soak item if needed, starts the polling daemon, and writes `runs/agent_soak_daemon/<daemon_id>/agent_soak_daemon_state.json`.
 
 ## Enqueue A Long-Horizon Mission
 

@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heartbeat-path", type=Path, default=None)
     parser.add_argument("--no-cockpit", action="store_true")
     parser.add_argument("--cockpit-interval-steps", type=int, default=1)
+    parser.add_argument("--no-mission-spec", action="store_true")
+    parser.add_argument("--no-recovery", action="store_true")
+    parser.add_argument("--max-recovery-attempts", type=int, default=2)
+    parser.add_argument("--no-agent-memory", action="store_true")
+    parser.add_argument("--memory-path", type=Path, default=None)
+    parser.add_argument("--no-curve-guidance", action="store_true")
     parser.add_argument("--autonomous-request-json", default=None, help="JSON object merged into the autonomous agent request.")
     parser.add_argument("--initial-tool-name", default=None)
     parser.add_argument("--initial-request-json", default=None)
@@ -130,6 +136,12 @@ def request_from_args(args: argparse.Namespace) -> AgentSoakRequest:
         heartbeat_path=args.heartbeat_path,
         generate_cockpit=not args.no_cockpit,
         cockpit_interval_steps=args.cockpit_interval_steps,
+        compile_mission_spec=not args.no_mission_spec,
+        enable_recovery=not args.no_recovery,
+        max_recovery_attempts=args.max_recovery_attempts,
+        enable_agent_memory=not args.no_agent_memory,
+        memory_path=args.memory_path,
+        enable_curve_guidance=not args.no_curve_guidance,
     )
 
 

@@ -1716,8 +1716,50 @@ def compact_soak_cycles(cycles: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def compact_soak_lifecycle(events: Any) -> list[dict[str, Any]]:
+    if not isinstance(events, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for event in events[-8:]:
+        if not isinstance(event, dict):
+            continue
+        rows.append(
+            {
+                key: event.get(key)
+                for key in ["created_at", "event", "detail", "data"]
+                if event.get(key) is not None
+            }
+        )
+    return rows
+
+
+def compact_mission_spec_for_ui(spec: Any) -> dict[str, Any]:
+    if not isinstance(spec, dict):
+        return {}
+    intent = spec.get("intent") if isinstance(spec.get("intent"), dict) else {}
+    return {
+        key: value
+        for key, value in {
+            "status": spec.get("status"),
+            "summary": spec.get("summary"),
+            "selected_tool": spec.get("selected_tool"),
+            "device_family": intent.get("device_family"),
+            "template_id": intent.get("template_id"),
+            "allowed_mutations": [
+                item.get("name")
+                for item in (spec.get("allowed_mutations") or [])[:8]
+                if isinstance(item, dict) and item.get("name")
+            ],
+            "validation_plan": (spec.get("validation_plan") or [])[:8],
+            "risk_gates": (spec.get("risk_gates") or [])[:5],
+        }.items()
+        if value not in (None, [], {})
+    }
+
+
 def extract_agent_soak_activity(state: dict[str, Any], *, source: str, path: str | None = None) -> list[dict[str, Any]]:
     cycles = compact_soak_cycles(state.get("cycles"))
+    lifecycle = compact_soak_lifecycle(state.get("lifecycle_events"))
     artifacts = {
         key: state.get(key)
         for key in ["agent_state_path", "latest_cockpit_path", "final_state_path", "heartbeat_path"]
@@ -1738,6 +1780,17 @@ def extract_agent_soak_activity(state: dict[str, Any], *, source: str, path: str
     }
     if cycles:
         output["cycles"] = cycles
+    mission_spec = compact_mission_spec_for_ui(state.get("mission_spec"))
+    if mission_spec:
+        output["mission_spec"] = mission_spec
+    if state.get("curve_guidance"):
+        output["curve_guidance"] = state.get("curve_guidance")
+    if state.get("recovery_events"):
+        output["recovery_events"] = (state.get("recovery_events") or [])[-5:]
+    if lifecycle:
+        output["lifecycle"] = lifecycle
+    if state.get("memory_record_path"):
+        output["memory_record_path"] = state.get("memory_record_path")
     if artifacts:
         output["artifacts"] = artifacts
     events: list[dict[str, Any]] = [
@@ -1765,6 +1818,33 @@ def extract_agent_soak_activity(state: dict[str, Any], *, source: str, path: str
                 output=cycle,
                 path=cycle.get("agent_state_path") or path,
                 created_at=state.get("updated_at") or state.get("created_at"),
+            )
+        )
+    if state.get("curve_guidance"):
+        guidance = state["curve_guidance"]
+        events.append(
+            activity_event(
+                source=source,
+                title="曲线驱动建议",
+                status=str(guidance.get("status") or "unknown"),
+                detail=str(guidance.get("reason") or ""),
+                output=short_value(guidance, max_chars=1400),
+                path=guidance.get("source_state_path") or path,
+                created_at=guidance.get("created_at") or state.get("updated_at"),
+            )
+        )
+    for event in (state.get("recovery_events") or [])[-4:]:
+        if not isinstance(event, dict):
+            continue
+        events.append(
+            activity_event(
+                source=source,
+                title=f"恢复策略：{event.get('family') or 'unknown'}",
+                status="running" if event.get("should_retry") else "planned" if event.get("should_pause_for_user") else "failed",
+                detail=str(event.get("reason") or ""),
+                output=short_value(event, max_chars=1200),
+                path=path,
+                created_at=event.get("created_at") or state.get("updated_at"),
             )
         )
     agent_state = read_json_if_exists(state.get("agent_state_path"))
