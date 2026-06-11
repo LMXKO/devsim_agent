@@ -31,6 +31,8 @@ class AgentSoakDaemonRequest(BaseModel):
     step_slice: int = Field(default=4, ge=1)
     use_llm: bool = True
     allow_llm_fallback: bool = True
+    auto_execute_curve_guidance: bool = True
+    max_curve_guided_patches: int = Field(default=1, ge=0)
     priority: int = 10
     max_attempts: int = 1
     owner: str = "agent_soak_daemon"
@@ -98,6 +100,8 @@ def build_soak_request(request: AgentSoakDaemonRequest, queue_id: str) -> dict[s
         "duration_hours": request.duration_hours,
         "max_steps": request.max_steps,
         "step_slice": request.step_slice,
+        "auto_execute_curve_guidance": request.auto_execute_curve_guidance,
+        "max_curve_guided_patches": request.max_curve_guided_patches,
         "autonomous_request": autonomous_request,
     }
 

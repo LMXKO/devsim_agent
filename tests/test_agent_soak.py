@@ -142,6 +142,77 @@ class AgentSoakTest(unittest.TestCase):
         self.assertEqual(state.recovery_events[0]["family"], "llm_transport")
         self.assertTrue(state.recovery_events[0]["should_retry"])
 
+    def test_soak_continues_completed_cycle_for_actionable_curve_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result_dir = root / "runs" / "guidance"
+            csv_path = result_dir / "curve.csv"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            csv_path.write_text(
+                "drain_voltage_v,current_a,electric_field_v_per_cm\n0,1e-12,1e4\n-10,1e-9,2e5\n-20,1e-6,5e5\n",
+                encoding="utf-8",
+            )
+            result_state = result_dir / "state.json"
+            result_state.write_text(
+                json.dumps(
+                    {
+                        "tool_name": "extended_device_sweep",
+                        "status": "completed",
+                        "run_id": "guidance",
+                        "request": {"device_type": "power_mosfet_bv_ron", "power_mos_drift_region_doping_cm3": 1e16},
+                        "final_summary": {
+                            "artifacts": {"csv": str(csv_path)},
+                            "metrics": {
+                                "specific_on_resistance_ohm_cm2": 0.05,
+                                "breakdown_voltage_v": -20,
+                            },
+                        },
+                        "quality_report": {"status": "passed", "metrics": {"points": 3}},
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            calls: list[dict[str, object]] = []
+
+            def fake_agent(request, **kwargs):
+                calls.append({"max_steps": request.max_steps, "curve_guidance": request.curve_guidance})
+                return AutonomousDevsimAgentState(
+                    status=DevsimAgentStatus.COMPLETED,
+                    agent_id=str(request.agent_id),
+                    agent_dir=str(Path(request.agent_root) / str(request.agent_id)),
+                    goal_text=request.goal_text,
+                    created_at="2026-06-11T00:00:00Z",
+                    updated_at="2026-06-11T00:00:01Z",
+                    execute=True,
+                    max_steps=request.max_steps,
+                    final_state_path=str(result_state),
+                    next_action="done",
+                    checkpoint={"guidance_patch_runs": 0 if len(calls) == 1 else 1},
+                )
+
+            with patch("tcad_agent.agent_soak.run_autonomous_devsim_agent", side_effect=fake_agent):
+                state = run_agent_soak(
+                    AgentSoakRequest(
+                        goal_text="优化 power MOSFET Ron/BV tradeoff with drift doping",
+                        soak_id="guidance_continue",
+                        soak_root=root,
+                        execute=True,
+                        duration_hours=0,
+                        max_steps=3,
+                        step_slice=1,
+                        memory_path=root / "agent_memory.jsonl",
+                        max_curve_guided_patches=1,
+                        autonomous_request={"use_llm": False, "generate_report": False, "generate_dashboard": False},
+                    )
+                )
+
+        self.assertEqual(state.status, AgentSoakStatus.COMPLETED)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(state.cycles[0].status, "curve_guidance_continue")
+        self.assertTrue(calls[1]["curve_guidance"])
+        self.assertEqual(state.curve_guided_patch_runs, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from tcad_agent.agent_curve_guidance import build_agent_curve_guidance
+from tcad_agent.agent_guidance_patch import build_guidance_patch_plan, guidance_is_actionable_patch
 from tcad_agent.agent_memory import append_agent_memory_from_soak, retrieve_agent_memory
 from tcad_agent.agent_recovery import build_recovery_decision
 from tcad_agent.agent_soak_daemon import AgentSoakDaemonRequest, run_agent_soak_daemon
@@ -143,6 +144,39 @@ class AgentRuntimeExtensionTest(unittest.TestCase):
         self.assertEqual(guidance.recommended_target, "field_plate")
         self.assertIn("baseline_vs_mutation_effect", guidance.decision_basis)
         self.assertTrue(guidance.mutation_effect["worth_continuing"])
+
+    def test_guidance_patch_plan_turns_hint_into_next_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = write_curve_state(Path(tmp) / "state.json")
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["tool_name"] = "extended_device_sweep"
+            state["request"] = {
+                "device_type": "power_mosfet_bv_ron",
+                "fidelity": "devsim_2d_field_plate",
+                "power_mos_drift_region_doping_cm3": 1.0e16,
+            }
+            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            guidance = {
+                "recommended_action": "improve_tradeoff",
+                "recommended_target": "drift_doping",
+                "recommended_direction": "decrease",
+                "reason": "Ron/BV tradeoff needs a drift doping probe.",
+                "next_patch_hint": {"target": "drift_doping", "direction": "decrease"},
+            }
+
+            plan = build_guidance_patch_plan(
+                state_path,
+                curve_guidance=guidance,
+                goal_text="优化 power MOSFET BV/Ron tradeoff",
+                output_path=Path(tmp) / "guidance_patch.json",
+            )
+
+        self.assertTrue(guidance_is_actionable_patch(guidance))
+        self.assertEqual(plan.status, "completed")
+        self.assertEqual(plan.mutation_target, "drift_doping")
+        self.assertIsNotNone(plan.next_request)
+        self.assertIn("guidance_patch_id", plan.next_request)
+        self.assertLess(plan.next_request["power_mos_drift_region_doping_cm3"], 1.0e16)
 
     def test_agent_soak_daemon_enqueues_and_runs_agent_soak_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

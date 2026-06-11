@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step-slice", type=int, default=4)
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--no-llm-fallback", action="store_true")
+    parser.add_argument("--no-auto-curve-guidance", action="store_true")
+    parser.add_argument("--max-curve-guided-patches", type=int, default=1)
     parser.add_argument("--priority", type=int, default=10)
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument("--owner", default="agent_soak_daemon")
@@ -57,6 +59,8 @@ def request_from_args(args: argparse.Namespace) -> AgentSoakDaemonRequest:
         step_slice=args.step_slice,
         use_llm=not args.no_llm,
         allow_llm_fallback=not args.no_llm_fallback,
+        auto_execute_curve_guidance=not args.no_auto_curve_guidance,
+        max_curve_guided_patches=args.max_curve_guided_patches,
         priority=args.priority,
         max_attempts=args.max_attempts,
         owner=args.owner,

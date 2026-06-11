@@ -20,7 +20,7 @@ The public repository focuses on open-source DEVSIM workflows plus a local adapt
 - Curve diagnostics for leakage windows, BV brackets, field peaks, knees, overlays, and mutation effects.
 - Multi-objective/Pareto evaluation with machine-readable continue/review/reject decisions.
 - Agent experiment design from benchmark gaps, curve evidence, deck mutations, and signoff evidence.
-- Agent memory, recovery classification, curve-guided next-action hints, and soak daemon lifecycle state.
+- Agent memory, recovery classification, curve-guided patch execution, and soak daemon lifecycle state.
 - Power MOSFET 2D signoff evidence workflow for baseline, benchmark, convergence, optional golden correlation, and signoff gate.
 - Live public evidence lookup with hard pause gates, plus runner-promotion work packages for new simulator/device operations.
 - Run queue, heartbeat, cancel token, approval pause/resume, and interruption recovery.

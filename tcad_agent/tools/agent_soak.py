@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-agent-memory", action="store_true")
     parser.add_argument("--memory-path", type=Path, default=None)
     parser.add_argument("--no-curve-guidance", action="store_true")
+    parser.add_argument("--no-auto-curve-guidance", action="store_true")
+    parser.add_argument("--max-curve-guided-patches", type=int, default=1)
     parser.add_argument("--autonomous-request-json", default=None, help="JSON object merged into the autonomous agent request.")
     parser.add_argument("--initial-tool-name", default=None)
     parser.add_argument("--initial-request-json", default=None)
@@ -142,6 +144,8 @@ def request_from_args(args: argparse.Namespace) -> AgentSoakRequest:
         enable_agent_memory=not args.no_agent_memory,
         memory_path=args.memory_path,
         enable_curve_guidance=not args.no_curve_guidance,
+        auto_execute_curve_guidance=not args.no_auto_curve_guidance,
+        max_curve_guided_patches=args.max_curve_guided_patches,
     )
 
 

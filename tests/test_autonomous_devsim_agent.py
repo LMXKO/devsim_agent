@@ -768,6 +768,107 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertIn("mutation_effect_analysis", refined)
         self.assertIn("baseline_mutation_overlay", refined["final_summary"]["artifacts"])
 
+    def test_agent_executes_curve_guidance_patch_without_prior_mutation_effect(self) -> None:
+        source_dir = self.root / "runs" / "guidance_source"
+        source_csv = source_dir / "curve.csv"
+        source_csv.parent.mkdir(parents=True, exist_ok=True)
+        source_csv.write_text(
+            "drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,1e4\n-10,1e-8,2e5\n-20,1e-6,5e5\n",
+            encoding="utf-8",
+        )
+        source_state = source_dir / "state.json"
+        write_json(
+            source_state,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "run_id": "guidance_source",
+                "request": {
+                    "device_type": "power_mosfet_bv_ron",
+                    "fidelity": "devsim_2d_field_plate",
+                    "power_mos_drift_region_doping_cm3": 1.0e16,
+                },
+                "final_summary": {
+                    "artifacts": {"csv": str(source_csv)},
+                    "metrics": {
+                        "leakage_current_a": 1e-8,
+                        "breakdown_voltage_v": -20,
+                        "specific_on_resistance_ohm_cm2": 0.05,
+                    },
+                },
+                "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 1e-8}},
+            },
+        )
+        refined_dir = self.root / "runs" / "guidance_refined"
+        refined_csv = refined_dir / "curve.csv"
+        refined_state = refined_dir / "state.json"
+        tool_requests: list[dict[str, object]] = []
+
+        def fake_extended_device(request: dict[str, object]) -> dict[str, object]:
+            tool_requests.append(request)
+            refined_csv.parent.mkdir(parents=True, exist_ok=True)
+            refined_csv.write_text(
+                "drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,1e4\n-10,8e-9,1.8e5\n-20,8e-7,4.2e5\n",
+                encoding="utf-8",
+            )
+            write_json(
+                refined_state,
+                {
+                    "tool_name": "extended_device_sweep",
+                    "status": "completed",
+                    "run_id": "guidance_refined",
+                    "request": request,
+                    "final_summary": {
+                        "artifacts": {"csv": str(refined_csv)},
+                        "metrics": {
+                            "leakage_current_a": 8e-9,
+                            "breakdown_voltage_v": -22,
+                            "specific_on_resistance_ohm_cm2": 0.052,
+                        },
+                    },
+                    "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 8e-9}},
+                },
+            )
+            return {"status": "completed", "state_path": str(refined_state)}
+
+        request = AutonomousDevsimRequest(
+            goal_text="Use curve guidance to continue Power MOSFET optimization",
+            agent_id="agent_guidance_patch",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=False,
+            max_steps=5,
+            source_state_path=str(source_state),
+            curve_guidance={
+                "recommended_action": "improve_tradeoff",
+                "recommended_target": "drift_doping",
+                "recommended_direction": "decrease",
+                "reason": "Ron/BV tradeoff needs a drift doping probe.",
+                "next_patch_hint": {"target": "drift_doping", "direction": "decrease"},
+            },
+            max_mutation_refinements=1,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={
+                "extended_device_sweep": fake_extended_device,
+                "physical_benchmark": lambda request: {"status": "completed", "benchmark_path": str(self.root / "benchmark.json")},
+            },
+        )
+
+        self.assertEqual(state.status, DevsimAgentStatus.COMPLETED)
+        self.assertIn(DevsimAgentActionKind.PLAN_GUIDANCE_PATCH, [step.kind for step in state.steps])
+        self.assertEqual(len(tool_requests), 1)
+        self.assertIn("guidance_patch_id", tool_requests[0])
+        self.assertLess(tool_requests[0]["power_mos_drift_region_doping_cm3"], 1.0e16)
+        self.assertEqual(state.checkpoint["guidance_patch_runs"], 1)
+        refined = json.loads(refined_state.read_text(encoding="utf-8"))
+        self.assertIn("mutation_effect_analysis", refined)
+        self.assertIn("baseline_mutation_overlay", refined["final_summary"]["artifacts"])
+
     def test_sentaurus_effect_triggers_refinement_before_generic_patch_planning(self) -> None:
         project = self.root / "sentaurus_project"
         project.mkdir()

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from tcad_agent.agent_cockpit import generate_agent_cockpit
 from tcad_agent.agent_curve_guidance import build_agent_curve_guidance
+from tcad_agent.agent_guidance_patch import guidance_is_actionable_patch
 from tcad_agent.agent_memory import append_agent_memory_from_soak, retrieve_agent_memory
 from tcad_agent.agent_recovery import build_recovery_decision
 from tcad_agent.autonomous_devsim_agent import (
@@ -65,6 +66,8 @@ class AgentSoakRequest(BaseModel):
     enable_agent_memory: bool = True
     memory_path: Path | None = None
     enable_curve_guidance: bool = True
+    auto_execute_curve_guidance: bool = True
+    max_curve_guided_patches: int = Field(default=1, ge=0)
 
 
 class AgentSoakCycle(BaseModel):
@@ -117,6 +120,7 @@ class AgentSoakState(BaseModel):
     recovery_events: list[dict[str, Any]] = Field(default_factory=list)
     curve_guidance: dict[str, Any] | None = None
     lifecycle_events: list[dict[str, Any]] = Field(default_factory=list)
+    curve_guided_patch_runs: int = 0
 
 
 def utc_timestamp() -> str:
@@ -190,6 +194,13 @@ def max_steps_exhausted(agent_state: AutonomousDevsimAgentState) -> bool:
         agent_state.status == DevsimAgentStatus.FAILED
         and str(agent_state.failure_reason or "").startswith("maximum autonomous DEVSIM steps reached")
     )
+
+
+def guidance_patch_runs(agent_state: AutonomousDevsimAgentState) -> int:
+    try:
+        return int(agent_state.checkpoint.get("guidance_patch_runs") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def terminal_soak_status(agent_state: AutonomousDevsimAgentState) -> str | None:
@@ -419,9 +430,21 @@ def run_agent_soak(
                 goal_text=request.goal_text,
                 source_state_path=latest_state_for_guidance,
             ).model_dump(mode="json")
+        curve_guided_runs = guidance_patch_runs(agent_state)
+        can_continue_from_guidance = (
+            request.auto_execute_curve_guidance
+            and request.enable_curve_guidance
+            and bool(curve_guidance)
+            and guidance_is_actionable_patch(curve_guidance)
+            and curve_guided_runs < request.max_curve_guided_patches
+            and agent_steps < request.max_steps
+        )
         cycle_status = terminal or (
             "slice_exhausted" if max_steps_exhausted(agent_state) else AgentSoakStatus.RUNNING
         )
+        if terminal == AgentSoakStatus.COMPLETED and can_continue_from_guidance:
+            cycle_status = "curve_guidance_continue"
+            terminal = None
         cycle_failure_reason = agent_state.failure_reason
         if cycle_status == AgentSoakStatus.COMPLETED:
             cycle_failure_reason = None
@@ -462,6 +485,7 @@ def run_agent_soak(
         state.final_agent_status = agent_state.status.value if isinstance(agent_state.status, DevsimAgentStatus) else str(agent_state.status)
         state.final_state_path = agent_state.final_state_path or agent_state.latest_state_path
         state.curve_guidance = curve_guidance or state.curve_guidance
+        state.curve_guided_patch_runs = curve_guided_runs
         state.completed_steps = agent_steps
         state.model_decisions = model_decisions
         state.fallback_decisions = fallback_decisions
@@ -481,6 +505,21 @@ def run_agent_soak(
             state.request = request.model_dump(mode="json")
             append_lifecycle(state, "recovery", detail=str(recovery_decision.get("reason") or ""), data=recovery_decision)
             state.next_action = str(recovery_decision.get("next_action") or "retry recovered agent cycle")
+            write_soak_state(state, actual_state_path)
+            write_soak_heartbeat(state)
+            continue
+        if can_continue_from_guidance:
+            append_lifecycle(
+                state,
+                "curve_guidance_continue",
+                detail="curve guidance will drive the next autonomous patch slice",
+                data={
+                    "guidance_action": (curve_guidance or {}).get("recommended_action"),
+                    "guidance_target": (curve_guidance or {}).get("recommended_target"),
+                    "curve_guided_patch_runs": curve_guided_runs,
+                },
+            )
+            state.next_action = "execute curve-guided patch in next soak cycle"
             write_soak_state(state, actual_state_path)
             write_soak_heartbeat(state)
             continue

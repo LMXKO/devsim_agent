@@ -15,6 +15,7 @@ from tcad_agent.deck_ir import parse_devsim_deck_file, write_semantic_deck_patch
 from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
 from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
+from tcad_agent.agent_guidance_patch import build_guidance_patch_plan, guidance_is_actionable_patch
 from tcad_agent.evidence_lookup import PublicEvidenceLookupRequest, run_public_evidence_lookup
 from tcad_agent.industrial_runner_registry import industrial_runner_coverage_matrix, runner_descriptors_for_template
 from tcad_agent.industrial_runner_promotion import build_industrial_runner_promotion_plan
@@ -94,6 +95,7 @@ class DevsimAgentActionKind(str, Enum):
     APPLY_DECK_PATCH = "apply_deck_patch"
     RUN_USER_DECK = "run_user_deck"
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
+    PLAN_GUIDANCE_PATCH = "plan_guidance_patch"
     PLAN_SENTAURUS_PATCH = "plan_sentaurus_patch"
     PLAN_SENTAURUS_REFINEMENT = "plan_sentaurus_refinement"
     PLAN_EXPERIMENT_DESIGN = "plan_experiment_design"
@@ -665,6 +667,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"source_state_path": {"type": "string"}}, required=["source_state_path"]),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_GUIDANCE_PATCH.value,
+            action_kind=DevsimAgentActionKind.PLAN_GUIDANCE_PATCH.value,
+            description="Turn curve-guidance next_patch_hint into an executable deck/request patch before the next run.",
+            parameters=object_schema({"source_state_path": {"type": "string"}, "curve_guidance": {"type": "object"}}, required=["source_state_path"]),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN.value,
             action_kind=DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN.value,
             description="Generate ranked next experiments from benchmark/signoff gaps, curve diagnostics, and deck mutations.",
@@ -878,6 +886,26 @@ def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_pat
     )
 
 
+def active_curve_guidance(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> dict[str, Any] | None:
+    guidance = request.curve_guidance if isinstance(request.curve_guidance, dict) else {}
+    if not guidance:
+        guidance = state.checkpoint.get("curve_guidance") if isinstance(state.checkpoint.get("curve_guidance"), dict) else {}
+    return guidance if guidance_is_actionable_patch(guidance) else None
+
+
+def guidance_signature(guidance: dict[str, Any], source_state_path: str | None) -> str:
+    hint = guidance.get("next_patch_hint") if isinstance(guidance.get("next_patch_hint"), dict) else {}
+    parts = [
+        str(guidance.get("source_state_path") or ""),
+        str(guidance.get("created_at") or ""),
+        str(guidance.get("recommended_action") or ""),
+        str(guidance.get("recommended_target") or hint.get("target") or ""),
+        str(guidance.get("recommended_direction") or hint.get("direction") or ""),
+        str(guidance.get("reason") or ""),
+    ]
+    return "|".join(parts)
+
+
 def action_from_sentaurus_patch_candidate(
     candidate: dict[str, Any],
     request: AutonomousDevsimRequest,
@@ -1027,6 +1055,20 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             reason=str(pending_refinement.get("reason") or "Execute the curve-guided mutation refinement patch."),
             user_confirmation_required=bool(pending_refinement.get("requires_user_confirmation")),
         )
+    pending_guidance_patch = state.checkpoint.get("pending_guidance_patch")
+    if (
+        request.auto_execute_mutation_refinements
+        and isinstance(pending_guidance_patch, dict)
+        and pending_guidance_patch.get("next_request")
+        and not pending_guidance_patch.get("executed")
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_TOOL,
+            tool_name=str(pending_guidance_patch.get("target_tool") or observation.get("tool_name") or ""),
+            request=dict(pending_guidance_patch["next_request"]),
+            reason=str(pending_guidance_patch.get("reason") or "Execute the curve-guidance deck/request patch."),
+            user_confirmation_required=bool(pending_guidance_patch.get("requires_user_confirmation")),
+        )
     pending_experiment = state.checkpoint.get("pending_agent_experiment_candidate")
     if (
         request.auto_execute_experiment_design
@@ -1047,6 +1089,21 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             kind=DevsimAgentActionKind.RUN_SUPERVISOR,
             request={"goal_text": request.goal_text, "execute": True, "max_cycles": request.supervisor_max_cycles},
             reason="No TCAD state exists yet; ask the supervisor to route the goal to a supported tool.",
+        )
+    guidance = active_curve_guidance(state, request)
+    guidance_patch_runs = int(state.checkpoint.get("guidance_patch_runs") or 0)
+    signature = guidance_signature(guidance, state.latest_state_path) if guidance else ""
+    if (
+        guidance
+        and observation.get("tool_name") != "sentaurus_run"
+        and guidance_patch_runs < request.max_mutation_refinements
+        and state.checkpoint.get("guidance_patch_signature") != signature
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_GUIDANCE_PATCH,
+            source_state_path=state.latest_state_path,
+            request={"curve_guidance": guidance, "guidance_signature": signature},
+            reason="Curve guidance identified an actionable next deck/request patch; plan it before stopping or reporting.",
         )
     mutation_refinement_runs = int(state.checkpoint.get("mutation_refinement_runs") or 0)
     latest_analysis = observation.get("mutation_effect_analysis")
@@ -1759,6 +1816,21 @@ def execute_action(
             if diagnostic:
                 result["mutation_effect_analysis"] = diagnostic
             state.checkpoint["pending_mutation_refinement"] = {**pending, "executed": True} if isinstance(pending, dict) else {"executed": True}
+        if tool_request.get("guidance_patch_id"):
+            state.checkpoint["guidance_patch_runs"] = int(state.checkpoint.get("guidance_patch_runs") or 0) + 1
+            state.checkpoint["last_guidance_patch_id"] = tool_request.get("guidance_patch_id")
+            pending = state.checkpoint.get("pending_guidance_patch")
+            deck_patch = (pending or {}).get("deck_patch") if isinstance(pending, dict) else {}
+            baseline = tool_request.get("guidance_source_state_path") or tool_request.get("repair_baseline_state_path") or state.latest_state_path
+            diagnostic = augment_mutation_refinement_result(
+                baseline_state_path=str(baseline) if baseline else None,
+                result_state_path=result_state_path,
+                deck_patch=deck_patch if isinstance(deck_patch, dict) else {},
+            )
+            if diagnostic:
+                result["mutation_effect_analysis"] = diagnostic
+                state.checkpoint["latest_guidance_mutation_effect_analysis"] = diagnostic
+            state.checkpoint["pending_guidance_patch"] = {**pending, "executed": True} if isinstance(pending, dict) else {"executed": True}
         if tool_request.get("sentaurus_patch_candidate_id"):
             pending = state.checkpoint.get("pending_sentaurus_patch_candidate")
             pending_patches = pending.get("patches") if isinstance(pending, dict) and isinstance(pending.get("patches"), list) else []
@@ -1910,6 +1982,35 @@ def execute_action(
             state.checkpoint["blocked_mutation_refinement"] = result
         else:
             state.checkpoint["failed_mutation_refinement"] = result
+        return result, source
+    if action.kind == DevsimAgentActionKind.PLAN_GUIDANCE_PATCH:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("guidance patch action requires a source state")
+        guidance = action.request.get("curve_guidance") if isinstance(action.request.get("curve_guidance"), dict) else None
+        if guidance is None:
+            guidance = active_curve_guidance(state, request)
+        if not guidance:
+            raise ValueError("guidance patch action requires actionable curve_guidance")
+        output_dir = Path(state.agent_dir) / "guidance_patches"
+        output_path = output_dir / f"guidance_patch_{int(state.checkpoint.get('guidance_patch_plans') or 0) + 1:03d}.json"
+        plan = build_guidance_patch_plan(
+            Path(source),
+            curve_guidance=guidance,
+            goal_text=state.goal_text,
+            output_path=output_path,
+        )
+        result = plan.model_dump(mode="json")
+        state.checkpoint["guidance_patch_plans"] = int(state.checkpoint.get("guidance_patch_plans") or 0) + 1
+        state.checkpoint["guidance_patch_plan_path"] = result.get("output_path")
+        state.checkpoint["guidance_patch_plan_source_path"] = source
+        state.checkpoint["guidance_patch_signature"] = action.request.get("guidance_signature") or guidance_signature(guidance, source)
+        if plan.status == "completed" and plan.next_request:
+            state.checkpoint["pending_guidance_patch"] = result
+        elif plan.status == "no_action":
+            state.checkpoint["skipped_guidance_patch"] = result
+        else:
+            state.checkpoint["failed_guidance_patch"] = result
         return result, source
     if action.kind == DevsimAgentActionKind.PLAN_SENTAURUS_PATCH:
         source = action.source_state_path or state.latest_state_path

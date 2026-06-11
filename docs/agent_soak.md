@@ -11,8 +11,10 @@ The soak layer now adds the long-running agent scaffolding around the inner DEVS
 - compiles the natural-language goal into a mission spec with objectives, constraints, allowed deck mutations, stop conditions, validation plan, and risk gates;
 - retrieves prior agent memory records before the run and appends a compact memory record when the run reaches a terminal state;
 - classifies failures into recovery families, records retry decisions, and patches the next autonomous request when a safe retry is available;
-- reads curve shape, baseline-vs-mutation effect, and Pareto decision evidence to recommend the next deck-patch direction;
+- reads curve shape, baseline-vs-mutation effect, and Pareto decision evidence to recommend and execute the next deck-patch direction;
 - writes lifecycle events for start, resume, cycle, recovery, curve guidance, and memory writeback.
+
+If an inner autonomous cycle returns `completed` but the new `curve_guidance` contains an actionable `next_patch_hint`, the soak does not stop immediately. It starts another slice, lets `plan_guidance_patch` build the next request/deck patch, executes that patch through the original runner, and then compares the patched curve back against the source state. The default cap is one automatic curve-guided patch; use `--max-curve-guided-patches` to raise it or `--no-auto-curve-guidance` to only record the recommendation.
 
 Run a short real LLM/DEVSIM soak:
 
@@ -70,6 +72,7 @@ Important state fields:
 - `agent_memory_context`: compact records retrieved before the run;
 - `recovery_events`: failure family, retry/pause decision, request patch, and next action;
 - `curve_guidance`: shape/effect/Pareto-driven next patch hint;
+- `curve_guided_patch_runs`: number of executed guidance-driven patches seen by the inner autonomous agent;
 - `lifecycle_events`: short chronological events for the web transcript and daemon heartbeat;
 - `memory_record_path`: JSONL memory file written under `runs/` unless `--memory-path` or `ACTSOFT_AGENT_MEMORY_PATH` is set.
 
