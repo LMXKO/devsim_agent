@@ -10,17 +10,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tcad_agent.experiment_index import default_index_db_path, list_records, rebuild_index
 from tcad_agent.llm import (
     DEFAULT_API_KEY,
     LLMClient,
     LLMConfig,
     save_persisted_llm_settings,
 )
+from tcad_agent.llm_health import configured_llm_status
 from tcad_agent.run_queue import (
     cancel_item,
     default_queue_db_path,
     enqueue_run,
     get_item,
+    list_items,
     recover_owner_running_items,
     resume_item,
     run_queue_daemon,
@@ -80,6 +83,55 @@ def save_llm_settings_from_payload(payload: dict[str, Any], *, settings_path: Pa
 
 def utc_timestamp() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def safe_list_queue(db_path: Path) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    try:
+        return list_items(db_path, limit=100)
+    except Exception:
+        return []
+
+
+def safe_list_records(root: Path, db_path: Path, rebuild: bool) -> list[dict[str, Any]]:
+    try:
+        if rebuild or not db_path.exists():
+            rebuild_index(root, db_path)
+        return list_records(db_path, limit=100)
+    except Exception:
+        return []
+
+
+def count_json_objects(root: Path, filename: str) -> int:
+    return sum(1 for path in root.rglob(filename) if read_json_if_exists(path))
+
+
+def collect_web_state_data(
+    root: Path | None = None,
+    *,
+    queue_db_path: Path | None = None,
+    index_db_path: Path | None = None,
+    rebuild: bool = True,
+) -> dict[str, Any]:
+    actual_root = (root or PROJECT_ROOT / "runs").resolve()
+    queue_db = queue_db_path or (actual_root / "run_queue.sqlite" if root else default_queue_db_path())
+    index_db = index_db_path or (actual_root / "experiment_index.sqlite" if root else default_index_db_path())
+    queue_rows = safe_list_queue(queue_db)
+    records = safe_list_records(actual_root, index_db, rebuild)
+    return {
+        "generated_at": utc_timestamp(),
+        "root": str(actual_root),
+        "llm_status": configured_llm_status().model_dump(mode="json"),
+        "counts": {
+            "queue_items": len(queue_rows),
+            "experiment_records": len(records),
+            "benchmarks": count_json_objects(actual_root, "benchmark.json"),
+            "validations": count_json_objects(actual_root, "validation_state.json"),
+        },
+        "queue_items": queue_rows,
+        "experiment_records": records,
+    }
 
 
 def bool_from_payload(payload: dict[str, Any], key: str, default: bool) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from datetime import datetime
@@ -208,6 +209,63 @@ def validate_curve_contract(state: dict[str, Any], case: SentaurusContractCase) 
     return checks
 
 
+def read_fake_backend_manifest(project_dir: Path) -> dict[str, Any]:
+    path = project_dir / "actsoft_sentaurus_contract.json"
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def fake_backend_rows(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    backend = manifest.get("fake_backend") if isinstance(manifest.get("fake_backend"), dict) else {}
+    rows = backend.get("curve_rows") if isinstance(backend.get("curve_rows"), list) else None
+    if rows:
+        return [{str(key): str(value) for key, value in row.items()} for row in rows if isinstance(row, dict)]
+    return [
+        {"voltage_v": "0", "current_a": "1e-12", "electric_field_v_per_cm": "1e4"},
+        {"voltage_v": "-10", "current_a": "1e-9", "electric_field_v_per_cm": "2e5"},
+        {"voltage_v": "-20", "current_a": "1e-6", "electric_field_v_per_cm": "8e5"},
+    ]
+
+
+def write_fake_backend_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    columns: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_fake_backend_cli(project_dir: Path | None = None) -> dict[str, Any]:
+    actual_project = project_dir or Path.cwd()
+    manifest = read_fake_backend_manifest(actual_project)
+    backend = manifest.get("fake_backend") if isinstance(manifest.get("fake_backend"), dict) else {}
+    log_name = str(backend.get("log_name") or "contract_des.log")
+    csv_name = str(backend.get("csv_name") or "sentaurus_contract_extract.csv")
+    plt_name = str(backend.get("plt_name") or "contract_des.plt")
+    (actual_project / log_name).write_text(
+        "ACTSOFT SENTaurus CONTRACT FAKE BACKEND\n"
+        "interface_contract_only=true\n"
+        "This output validates agent IO only and is not a Sentaurus physics result.\n"
+        "Sentaurus Device finished\n",
+        encoding="utf-8",
+    )
+    (actual_project / plt_name).write_text(
+        "ACTSOFT interface placeholder for artifact collection only.\n",
+        encoding="utf-8",
+    )
+    write_fake_backend_csv(actual_project / csv_name, fake_backend_rows(manifest))
+    return {"status": "completed", "interface_contract_only": True, "csv": csv_name}
+
+
 def run_fake_sentaurus_contract(project_path: Path, case: SentaurusContractCase, *, output_root: Path) -> tuple[dict[str, Any], list[SentaurusContractCheck]]:
     output_root.mkdir(parents=True, exist_ok=True)
     profile = SentaurusRuntimeProfile(
@@ -225,7 +283,7 @@ def run_fake_sentaurus_contract(project_path: Path, case: SentaurusContractCase,
         profile=profile,
         run_id=f"{case.case_id}_contract",
         flow=["sdevice"],
-        command_args={"sdevice": ["-m", "tcad_agent.tools.sentaurus_fake_backend"]},
+        command_args={"sdevice": ["-m", "tcad_agent.sentaurus_contract", "--fake-backend"]},
         deck_files=case.deck_files,
         timeout_seconds=30,
     )
@@ -297,3 +355,13 @@ def validate_fixture_corpus(
         results.append(validate_sentaurus_contract(project, run_fake_e2e=run_fake_e2e, output_root=case_output))
     return results
 
+
+def main() -> None:
+    if "--fake-backend" not in sys.argv[1:]:
+        print(json.dumps({"status": "failed", "failure_reason": "expected --fake-backend"}, ensure_ascii=False))
+        raise SystemExit(2)
+    print(json.dumps(run_fake_backend_cli(), ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

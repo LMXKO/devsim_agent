@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tcad_agent.llm import LLMConfig, load_persisted_llm_settings
+from tcad_agent.long_run_validation import LongRunValidationRequest, run_long_run_validation
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.run_queue import QueueDaemonResult, QueueStatus, claim_next_items, enqueue_run, get_item, list_items, pause_item
 from tcad_agent.web_app import (
@@ -18,6 +19,7 @@ from tcad_agent.web_app import (
     autonomous_request_from_payload,
     collect_execution_activity,
     collect_recent_experiment_activity,
+    collect_web_state_data,
     compact_conclusion,
     compact_result,
     enqueue_mission_from_payload,
@@ -379,6 +381,17 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(rejected["status"], QueueStatus.CANCELLED.value)
         self.assertEqual(item.status, QueueStatus.CANCELLED)
         self.assertTrue(cancel_written)
+
+    def test_collects_dashboard_data_from_runs_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_long_run_validation(LongRunValidationRequest(validation_id="panel_longrun", validation_root=root))
+            data = collect_web_state_data(root)
+
+        self.assertGreaterEqual(data["counts"]["experiment_records"], 2)
+        self.assertGreaterEqual(data["counts"]["benchmarks"], 2)
+        self.assertEqual(data["counts"]["validations"], 1)
+        self.assertIn("llm_status", data)
 
     def test_compact_result_keeps_artifacts_attempts_cases_and_preview(self) -> None:
         with tempfile.TemporaryDirectory(dir=PROJECT_ROOT / "runs") as tmp:

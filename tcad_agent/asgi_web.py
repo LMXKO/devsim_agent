@@ -5,7 +5,6 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import parse_qs, unquote
 
-from tcad_agent.control_panel import collect_control_panel_data
 from tcad_agent.llm_health import check_llm_health
 from tcad_agent.run_queue import (
     cancel_item,
@@ -24,6 +23,7 @@ from tcad_agent.web_app import (
     approve_item_confirmation,
     collect_execution_activity,
     collect_recent_experiment_activity,
+    collect_web_state_data,
     enqueue_mission_from_payload,
     artifact_content_type,
     int_from_payload,
@@ -100,7 +100,7 @@ async def payload_from_request(receive: Any) -> dict[str, Any]:
 
 
 def collect_state() -> dict[str, Any]:
-    data = collect_control_panel_data(
+    data = collect_web_state_data(
         CONFIG.root,
         queue_db_path=CONFIG.queue_db_path,
         index_db_path=CONFIG.index_db_path,
