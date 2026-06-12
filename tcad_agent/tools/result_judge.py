@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from enum import Enum
 from pathlib import Path
@@ -49,10 +47,6 @@ class QualityReport(BaseModel):
     issues: list[QualityIssue]
     metrics: dict[str, Any]
     recommended_next_action: str
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_iv_csv(path: Path) -> list[IVPoint]:
@@ -384,36 +378,3 @@ def judge_pn_junction_iv(
         metrics=metrics,
         recommended_next_action=choose_recommended_action(status, issues),
     )
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Judge PN junction IV result quality.")
-    parser.add_argument("--summary", type=Path, required=True)
-    parser.add_argument("--state", type=Path, default=None)
-    parser.add_argument("--max-abs-current-a", type=float, default=1.0)
-    parser.add_argument("--min-points", type=int, default=3)
-    parser.add_argument("--max-convergence-failures", type=int, default=0)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    summary = load_json(args.summary)
-    attempts = []
-    if args.state:
-        attempts = load_json(args.state).get("attempts", [])
-    report = judge_pn_junction_iv(
-        summary,
-        attempts=attempts,
-        policy=QualityPolicy(
-            min_points=args.min_points,
-            max_abs_current_a=args.max_abs_current_a,
-            max_convergence_failures=args.max_convergence_failures,
-        ),
-    )
-    print(json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False))
-    raise SystemExit(0 if report.status != QualityStatus.FAILED else 1)
-
-
-if __name__ == "__main__":
-    main()

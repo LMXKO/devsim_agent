@@ -167,15 +167,9 @@ An agent should treat the tool response as the source of truth:
 
 For long-running workflows, the agent should store the `run_id` and call with `--resume` after interruptions.
 
-## Result Judge CLI
+## Result Judge
 
-The quality judge can also be run independently:
-
-```bash
-python3.11 -m tcad_agent.tools.result_judge \
-  --summary runs/agent_tools/pn_junction_iv/quality_smoke/attempt_runs/pn_junction/attempt_001/summary.json \
-  --state runs/agent_tools/pn_junction_iv/quality_smoke/state.json
-```
+The PN runner writes deterministic quality checks into `quality_report`; use the runner state as the review artifact instead of running a second standalone judge command.
 
 ## Agent Follow-Up
 
