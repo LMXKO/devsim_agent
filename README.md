@@ -78,7 +78,7 @@ Saved web settings are written under `runs/` and are ignored by git.
 Run an autonomous DEVSIM task:
 
 ```bash
-python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+python3.11 -m tcad_agent.autonomous_devsim_agent \
   --goal "Run PN IV, repair suspicious curves, benchmark evidence, and summarize" \
   --initial-tool-name pn_junction_iv_sweep \
   --initial-request-json '{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"}' \
@@ -88,7 +88,7 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
 Run a long-horizon mission:
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --goal "Analyze 2D NMOS Id-Vg/Id-Vd, extract Vth/SS/Ion-Ioff/DIBL, repair failures, and conclude" \
   --use-llm \
   --execute
@@ -130,7 +130,7 @@ python3.11 -m tcad_agent.power_mosfet_signoff --run-id ldmos_gate_001
 Gate an external Sentaurus industrial runner without committing commercial assets:
 
 ```bash
-python3.11 -m tcad_agent.tools.industrial_external_runner \
+python3.11 -m tcad_agent.industrial_external_runner \
   --goal "GaN HEMT BV current collapse" \
   --template-id gan_hemt_id_bv \
   --project /path/to/user_owned_sentaurus_project \
@@ -140,25 +140,25 @@ python3.11 -m tcad_agent.tools.industrial_external_runner \
 Validate long-run behavior:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --validation-id autonomous_e2e
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --validation-id autonomous_e2e
 ```
 
 Run a long-duration autonomous soak:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_soak --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 0.5 --max-steps 40 --step-slice 4 --execute
+python3.11 -m tcad_agent.agent_soak --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 0.5 --max-steps 40 --step-slice 4 --execute
 ```
 
 Run the same goal through the queue-backed soak daemon:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_soak_daemon --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 1 --max-steps 80 --execute
+python3.11 -m tcad_agent.agent_soak_daemon --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" --duration-hours 1 --max-steps 80 --execute
 ```
 
 Run only the natural-language Power MOSFET marathon:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --scenario-id natural_language_power_marathon
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id natural_language_power_marathon
 ```
 
 Generate a dashboard or report:
@@ -175,7 +175,7 @@ Sentaurus support is an adapter for a licensed installation that already exists 
 Example:
 
 ```bash
-python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+python3.11 -m tcad_agent.autonomous_devsim_agent \
   --goal "Use Sentaurus to reduce LDMOS leakage without sacrificing BV/Ron/field peak" \
   --sentaurus-project-path /Users/me/tcad_projects/ldmos_case \
   --sentaurus-profile-path ~/.actsoft/sentaurus_profile.json \
@@ -189,7 +189,7 @@ The adapter can copy a project into a controlled run workspace, apply verified s
 When Sentaurus is not installed, validate only the agent-side contract:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_contract \
+python3.11 -m tcad_agent.sentaurus_contract \
   --all-fixtures \
   --fixtures-root tcad_agent/examples/sentaurus_fixtures
 ```

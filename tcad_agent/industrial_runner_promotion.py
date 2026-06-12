@@ -255,7 +255,7 @@ def build_industrial_runner_promotion_plan(
             f"python3.11 -m tcad_agent.device_templates route --goal {json.dumps(goal_text, ensure_ascii=False)}",
             "python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal <goal> --template-id <template>",
             runner["command"] if runner["available"] else "python3.11 -m tcad_agent.tools.extended_device_sweep --device-type <device> --fidelity physics_1d",
-            "python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --validation-id <runner>_promotion",
+            "python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --validation-id <runner>_promotion",
             "python3.11 -m unittest tests.test_physical_benchmark tests.test_autonomous_devsim_agent",
         ]
         plan = IndustrialRunnerPromotionPlan(

@@ -57,4 +57,4 @@ Invalid LLM output falls back to the deterministic plan unless `--no-fallback` i
 mission_state.checkpoint.goal_decomposition
 ```
 
-With `tcad_agent.tools.mission_agent --use-llm`, the mission asks the configured OpenAI-compatible model for this same step plan and then executes it through the mission DAG executor. Invalid LLM output falls back to the deterministic plan unless the mission is run with `--no-llm-fallback`.
+With `tcad_agent.mission_agent --use-llm`, the mission asks the configured OpenAI-compatible model for this same step plan and then executes it through the mission DAG executor. Invalid LLM output falls back to the deterministic plan unless the mission is run with `--no-llm-fallback`.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from enum import Enum
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, ValidationError
 
 from tcad_agent.llm import LLMClient, LLMConfig
-from tcad_agent.task_spec import TaskSpec, parse_task_text
+from tcad_agent.task_spec import PROJECT_ROOT, TaskSpec, parse_task_text, write_task_spec
 
 
 class ChatClient(Protocol):
@@ -499,3 +500,50 @@ def task_spec_from_planning_result(result: TaskPlanningResult) -> TaskSpec:
     if not result.task_spec:
         raise ValueError("Planning result does not include a task_spec.")
     return TaskSpec.model_validate(result.task_spec)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Plan a TCAD TaskSpec from natural-language text.")
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--task-id", default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--task-output", type=Path, default=None)
+    parser.add_argument("--no-fallback", action="store_true")
+    execution_llm = parser.add_mutually_exclusive_group()
+    execution_llm.add_argument("--execution-use-llm", dest="execution_use_llm", action="store_true")
+    execution_llm.add_argument("--execution-no-llm", dest="execution_use_llm", action="store_false")
+    parser.set_defaults(execution_use_llm=None)
+    return parser.parse_args()
+
+
+def default_output_path(task_id: str | None) -> Path:
+    stem = task_id or "planned_task"
+    return PROJECT_ROOT / "runs" / "task_plans" / stem / "task_plan_result.json"
+
+
+def default_task_output_path(task_id: str | None) -> Path:
+    stem = task_id or "planned_task"
+    return PROJECT_ROOT / "runs" / "task_plans" / stem / "task.json"
+
+
+def main() -> None:
+    args = parse_args()
+    result = plan_task_text_with_llm(
+        args.text,
+        task_id=args.task_id,
+        execution_use_llm=args.execution_use_llm,
+        allow_fallback=not args.no_fallback,
+    )
+    output = args.output or default_output_path(result.task_id or args.task_id)
+    write_planning_result(result, output)
+
+    if result.task_spec:
+        task_output = args.task_output or default_task_output_path(result.task_id or args.task_id)
+        write_task_spec(task_spec_from_planning_result(result), task_output)
+
+    print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    raise SystemExit(0 if result.status != PlannerStatus.FAILED else 1)
+
+
+if __name__ == "__main__":
+    main()

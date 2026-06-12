@@ -1,6 +1,6 @@
 # Long-Run Validation
 
-`tcad_agent.tools.long_run_validation` runs unattended validations of the long-horizon execution stack.
+`tcad_agent.long_run_validation` runs unattended validations of the long-horizon execution stack.
 
 The original fast queue smoke suite exercises:
 
@@ -14,7 +14,7 @@ The original fast queue smoke suite exercises:
 Run:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation \
+python3.11 -m tcad_agent.long_run_validation \
   --validation-id smoke_longrun
 ```
 
@@ -36,7 +36,7 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 Run the deterministic E2E harness:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation \
+python3.11 -m tcad_agent.long_run_validation \
   --suite autonomous_e2e \
   --validation-id autonomous_e2e
 ```
@@ -46,7 +46,7 @@ This mode uses lightweight local runners so it can run in CI while still asserti
 Run only the natural-language marathon:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation \
+python3.11 -m tcad_agent.long_run_validation \
   --suite autonomous_e2e \
   --scenario-id natural_language_power_marathon \
   --validation-id nl_power_marathon
@@ -57,7 +57,7 @@ The Sentaurus E2E scenario is deliberately an interface and agent-control valida
 Run everything:
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation \
+python3.11 -m tcad_agent.long_run_validation \
   --suite all \
   --validation-id full_longrun_regression
 ```
@@ -67,7 +67,7 @@ python3.11 -m tcad_agent.tools.long_run_validation \
 For an overnight real-tool validation, pass a real autonomous-agent request. The request is merged into the default real scenario, so it can point at a real user deck, real run roots, objectives, constraints, and LLM settings.
 
 ```bash
-python3.11 -m tcad_agent.tools.long_run_validation \
+python3.11 -m tcad_agent.long_run_validation \
   --suite autonomous_e2e \
   --mode real \
   --use-llm \

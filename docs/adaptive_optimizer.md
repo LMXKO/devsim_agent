@@ -1,6 +1,6 @@
 # Adaptive Optimizer
 
-`tcad_agent.tools.adaptive_optimizer` turns fixed parameter sweeps into a checkpointed optimization loop.
+`tcad_agent.adaptive_optimizer` turns fixed parameter sweeps into a checkpointed optimization loop.
 
 It currently supports one numeric axis. Each round runs a normal `parameter_sweep`, records observations, chooses the best completed case, and proposes new points around that best value. This keeps every TCAD execution fully traceable through existing task, sweep, and tool state files.
 
@@ -9,7 +9,7 @@ It currently supports one numeric axis. Each round runs a normal `parameter_swee
 Plan the first round without executing DEVSIM:
 
 ```bash
-python3.11 -m tcad_agent.tools.adaptive_optimizer \
+python3.11 -m tcad_agent.adaptive_optimizer \
   --optimize-id diode_p_doping_opt_plan \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化 p 区掺杂让漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3 \
@@ -26,7 +26,7 @@ python3.11 -m tcad_agent.tools.adaptive_optimizer \
 Run an adaptive optimization:
 
 ```bash
-python3.11 -m tcad_agent.tools.adaptive_optimizer \
+python3.11 -m tcad_agent.adaptive_optimizer \
   --optimize-id diode_p_doping_opt \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化 p 区掺杂让漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3 \

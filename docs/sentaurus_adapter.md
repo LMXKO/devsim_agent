@@ -147,7 +147,7 @@ Unsupported, unmatched, or path-escaping patches are recorded as unverified. Tre
 ## Autonomous Entry Point
 
 ```bash
-python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+python3.11 -m tcad_agent.autonomous_devsim_agent \
   --goal "用 Sentaurus 跑这个 LDMOS 项目，降低漏电，同时不要牺牲 BV/Ron，必要时提出下一轮 deck patch" \
   --sentaurus-project-path /Users/me/tcad_projects/ldmos_case \
   --sentaurus-profile-path ~/.actsoft/sentaurus_profile.json \
@@ -165,7 +165,7 @@ After that patched run, `sentaurus_mutation_effect_analyzer` compares baseline v
 Use the patch planner directly when Sentaurus is unavailable or when you want a reviewable work package before running:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_patch_planner \
+python3.11 -m tcad_agent.sentaurus_patch_planner \
   --goal "Ramp reverse BV to 1200V, reduce step size if convergence is difficult" \
   --project tcad_agent/examples/sentaurus_fixtures/power_diode_bv \
   --deck-file device.cmd \
@@ -186,7 +186,7 @@ The current vocabulary recognizes continuation/Math controls, BV `Goal` voltage,
 Use the analyzer directly to compare a baseline run against a patched run:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_mutation_effect \
+python3.11 -m tcad_agent.sentaurus_mutation_effect \
   --baseline /tmp/sentaurus_base/sentaurus_state.json \
   --mutation /tmp/sentaurus_patch/sentaurus_state.json \
   --goal "降低漏电，同时不要牺牲 BV/Ron/field peak" \
@@ -209,7 +209,7 @@ The open mutation vocabulary is schema-backed in `tcad_agent.mutation_vocabulary
 Use the refiner after an analyzer result has been written into a patched state:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_patch_refiner \
+python3.11 -m tcad_agent.sentaurus_patch_refiner \
   --state /tmp/sentaurus_patch/sentaurus_state.json \
   --goal "继续降低漏电，同时不要牺牲 BV/Ron/field peak" \
   --use-llm \
@@ -223,7 +223,7 @@ With `--use-llm`, the model can choose among already verified candidates and wri
 Build the lineage archive directly when debugging a multi-run chain:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_lineage \
+python3.11 -m tcad_agent.sentaurus_lineage \
   --state /tmp/sentaurus_patch/sentaurus_state.json \
   --output /tmp/sentaurus_lineage_archive.json
 ```
@@ -239,11 +239,11 @@ Unit tests use fake external commands to validate process control, patching, log
 When a real Sentaurus installation is unavailable, use the contract harness instead of inventing solver behavior:
 
 ```bash
-python3.11 -m tcad_agent.tools.sentaurus_contract \
+python3.11 -m tcad_agent.sentaurus_contract \
   --all-fixtures \
   --fixtures-root tcad_agent/examples/sentaurus_fixtures
 
-python3.11 -m tcad_agent.tools.sentaurus_contract \
+python3.11 -m tcad_agent.sentaurus_contract \
   --project tcad_agent/examples/sentaurus_fixtures/power_diode_bv \
   --run-fake-e2e \
   --output-root /tmp/actsoft_sentaurus_contract_smoke

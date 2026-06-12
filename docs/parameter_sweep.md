@@ -1,6 +1,6 @@
 # Parameter Sweep
 
-`tcad_agent.tools.parameter_sweep` runs multiple `TaskSpec` variants and summarizes the best case by an objective metric.
+`tcad_agent.parameter_sweep` runs multiple `TaskSpec` variants and summarizes the best case by an objective metric.
 
 It is intentionally built above `task_runner`: each case still gets its own `task.json`, `task_run_state.json`, PN tool checkpoint, quality report, and DEVSIM artifacts.
 
@@ -9,7 +9,7 @@ It is intentionally built above `task_runner`: each case still gets its own `tas
 Generate cases without executing DEVSIM:
 
 ```bash
-python3.11 -m tcad_agent.tools.parameter_sweep \
+python3.11 -m tcad_agent.parameter_sweep \
   --sweep-id diode_leakage_plan \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，目标是 -5V 漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3=1e16,1e17,1e18 \
@@ -21,7 +21,7 @@ python3.11 -m tcad_agent.tools.parameter_sweep \
 Run the sweep:
 
 ```bash
-python3.11 -m tcad_agent.tools.parameter_sweep \
+python3.11 -m tcad_agent.parameter_sweep \
   --sweep-id diode_leakage_sweep \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，目标是 -5V 漏电最小，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3=1e17,2e17,5e17 \
@@ -83,7 +83,7 @@ Multiple `--axis` flags create a Cartesian product.
 Let the deterministic parser infer one common axis:
 
 ```bash
-python3.11 -m tcad_agent.tools.parameter_sweep \
+python3.11 -m tcad_agent.parameter_sweep \
   --sweep-planner deterministic \
   --sweep-id diode_p_doping_auto \
   --text "扫描 P 区掺杂从 1e16 到 1e18，做 diode/SBD reverse leakage 到 -5V，目标是漏电最小" \
@@ -94,7 +94,7 @@ python3.11 -m tcad_agent.tools.parameter_sweep \
 Use the LLM sweep planner for freer language:
 
 ```bash
-python3.11 -m tcad_agent.tools.parameter_sweep \
+python3.11 -m tcad_agent.parameter_sweep \
   --sweep-planner llm \
   --sweep-id diode_lifetime_llm \
   --text "请围绕 lifetime 和掺杂做 3 个点的 diode/SBD leakage sweep，反偏到 -5V，目标是漏电最小且曲线可信" \

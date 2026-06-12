@@ -50,7 +50,7 @@ The router emits the selected template, preferred runner, autonomous request, Se
 ## CLI
 
 ```bash
-python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+python3.11 -m tcad_agent.autonomous_devsim_agent \
   --goal "自主跑 PN IV，发现曲线或收敛问题就修复，最后给工程结论" \
   --initial-tool-name pn_junction_iv_sweep \
   --initial-request-json '{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"}' \
@@ -60,7 +60,7 @@ python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
 Run with a user deck, semantic patch, objective gate, and heartbeat/cancel files:
 
 ```bash
-python3.11 -m tcad_agent.tools.autonomous_devsim_agent \
+python3.11 -m tcad_agent.autonomous_devsim_agent \
   --goal "读取我的 DEVSIM deck，调薄 oxide 后跑 IV，并检查漏电/Ron tradeoff" \
   --source-deck-path path/to/user_deck.py \
   --deck-patches-json '[{"deck_path":"geometry.oxide_thickness_nm","request_path":"oxide_thickness_nm","value":45}]' \
@@ -96,7 +96,7 @@ Useful options:
 The run queue registers `autonomous_devsim_agent`, so a long job can be enqueued:
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --tool autonomous_devsim_agent \
   --request-json '{"goal_text":"自主完成 PN IV，失败时修复并给结论","execute":true,"max_steps":8}'
 ```

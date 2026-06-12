@@ -1,6 +1,6 @@
 # TCAD Mission Agent
 
-`tcad_agent.tools.mission_agent` is the long-horizon outer loop for the project goal:
+`tcad_agent.mission_agent` is the long-horizon outer loop for the project goal:
 
 > AI long-term autonomous driving of TCAD to complete user-specified tasks.
 
@@ -55,7 +55,7 @@ When LLM decomposition is enabled, the mission also enables LLM-backed replannin
 Use `--use-llm` to ask the configured OpenAI-compatible model to generate the goal-decomposition DAG before execution:
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --mission-id mission_llm \
   --goal "优化 MOSFET，让漏电低且 Ion/Ioff 达标，失败时自动修复，最后给结论" \
   --use-llm \
@@ -69,7 +69,7 @@ The LLM endpoint is documented in [llm_config.md](llm_config.md). Public builds 
 ## Plan Only
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --mission-id mission_plan \
   --goal "完成一个 MOS C-V 并生成结论"
 ```
@@ -77,7 +77,7 @@ python3.11 -m tcad_agent.tools.mission_agent \
 ## Execute
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --mission-id mission_mos_cv \
   --goal "完成一个 MOS C-V 从 -0.5V 到 0.5V，并给工程结论" \
   --execute \
@@ -88,7 +88,7 @@ python3.11 -m tcad_agent.tools.mission_agent \
 ## Resume
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --mission-id mission_mos_cv \
   --goal "完成一个 MOS C-V 从 -0.5V 到 0.5V，并给工程结论" \
   --resume \
@@ -100,7 +100,7 @@ python3.11 -m tcad_agent.tools.mission_agent \
 Use the run queue when multiple missions should be scheduled or recovered by workers:
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --tool supervisor \
   --goal "做 2D MOSFET Id-Vg gate_start 0V gate_stop 1V"
 ```

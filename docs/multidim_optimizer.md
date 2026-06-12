@@ -1,13 +1,13 @@
 # Multi-Dimensional Optimizer
 
-`tcad_agent.tools.multidim_optimizer` runs checkpointed coarse-to-fine optimization across two or more numeric TCAD task fields.
+`tcad_agent.multidim_optimizer` runs checkpointed coarse-to-fine optimization across two or more numeric TCAD task fields.
 
 It reuses `parameter_sweep` as the execution layer. Each candidate point is launched as a one-case sweep, so the optimizer can skip parameter combinations that were already evaluated when a long run is resumed.
 
 ## Execute A 2D Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.multidim_optimizer \
+python3.11 -m tcad_agent.multidim_optimizer \
   --optimize-id diode_bv_2d_opt \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V，优化掺杂和结位置，让漏电最小且 BV 风险可解释，max_attempts 3 max_cycles 2" \
   --axis parameters.p_doping_cm3:log:1e16:1e18:3 \

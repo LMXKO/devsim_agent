@@ -77,7 +77,7 @@ The page posts mission requests to `/api/missions`. By default those requests ar
 }
 ```
 
-The in-page worker controls call the same durable queue worker used by `tcad_agent.tools.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite`; soak states remain under `runs/agent_soak/<queue_id>/`, with nested autonomous-agent state, heartbeat, cancel file, and cockpit artifacts.
+The in-page worker controls call the same durable queue worker used by `tcad_agent.run_queue`. Work remains checkpointed in `runs/run_queue.sqlite`; soak states remain under `runs/agent_soak/<queue_id>/`, with nested autonomous-agent state, heartbeat, cancel file, and cockpit artifacts.
 
 The page keeps this lifecycle readable without adding mode panels: mission spec, recovery, curve guidance, and memory events are rendered as compact transcript entries derived from durable JSON state.
 

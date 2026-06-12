@@ -1,6 +1,6 @@
 # Tool Convergence
 
-`tcad_agent.tools.tool_convergence` runs convergence checks directly over agent-tool request fields.
+`tcad_agent.tool_convergence` runs convergence checks directly over agent-tool request fields.
 
 It complements PN-specific `mesh_convergence` by supporting MOS C-V, diode breakdown, and 2D MOSFET tool requests.
 
@@ -11,7 +11,7 @@ For agent-generated plans, the request boundary normalizes common human/LLM alia
 MOSFET mesh convergence over `x_divisions`:
 
 ```bash
-python3.11 -m tcad_agent.tools.tool_convergence \
+python3.11 -m tcad_agent.tool_convergence \
   --convergence-id mosfet_x_mesh \
   --tool mosfet_2d_id_sweep \
   --base-request-json '{"sweep_type":"idvg","gate_start":0,"gate_stop":0.5,"gate_step":0.5,"drain_voltage":0.05}' \
@@ -27,7 +27,7 @@ python3.11 -m tcad_agent.tools.tool_convergence \
 MOSFET model convergence over mobility model:
 
 ```bash
-python3.11 -m tcad_agent.tools.tool_convergence \
+python3.11 -m tcad_agent.tool_convergence \
   --convergence-id mosfet_mobility_model \
   --tool mosfet_2d_id_sweep \
   --base-request-json '{"sweep_type":"idvg","gate_start":0,"gate_stop":0.5,"gate_step":0.5}' \
@@ -41,7 +41,7 @@ python3.11 -m tcad_agent.tools.tool_convergence \
 MOS capacitor mesh convergence over oxide spacing:
 
 ```bash
-python3.11 -m tcad_agent.tools.tool_convergence \
+python3.11 -m tcad_agent.tool_convergence \
   --tool mos_capacitor_cv_sweep \
   --base-request-json '{"start":-0.5,"stop":0.5,"step":0.25}' \
   --axis-path oxide_spacing_nm \

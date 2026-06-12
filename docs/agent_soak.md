@@ -1,6 +1,6 @@
 # Agent Soak
 
-`tcad_agent.tools.agent_soak` is the long-duration wrapper for `autonomous_devsim_agent`.
+`tcad_agent.agent_soak` is the long-duration wrapper for `autonomous_devsim_agent`.
 
 It runs the same autonomous agent in step slices, then persists a soak-level checkpoint, heartbeat, decision counts, latest agent state, and minimal cockpit after each cycle. This is the entry point for "let the AI operate DEVSIM for a long time" validation.
 
@@ -19,7 +19,7 @@ If an inner autonomous cycle returns `completed` but the new `curve_guidance` co
 Run a short real LLM/DEVSIM soak:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_soak \
+python3.11 -m tcad_agent.agent_soak \
   --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" \
   --soak-id power_mosfet_soak_001 \
   --duration-hours 0.5 \
@@ -35,7 +35,7 @@ python3.11 -m tcad_agent.tools.agent_soak \
 Resume the same soak:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_soak \
+python3.11 -m tcad_agent.agent_soak \
   --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" \
   --soak-id power_mosfet_soak_001 \
   --resume \
@@ -50,7 +50,7 @@ Cancel is file-based. Create the cancel file shown in `agent_soak_state.json`, o
 Run the same mission through the queue-backed daemon:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_soak_daemon \
+python3.11 -m tcad_agent.agent_soak_daemon \
   --goal "AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak" \
   --daemon-id power_mosfet_daemon_001 \
   --duration-hours 1 \

@@ -14,7 +14,7 @@ This layer is intentionally advisory:
 Use the configured OpenAI-compatible endpoint to produce a task plan:
 
 ```bash
-python3.11 -m tcad_agent.tools.task_planner \
+python3.11 -m tcad_agent.task_planner \
   --task-id diode_planner_smoke \
   --text "做一个 diode/SBD reverse leakage，从 0V 扫到 -5V，初始步长 1V，最小步长 0.25V，最多 3 次 attempt，最多 3 轮" \
   --execution-no-llm
@@ -54,7 +54,7 @@ Here:
 By default, planner failures fall back to deterministic parsing. To require a valid LLM-generated plan:
 
 ```bash
-python3.11 -m tcad_agent.tools.task_planner \
+python3.11 -m tcad_agent.task_planner \
   --task-id diode_planner_strict \
   --text "diode/SBD reverse leakage from 0 to -5 V step 1 V" \
   --no-fallback
@@ -92,7 +92,7 @@ The planner repair layer currently:
 The planner can also emit device parameters:
 
 ```bash
-python3.11 -m tcad_agent.tools.task_planner \
+python3.11 -m tcad_agent.task_planner \
   --task-id diode_param_planner \
   --text "做 diode/SBD reverse leakage，0 到 -5V，步长 0.5V，器件长度 0.2um，结位置 0.08um，P 区掺杂 1e17，N 区掺杂 2e17，温度 325K" \
   --execution-no-llm \

@@ -9,6 +9,5 @@ The fixtures use publicly visible Sentaurus command-file concepts such as
 semantic patching, CSV extraction contracts, artifact lineage, and long-run
 control without requiring a local Sentaurus license.
 
-The optional fake backend used by `tcad_agent.tools.sentaurus_contract` produces
+The optional fake backend used by `tcad_agent.sentaurus_contract` produces
 interface-only logs and CSV files. It is not a Sentaurus physics simulator.
-

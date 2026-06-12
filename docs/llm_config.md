@@ -48,7 +48,7 @@ The check reports `unconfigured`, `passed`, or `failed` with the configured base
 Use the configured model to generate the mission goal-decomposition DAG before execution:
 
 ```bash
-python3.11 -m tcad_agent.tools.mission_agent \
+python3.11 -m tcad_agent.mission_agent \
   --mission-id mission_llm \
   --goal "帮我完成一个 MOSFET Id-Vg 任务，收敛失败时自动调步长，最后给工程结论" \
   --use-llm \

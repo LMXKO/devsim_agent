@@ -1,6 +1,6 @@
 # Schottky IV Calibration
 
-`tcad_agent.tools.schottky_calibration` calibrates Schottky IV parameters against a trusted curve.
+`tcad_agent.schottky_calibration` calibrates Schottky IV parameters against a trusted curve.
 
 It searches a parameter grid for:
 
@@ -14,14 +14,14 @@ The objective is log-current RMSE in decades. This is intentionally fast: the gr
 Run with the built-in trusted curve:
 
 ```bash
-python3.11 -m tcad_agent.tools.schottky_calibration \
+python3.11 -m tcad_agent.schottky_calibration \
   --calibration-id schottky_cal_smoke
 ```
 
 Run against a CSV target:
 
 ```bash
-python3.11 -m tcad_agent.tools.schottky_calibration \
+python3.11 -m tcad_agent.schottky_calibration \
   --target-curve trusted_schottky_iv.csv \
   --voltage-column voltage_v \
   --current-column current_a \
@@ -34,7 +34,7 @@ python3.11 -m tcad_agent.tools.schottky_calibration \
 Verify the best candidate with DEVSIM:
 
 ```bash
-python3.11 -m tcad_agent.tools.schottky_calibration \
+python3.11 -m tcad_agent.schottky_calibration \
   --calibration-id schottky_cal_devsim \
   --verify-with-devsim
 ```

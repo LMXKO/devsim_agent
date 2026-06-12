@@ -62,7 +62,7 @@ For capability-boundary failures, repair deliberately does not fake a numeric re
 The supervisor routes goals containing `repair`, `修复`, `失败恢复`, or `收敛失败` to this tool using the most recent indexed state.
 
 ```bash
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --goal "给最近失败的 MOSFET DIBL split 或高 Vd Id-Vg 收敛失败生成修复策略" \
   --execute \
   --max-cycles 3

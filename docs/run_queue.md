@@ -1,6 +1,6 @@
 # TCAD Run Queue
 
-`tcad_agent.tools.run_queue` is the durable experiment-management layer for long-running TCAD work.
+`tcad_agent.run_queue` is the durable experiment-management layer for long-running TCAD work.
 
 It stores queued runs in SQLite, leases work to workers, and keeps enough state to resume after process crashes or machine restarts. Built-in executable items include `supervisor`, `mission_agent`, `autonomous_devsim_agent`, and `agent_soak`, so a queue entry can represent either one delegated TCAD action or a long-horizon DEVSIM agent session.
 
@@ -21,7 +21,7 @@ It stores queued runs in SQLite, leases work to workers, and keeps enough state 
 ## Enqueue A Supervisor Goal
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --queue-id q_mosfet_goal \
   --tool supervisor \
   --goal "做 2D MOSFET Id-Vg gate_start 0V gate_stop 1V gate_step 0.25V drain_voltage 0.05V" \
@@ -33,7 +33,7 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
 Equivalent JSON request form:
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --tool supervisor \
   --request-json '{"goal_text":"做 PN 二极管 breakdown 从 0V 到 -5V step 0.5V","max_cycles":3,"execute":true}'
 ```
@@ -43,7 +43,7 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
 Use `autonomous_devsim_agent` when the queue item should directly keep operating DEVSIM-backed tools over multiple steps: observe state, choose a tool, run or repair it, benchmark evidence, generate a conclusion, and continue until done or blocked for confirmation.
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --queue-id q_devsim_agent_pn \
   --tool autonomous_devsim_agent \
   --request-json '{"goal_text":"自主跑 PN IV，发现曲线或收敛问题就修复，最后给工程结论","initial_tool_name":"pn_junction_iv_sweep","initial_request":{"start":0,"stop":0.5,"step":0.1,"run_id":"pn_auto_001"},"execute":true,"max_steps":8}' \
@@ -59,7 +59,7 @@ This is the closest queue-level entry point for the product goal: an AI agent th
 Use `agent_soak` when the queue item should own a multi-slice autonomous mission with natural-language mission compilation, recovery, memory writeback, curve guidance, cockpit snapshots, and lifecycle state.
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --queue-id q_power_soak \
   --tool agent_soak \
   --request-json '{"goal_text":"AI 长时间自主操作 DEVSIM，优化 Power MOSFET BV/Ron/leakage/field peak","execute":true,"duration_hours":1,"max_steps":80,"step_slice":4,"autonomous_request":{"use_llm":true,"allow_llm_fallback":true}}' \
@@ -68,14 +68,14 @@ python3.11 -m tcad_agent.tools.run_queue enqueue \
   --budget-seconds 21600
 ```
 
-For a one-command queue-backed wrapper, use `tcad_agent.tools.agent_soak_daemon`; it enqueues the soak item if needed, starts the polling daemon, and writes `runs/agent_soak_daemon/<daemon_id>/agent_soak_daemon_state.json`.
+For a one-command queue-backed wrapper, use `tcad_agent.agent_soak_daemon`; it enqueues the soak item if needed, starts the polling daemon, and writes `runs/agent_soak_daemon/<daemon_id>/agent_soak_daemon_state.json`.
 
 ## Enqueue A Long-Horizon Mission
 
 Use `mission_agent` when the queue item should refresh history, delegate to the supervisor, repair suspicious runs, and write a conclusion.
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue enqueue \
+python3.11 -m tcad_agent.run_queue enqueue \
   --queue-id q_autonomous_mosfet \
   --tool mission_agent \
   --request-json '{"goal_text":"做 MOSFET Id-Vg，检查 mesh/model convergence，修复失败点，最后给工程结论","use_llm_decomposer":true,"allow_llm_fallback":true,"execute":true}' \
@@ -99,7 +99,7 @@ Open `http://127.0.0.1:8766` to enqueue missions, start/stop a worker, pause/res
 ## Run A Worker
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue worker \
+python3.11 -m tcad_agent.run_queue worker \
   --owner tcad_worker_1 \
   --concurrency 1 \
   --lease-seconds 7200
@@ -114,7 +114,7 @@ Concurrency is controlled by leases. Multiple workers can point at the same queu
 For longer autonomous sessions, run a polling daemon instead of a one-shot worker:
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue daemon \
+python3.11 -m tcad_agent.run_queue daemon \
   --owner tcad_daemon_1 \
   --concurrency 1 \
   --lease-seconds 7200 \
@@ -128,9 +128,9 @@ The daemon repeatedly runs the worker, sleeps when no item is available, and exi
 ## Inspect History
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue list --limit 20
-python3.11 -m tcad_agent.tools.run_queue list --status failed
-python3.11 -m tcad_agent.tools.run_queue show q_mosfet_goal
+python3.11 -m tcad_agent.run_queue list --limit 20
+python3.11 -m tcad_agent.run_queue list --status failed
+python3.11 -m tcad_agent.run_queue show q_mosfet_goal
 ```
 
 For completed TCAD artifacts, rebuild and query the experiment index as the second memory layer:
@@ -143,9 +143,9 @@ python3.11 -m tcad_agent.experiment_index --list --limit 20
 ## Pause, Resume, Cancel
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue pause q_mosfet_goal
-python3.11 -m tcad_agent.tools.run_queue resume q_mosfet_goal
-python3.11 -m tcad_agent.tools.run_queue cancel q_mosfet_goal
+python3.11 -m tcad_agent.run_queue pause q_mosfet_goal
+python3.11 -m tcad_agent.run_queue resume q_mosfet_goal
+python3.11 -m tcad_agent.run_queue cancel q_mosfet_goal
 ```
 
 Pause clears the worker lease. Cancel clears the lease and, for `autonomous_devsim_agent` items, writes `cancel.requested` under the agent directory. The autonomous agent checks that token at step boundaries and writes `heartbeat.json` with the active step, action, and process metadata. Core DEVSIM subprocess helpers also poll the token and terminate the child process when it appears.
@@ -155,7 +155,7 @@ If an autonomous item returns `waiting_for_user`, the queue stores its result an
 ## Recover Interrupted Work
 
 ```bash
-python3.11 -m tcad_agent.tools.run_queue recover
+python3.11 -m tcad_agent.run_queue recover
 ```
 
 Expired `running` leases are returned to `queued` if attempts remain. If `max_attempts` has been reached, the item becomes `failed`.

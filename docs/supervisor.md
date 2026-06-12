@@ -1,6 +1,6 @@
 # TCAD Supervisor
 
-`tcad_agent.tools.supervisor` is the first long-running top-level controller.
+`tcad_agent.supervisor` is the first long-running top-level controller.
 
 It is intentionally conservative: it uses deterministic routing today, persists every decision, and can be resumed later. The goal is to provide the durable control loop that future LLM planning can plug into.
 
@@ -43,7 +43,7 @@ Currently supported routed actions:
 ## Plan Only
 
 ```bash
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_plan \
   --goal "做一个 MOS C-V 从 -0.5V 到 0.5V"
 ```
@@ -53,7 +53,7 @@ This writes a planned action without running TCAD.
 ## Execute
 
 ```bash
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_mos_cv \
   --goal "做 MOS C-V 从 -0.5V 到 0.5V 步长 0.25V 氧化层 5nm 衬底掺杂 1e17" \
   --execute \
@@ -65,49 +65,49 @@ The supervisor first refreshes `runs/experiment_index.sqlite`, then chooses and 
 Example routed goals:
 
 ```bash
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_moscap \
   --goal "MOSCAP C-V 从 -2V 到 2V，tox 5nm，P-sub 1e17，判断 Cox 和平带偏移" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_mosfet_dibl \
   --goal "做 2D MOSFET 低/高 Vd 的 Id-Vg split，提取 Vth、SS、Ion/Ioff 和 DIBL" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_breakdown \
   --goal "做 diode/SBD reverse leakage 和 breakdown，从 0V 到 -5V step 0.5V breakdown_current 1e-6" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_schottky_cal \
   --goal "校准 Schottky/SBD 到可信曲线 trusted_schottky_iv.csv，并用 DEVSIM 复核" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_ldmos \
   --goal "LDMOS BV 和 Ron tradeoff，检查 impact ionization、场峰值和 Ron 分解" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_gan_hemt \
   --goal "GaN HEMT 输出特性、BV 和 current collapse 风险，列出 polarization/trap/self-heating 缺口" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_bjt \
   --goal "BJT Gummel plot、beta、Early voltage 和 collector leakage 评估" \
   --execute \
   --max-cycles 3
 
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_finfet \
   --goal "FinFET/GAA DIBL、Cgg/Cgd 和 variability campaign 签核计划" \
   --execute \
@@ -121,7 +121,7 @@ Specialized device routing uses `device_templates` as a capability boundary. `ex
 ## Resume
 
 ```bash
-python3.11 -m tcad_agent.tools.supervisor \
+python3.11 -m tcad_agent.supervisor \
   --supervisor-id sup_mos_cv \
   --goal "做 MOS C-V 从 -0.5V 到 0.5V 步长 0.25V" \
   --resume \

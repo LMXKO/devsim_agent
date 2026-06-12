@@ -1,13 +1,13 @@
 # Mesh Convergence Tool
 
-`tcad_agent.tools.mesh_convergence` runs a checkpointed mesh sensitivity check for a TCAD task.
+`tcad_agent.mesh_convergence` runs a checkpointed mesh sensitivity check for a TCAD task.
 
 It uses `parameter_sweep` to evaluate the same base task at multiple mesh settings, then compares the objective value between the two finest completed meshes. This is the first automated guard against results that are numerically completed but mesh-dependent.
 
 ## Run A Diode/SBD Mesh Check
 
 ```bash
-python3.11 -m tcad_agent.tools.mesh_convergence \
+python3.11 -m tcad_agent.mesh_convergence \
   --convergence-id diode_leakage_mesh_check \
   --text "diode/SBD reverse leakage 从 0V 扫到 -5V 步长 0.5V max_attempts 3 max_cycles 2" \
   --axis-path mesh.junction_spacing_um \
