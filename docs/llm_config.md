@@ -33,13 +33,15 @@ export ACTSOFT_LLM_TIMEOUT_SECONDS="60"
 
 The URL should point to the OpenAI-compatible API root, not to `/chat/completions`. The client appends the chat-completions path through the OpenAI SDK.
 
-## Smoke Test
+## Health Check
 
-```bash
-python3.11 -m tcad_agent.examples.llm_smoke
+Use the settings dialog's LLM check action after saving configuration. It calls the same health path used by the web workbench:
+
+```http
+POST /api/llm/check
 ```
 
-The smoke test sends one short request and prints the model response. It reports `unconfigured` when URL or model is blank.
+The check reports `unconfigured`, `passed`, or `failed` with the configured base URL, model, latency, and failure reason when available.
 
 ## Mission Planning
 
