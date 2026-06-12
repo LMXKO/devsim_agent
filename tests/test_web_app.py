@@ -10,7 +10,6 @@ from tcad_agent.llm import LLMConfig, load_persisted_llm_settings
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.run_queue import QueueDaemonResult, QueueStatus, claim_next_items, enqueue_run, get_item, list_items, pause_item
 from tcad_agent.web_app import (
-    SEMICONDUCTOR_TEST_CASES,
     WebAppConfig,
     WorkerController,
     activity_has_artifacts,
@@ -193,14 +192,9 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('class="action-stack"', html)
         self.assertIn('class="advanced-menu"', html)
         self.assertIn("<summary>选项</summary>", html)
-        self.assertIn('<details class="example-menu">', html)
-        self.assertIn("<summary>例子</summary>", html)
-        self.assertIn("case-title", html)
-        self.assertIn("case-desc", html)
-        self.assertIn('id="caseRail"', html)
-        self.assertIn("MOSCAP 曲线偏移", html)
-        self.assertLess(html.index('id="goalText"'), html.index('id="caseRail"'))
-        self.assertLess(html.index('id="caseRail"'), html.index('id="missionActionBtn"'))
+        self.assertNotIn('<details class="example-menu">', html)
+        self.assertNotIn('id="caseRail"', html)
+        self.assertLess(html.index('id="goalText"'), html.index('id="missionActionBtn"'))
 
     def test_llm_settings_blank_api_key_overwrites_existing_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,29 +440,6 @@ class WebAppTest(unittest.TestCase):
         self.assertNotIn('"quality_status"', encoded)
         self.assertEqual(compact["recent_records_summary"]["quality_counts"]["failed"], 1)
         self.assertEqual(compact["index"]["records_indexed"], 143)
-
-    def test_semiconductor_engineering_test_cases_are_real_mission_templates(self) -> None:
-        self.assertGreaterEqual(len(SEMICONDUCTOR_TEST_CASES), 14)
-        ids = {case["id"] for case in SEMICONDUCTOR_TEST_CASES}
-        self.assertIn("mosfet_idvg_split", ids)
-        self.assertIn("diode_bv_leakage", ids)
-        self.assertIn("mosfet_output_kink_debug", ids)
-        self.assertIn("mesh_vs_model_signoff", ids)
-        self.assertIn("ldmos_bv_ron_tradeoff", ids)
-        self.assertIn("igbt_turnoff_tail", ids)
-        self.assertIn("gan_hemt_current_collapse", ids)
-        self.assertIn("bjt_gummel_gain", ids)
-        self.assertIn("finfet_dibl_cv", ids)
-        self.assertIn("soi_finfet_variability", ids)
-        self.assertNotIn("pn_doping_unit_regression", ids)
-        for case in SEMICONDUCTOR_TEST_CASES:
-            self.assertIn("业务任务", case["goal"])
-            self.assertGreaterEqual(case["max_cycles"], 12)
-            self.assertTrue(case["expected_outputs"])
-            self.assertTrue(
-                any(marker in case["goal"] for marker in ["帮我", "我想", "客户", "项目", "麻烦", "请", "你"]),
-                case["goal"],
-            )
 
     def test_preview_artifact_rejects_paths_outside_runs(self) -> None:
         self.assertIsNone(preview_artifact("/tmp/not_under_runs.csv"))

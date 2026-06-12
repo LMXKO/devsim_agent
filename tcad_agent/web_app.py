@@ -60,178 +60,6 @@ CAPABILITIES: list[dict[str, Any]] = [
     },
 ]
 
-
-SEMICONDUCTOR_TEST_CASES: list[dict[str, Any]] = [
-    {
-        "id": "moscap_cv_oxide_qc",
-        "title": "MOSCAP 曲线偏移",
-        "goal": (
-            "业务任务：这批 MOSCAP 的 C-V 曲线整体有点往负压偏，帮我先按 P-sub 1e17、tox 5nm "
-            "从 -2V 扫到 2V 看一下。重点别只给图，顺便判断 Cox、Cmin 和平带点像不像固定电荷问题。"
-        ),
-        "priority": 20,
-        "max_cycles": 12,
-        "expected_outputs": ["C-V 曲线", "Cox/Cmin", "平带偏移判断", "中文结论"],
-    },
-    {
-        "id": "moscap_flatband_customer_curve",
-        "title": "MOSCAP 客户平带点",
-        "goal": (
-            "业务任务：客户给的 MOSCAP C-V 平带点比我们仿真大概负偏 0.1V。"
-            "帮我用 tox 5nm 和 fixed oxide charge 5e11 cm^-2 做个快速解释，看看等效平带偏移是不是一个量级，最后说值不值得继续校准。"
-        ),
-        "priority": 16,
-        "max_cycles": 14,
-        "expected_outputs": ["C-V 结果", "平带偏移估算", "Qf 合理性", "校准建议"],
-    },
-    {
-        "id": "mosfet_idvg_split",
-        "title": "MOSFET DIBL 分裂",
-        "goal": (
-            "业务任务：帮我看一下这个 2D NMOS 的线性区和饱和区 Id-Vg。Vd 用 0.05V 和 1.0V 两个点，"
-            "Vg 大概从 0 扫到 1.2V。我要 Vth、SS、Ion/Ioff，还有 DIBL 有没有明显风险；中间收敛失败你自己调步长重跑。"
-        ),
-        "priority": 18,
-        "max_cycles": 16,
-        "expected_outputs": ["Id-Vg split", "Vth/SS/Ion-Ioff", "DIBL 风险", "重试过程"],
-    },
-    {
-        "id": "mosfet_output_kink_debug",
-        "title": "MOSFET 输出 kink",
-        "goal": (
-            "业务任务：客户要看 NMOS 输出特性，我想先固定几个 Vg，比如 0.8、1.0、1.2V，"
-            "然后把 Vd 从 0 拉到 1.2V。帮我画 Id-Vd，看看 Ron、饱和电流和高压段有没有 kink，最后说这个结果能不能拿去讨论。"
-        ),
-        "priority": 16,
-        "max_cycles": 14,
-        "expected_outputs": ["Id-Vd 曲线", "Ron/饱和电流", "kink 检查", "可信度结论"],
-    },
-    {
-        "id": "mesh_vs_model_signoff",
-        "title": "MOSFET 签核证据",
-        "goal": (
-            "业务任务：这个 MOSFET 结果明天要给项目会，我需要一个能站得住的版本。"
-            "请先跑主曲线，再做网格或模型可信度检查；如果中间某个 convergence case 挂了，自己重新编排，不要直接丢一个失败给我。"
-        ),
-        "priority": 17,
-        "max_cycles": 16,
-        "expected_outputs": ["主曲线", "收敛验证", "自动再编排", "签核结论"],
-    },
-    {
-        "id": "diode_bv_leakage",
-        "title": "Diode/SBD BV 漏电",
-        "goal": (
-            "业务任务：项目里这颗 diode/SBD 反偏漏电有点悬，帮我从 0V 往 -30V 扫一下。"
-            "我关心 -5V 漏电和大概 BV，电流到 1e-6A 可以认为接近击穿；如果扫不到或者中途不收敛，你自己缩小 bias step。"
-        ),
-        "priority": 17,
-        "max_cycles": 14,
-        "expected_outputs": ["反偏 IV", "-5V 漏电", "BV 估算", "修复记录"],
-    },
-    {
-        "id": "schottky_barrier_calibration",
-        "title": "Schottky/SBD 校准",
-        "goal": (
-            "业务任务：Schottky/SBD 的 golden curve 最近对不上，帮我重新估一下 barrier height 和串联电阻。"
-            "不用只报最小误差，把 log-current 拟合残差、ideality factor 和最可疑的偏差区间也说清楚。"
-        ),
-        "priority": 15,
-        "max_cycles": 12,
-        "expected_outputs": ["拟合曲线", "barrier/RMSE", "ideality factor", "下一轮建议"],
-    },
-    {
-        "id": "ldmos_bv_ron_tradeoff",
-        "title": "LDMOS BV/Ron 取舍",
-        "goal": (
-            "业务任务：我想先把 LDMOS 的 BV/Ron tradeoff 模板立起来。"
-            "帮我按 power MOSFET BV 和 specific Ron 的公开来源口径做规划基线，明确哪些只是 compact baseline，哪些必须升级到高压 TCAD runner 后才能签核。"
-        ),
-        "priority": 13,
-        "max_cycles": 14,
-        "expected_outputs": ["BV/Ron 指标", "compact 边界", "高压收敛策略", "runner 晋级步骤"],
-    },
-    {
-        "id": "igbt_turnoff_tail",
-        "title": "IGBT 尾电流模板",
-        "goal": (
-            "业务任务：IGBT 关断尾电流这个方向后面要做长任务自动化。"
-            "请按输出曲线、blocking、turn-off tail current 和 lifetime sweep 梳理一个可执行/不可执行边界，给我下一步真实 TCAD runner 的最小实现清单。"
-        ),
-        "priority": 13,
-        "max_cycles": 14,
-        "expected_outputs": ["IGBT 指标表", "瞬态缺口", "收敛 playbook", "实现清单"],
-    },
-    {
-        "id": "gan_hemt_output_bv",
-        "title": "GaN HEMT 输出/BV",
-        "goal": (
-            "业务任务：GaN HEMT 输出特性和 BV 风险需要进入模板库。"
-            "帮我用公开来源整理 Id-Vg、Id-Vd、2DEG、BV 的指标和模型要求，尤其说明 polarization charge、trap 和 self-heating 现在缺在哪里。"
-        ),
-        "priority": 15,
-        "max_cycles": 14,
-        "expected_outputs": ["HEMT 指标", "模型缺口", "收敛策略", "签核边界"],
-    },
-    {
-        "id": "gan_hemt_current_collapse",
-        "title": "GaN current collapse",
-        "goal": (
-            "业务任务：客户问 GaN HEMT current collapse，我想让 agent 先给一个压力/恢复实验计划。"
-            "请按 trap occupancy、off-state stress、dynamic Ron ratio 和高场 gate edge 风险组织步骤，明确当前只能规划不能签核。"
-        ),
-        "priority": 15,
-        "max_cycles": 14,
-        "expected_outputs": ["stress/recovery 计划", "dynamic Ron", "trap 缺口", "风险结论"],
-    },
-    {
-        "id": "bjt_gummel_gain",
-        "title": "BJT Gummel/beta",
-        "goal": (
-            "业务任务：BJT Gummel 和 beta 提取要从 compact baseline 晋级到真实 runner。"
-            "帮我用公开 DEVSIM BJT 示例做路线梳理，列出 base-emitter ramp、collector bias family、beta 噪声地板和 Early voltage 的证据要求。"
-        ),
-        "priority": 14,
-        "max_cycles": 12,
-        "expected_outputs": ["Gummel 指标", "beta/Early", "公开来源", "runner 晋级步骤"],
-    },
-    {
-        "id": "bjt_output_early",
-        "title": "BJT 输出 Early",
-        "goal": (
-            "业务任务：BJT 输出曲线要用于 Early voltage 和 leakage review。"
-            "请把 Vbe 固定族、Vce sweep、collector leakage 和保存中间解的收敛策略写成 agent 可执行任务草案，并标注当前 compact baseline 的限制。"
-        ),
-        "priority": 14,
-        "max_cycles": 12,
-        "expected_outputs": ["输出族计划", "Early 提取", "leakage 窗口", "限制说明"],
-    },
-    {
-        "id": "finfet_dibl_cv",
-        "title": "FinFET DIBL/CV",
-        "goal": (
-            "业务任务：FinFET/GAA 后面要看 DIBL 和 gate capacitance。"
-            "帮我按 3D MOSFET、density-gradient、Cgg/Cgd 和短沟道指标整理模板，说明哪些可以用公开 DEVSIM 资料启动，哪些还缺 3D/量子修正验证。"
-        ),
-        "priority": 14,
-        "max_cycles": 14,
-        "expected_outputs": ["FinFET 指标", "3D/量子缺口", "DIBL/CV 计划", "签核边界"],
-    },
-    {
-        "id": "soi_finfet_variability",
-        "title": "SOI/FinFET 变异",
-        "goal": (
-            "业务任务：SOI/FinFET 这版我担心 random trap 或几何 split 导致 Vth 分布太宽。"
-            "请给一个 nominal-first、mesh reuse、样本分布签核的 variability campaign 计划，别把单点结果当成最终结论。"
-        ),
-        "priority": 14,
-        "max_cycles": 16,
-        "expected_outputs": ["Vth 分布计划", "样本策略", "mesh reuse", "签核口径"],
-    },
-]
-
-PRESET_GOALS: list[str] = [case["goal"] for case in SEMICONDUCTOR_TEST_CASES[:4]]
-
-
 @dataclass
 class WebAppConfig:
     root: Path = PROJECT_ROOT / "runs"
@@ -2310,29 +2138,6 @@ def render_app_html() -> str:
       backdrop-filter: blur(12px);
     }
     .composer { max-width: 940px; margin: 0 auto; display: grid; gap: 7px; }
-    .example-menu { position: relative; align-self: flex-end; }
-    .example-menu summary {
-      display: inline-flex; align-items: center; min-height: 18px; padding: 0 2px;
-      border: 0; background: transparent; color: #8a837a; font-size: 11px;
-      cursor: pointer; list-style: none; user-select: none;
-    }
-    .example-menu summary::-webkit-details-marker { display: none; }
-    .example-menu[open] summary { color: #3f3b36; }
-    .case-rail {
-      position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-      width: min(520px, calc(100vw - 28px)); max-height: 280px; overflow: auto;
-      display: grid; gap: 6px; padding: 8px; scrollbar-width: thin;
-      border: 1px solid #e1dbd0; border-radius: 8px; background: rgba(255,255,255,.98);
-      box-shadow: 0 14px 34px rgba(38, 32, 24, .12);
-    }
-    .case-chip {
-      width: 100%; text-align: left; border: 1px solid #e1dbd0; background: rgba(255,255,255,.72);
-      color: #343230; border-radius: 7px; padding: 5px 8px; min-height: 28px;
-      font-size: 12px; line-height: 1.35; white-space: normal; cursor: pointer;
-    }
-    .case-chip:hover { background: #fff; border-color: #cfc6b8; }
-    .case-title { display: block; color: #24211e; font-weight: 650; }
-    .case-desc { display: block; margin-top: 2px; color: #7a746c; font-size: 11px; }
     textarea {
       width: 100%; min-height: 58px; max-height: 150px; resize: vertical; border: 1px solid #d8d1c4;
       border-radius: 8px; padding: 10px 11px; background: #fff; color: #1d1d1f; line-height: 1.45;
@@ -2472,15 +2277,15 @@ def render_app_html() -> str:
     textarea:focus { border-color: #171717; box-shadow: 0 0 0 3px rgba(0,0,0,.06); }
     .composer-controls { gap: 6px; align-items: center; }
     .left-controls, .right-controls { gap: 4px; }
-    .advanced-menu, .example-menu { position: relative; }
-    .advanced-menu summary, .example-menu summary {
+    .advanced-menu { position: relative; }
+    .advanced-menu summary {
       display: inline-flex; align-items: center; min-height: 26px; padding: 3px 6px;
       border-radius: 7px; color: #8a8a8a; font-size: 12px; cursor: pointer; list-style: none;
       user-select: none;
     }
-    .advanced-menu summary::-webkit-details-marker, .example-menu summary::-webkit-details-marker { display: none; }
-    .advanced-menu summary:hover, .example-menu summary:hover { background: #f5f5f5; color: #171717; }
-    .advanced-menu[open] summary, .example-menu[open] summary { color: #171717; background: #f5f5f5; }
+    .advanced-menu summary::-webkit-details-marker { display: none; }
+    .advanced-menu summary:hover { background: #f5f5f5; color: #171717; }
+    .advanced-menu[open] summary { color: #171717; background: #f5f5f5; }
     .advanced-panel {
       position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 34;
       width: min(360px, calc(100vw - 28px)); display: flex; flex-wrap: wrap; gap: 6px;
@@ -2499,14 +2304,6 @@ def render_app_html() -> str:
       width: 64px; min-height: 26px; border-color: #e0e0e0; border-radius: 7px; background: #fff;
       color: #171717;
     }
-    .case-rail {
-      border-color: #e5e5e5; border-radius: 8px; background: rgba(255,255,255,.98);
-      box-shadow: 0 14px 36px rgba(0,0,0,.10);
-    }
-    .case-chip { border-color: transparent; background: #fff; border-radius: 7px; }
-    .case-chip:hover { background: #f7f7f7; border-color: transparent; }
-    .case-title { color: #171717; font-weight: 620; }
-    .case-desc { color: #737373; }
     .latest-jump {
       border-color: #e5e5e5; background: rgba(255,255,255,.96); color: #525252;
       box-shadow: 0 10px 28px rgba(0,0,0,.10);
@@ -2521,7 +2318,6 @@ def render_app_html() -> str:
       .composer-controls { align-items: stretch; flex-direction: column; }
       .left-controls, .right-controls { width: 100%; }
       .action-stack { width: 100%; }
-      .example-menu { align-self: flex-end; }
       .right-controls .btn { flex: 1; }
       .latest-jump { right: 14px; bottom: 158px; }
     }
@@ -2569,10 +2365,6 @@ def render_app_html() -> str:
           </div>
           <div class="right-controls">
             <div class="action-stack">
-            <details class="example-menu">
-              <summary>例子</summary>
-              <div class="case-rail" id="caseRail" aria-label="Semiconductor engineering test cases"></div>
-            </details>
             <button class="btn primary" id="missionActionBtn" type="button">Send</button>
             </div>
           </div>
@@ -2607,11 +2399,7 @@ def render_app_html() -> str:
       </form>
     </div>
   </div>
-  <script type="application/json" id="presetData">__PRESET_JSON__</script>
-  <script type="application/json" id="testCaseData">__TEST_CASE_JSON__</script>
   <script>
-    const presets = JSON.parse(document.getElementById('presetData').textContent || '[]');
-    const testCases = JSON.parse(document.getElementById('testCaseData').textContent || '[]');
     const activityEl = document.getElementById('activity');
     const scrollRoot = document.getElementById('scrollRoot');
     const latestJumpBtn = document.getElementById('latestJumpBtn');
@@ -3381,35 +3169,6 @@ def render_app_html() -> str:
       }
     }
 
-    function renderTestCases() {
-      const rail = document.getElementById('caseRail');
-      if (!rail) return;
-      rail.innerHTML = testCases.map(item =>
-        `<button class="case-chip" type="button" data-case-id="${esc(item.id)}">
-          <span class="case-title">${esc(item.title)}</span>
-          <span class="case-desc">${esc(caseDescription(item))}</span>
-        </button>`
-      ).join('');
-      rail.querySelectorAll('button[data-case-id]').forEach(button => {
-        button.addEventListener('click', () => {
-          const item = testCases.find(candidate => candidate.id === button.dataset.caseId);
-          if (!item) return;
-          document.getElementById('goalText').value = item.goal || '';
-          document.getElementById('priority').value = item.priority || 10;
-          document.getElementById('maxCycles').value = item.max_cycles || 12;
-          const menu = button.closest('details');
-          if (menu) menu.open = false;
-          document.getElementById('goalText').focus();
-        });
-      });
-    }
-
-    function caseDescription(item) {
-      const outputs = Array.isArray(item.expected_outputs) ? item.expected_outputs.slice(0, 3).join(' / ') : '';
-      if (outputs) return outputs;
-      return String(item.goal || '').slice(0, 72);
-    }
-
     function clearActivity() {
       clearBefore = Date.now();
       sessionStorage.setItem(clearKey, String(clearBefore));
@@ -3439,16 +3198,11 @@ def render_app_html() -> str:
     scrollRoot.addEventListener('scroll', handleTranscriptScroll, {passive: true});
     window.addEventListener('scroll', handleTranscriptScroll, {passive: true});
 
-    if (presets[0]) document.getElementById('goalText').placeholder = presets[0];
     updateMissionActionButton();
-    renderTestCases();
     refresh().catch(console.error);
     setInterval(() => refresh().catch(() => {}), 3000);
   </script>
 </body>
 </html>
 """
-    return (
-        template.replace("__PRESET_JSON__", json.dumps(PRESET_GOALS, ensure_ascii=False))
-        .replace("__TEST_CASE_JSON__", json.dumps(SEMICONDUCTOR_TEST_CASES, ensure_ascii=False))
-    )
+    return template
