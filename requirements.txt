@@ -6,3 +6,4 @@ matplotlib
 optuna
 pydantic
 pyyaml
+uvicorn

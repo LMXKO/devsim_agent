@@ -110,7 +110,7 @@ The mission agent is the single-mission brain; the run queue is the multi-run sc
 For browser-based operation, start the workbench:
 
 ```bash
-python3.11 -m tcad_agent.tools.web_app --host 127.0.0.1 --port 8765
+python3.11 -m uvicorn tcad_agent.asgi_web:app --host 127.0.0.1 --port 8766 --no-access-log
 ```
 
-The page queues `mission_agent` items, passes LLM decomposition flags through the run queue, and exposes worker controls without requiring command-line interaction for normal use.
+The page queues long-running `agent_soak` items by default and still allows API callers to force `mission_agent` when needed. Worker controls are exposed without requiring command-line interaction for normal use.

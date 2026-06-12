@@ -91,10 +91,10 @@ The `mission_agent` queue runner accepts `use_llm_decomposer`/`use_llm` and `all
 The preferred interactive surface is the local web app:
 
 ```bash
-python3.11 -m tcad_agent.tools.web_app --host 127.0.0.1 --port 8765
+python3.11 -m uvicorn tcad_agent.asgi_web:app --host 127.0.0.1 --port 8766 --no-access-log
 ```
 
-Open `http://127.0.0.1:8765` to enqueue missions, start/stop a worker, pause/resume/cancel queue items, and run an LLM health check from the page.
+Open `http://127.0.0.1:8766` to enqueue missions, start/stop a worker, pause/resume/cancel queue items, and run an LLM health check from the page.
 
 ## Run A Worker
 

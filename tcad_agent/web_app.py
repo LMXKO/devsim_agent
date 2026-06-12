@@ -7,11 +7,8 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 from tcad_agent.control_panel import collect_control_panel_data
 from tcad_agent.llm import (
@@ -26,13 +23,9 @@ from tcad_agent.run_queue import (
     default_queue_db_path,
     enqueue_run,
     get_item,
-    list_items,
     recover_owner_running_items,
-    pause_item,
-    recover_stale_items,
     resume_item,
     run_queue_daemon,
-    run_queue_worker,
     update_item_request,
 )
 from tcad_agent.task_spec import PROJECT_ROOT
@@ -3459,195 +3452,3 @@ def render_app_html() -> str:
         template.replace("__PRESET_JSON__", json.dumps(PRESET_GOALS, ensure_ascii=False))
         .replace("__TEST_CASE_JSON__", json.dumps(SEMICONDUCTOR_TEST_CASES, ensure_ascii=False))
     )
-
-
-class TCADWebServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], config: WebAppConfig) -> None:
-        super().__init__(server_address, TCADRequestHandler)
-        self.config = config
-        self.worker = WorkerController(config)
-        self.last_llm_status: dict[str, Any] | None = None
-
-
-class TCADRequestHandler(BaseHTTPRequestHandler):
-    server: TCADWebServer
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return
-
-    def read_json_payload(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length).decode("utf-8")
-        if not raw:
-            return {}
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError("JSON payload must be an object")
-        return payload
-
-    def send_json(self, data: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
-        raw = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
-        self.send_response(status.value)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def send_html(self, text: str) -> None:
-        raw = text.encode("utf-8")
-        self.send_response(HTTPStatus.OK.value)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def send_artifact(self, raw_path: str) -> None:
-        path = resolve_artifact_path(raw_path)
-        raw = path.read_bytes()
-        self.send_response(HTTPStatus.OK.value)
-        self.send_header("Content-Type", artifact_content_type(path))
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def send_error_json(self, status: HTTPStatus, message: str) -> None:
-        self.send_json({"status": "failed", "failure_reason": translate_summary_text(message)}, status)
-
-    def collect_state(self) -> dict[str, Any]:
-        config = self.server.config
-        data = collect_control_panel_data(
-            config.root,
-            queue_db_path=config.queue_db_path,
-            index_db_path=config.index_db_path,
-            rebuild=config.rebuild_index,
-        )
-        if self.server.last_llm_status:
-            data["llm_status"] = self.server.last_llm_status
-        data["worker_status"] = self.server.worker.status()
-        data["capabilities"] = CAPABILITIES
-        activity = collect_execution_activity(data.get("queue_items") or [])
-        if not activity or not activity_has_artifacts(activity) or not activity_has_process(activity):
-            activity.extend(collect_recent_experiment_activity(data.get("experiment_records") or [], limit=4))
-        data["activity"] = activity
-        return data
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path in {"/", "/index.html"}:
-            self.send_html(render_app_html())
-            return
-        if parsed.path == "/api/state":
-            self.send_json(self.collect_state())
-            return
-        if parsed.path == "/api/settings/llm":
-            self.send_json(llm_settings_response())
-            return
-        if parsed.path == "/api/artifact":
-            raw_path = (parse_qs(parsed.query).get("path") or [""])[0]
-            if not raw_path:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "path is required")
-                return
-            try:
-                self.send_artifact(raw_path)
-            except Exception as exc:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
-            return
-        if parsed.path == "/api/queue":
-            self.send_json({"items": list_items(self.server.config.queue_db_path, limit=100)})
-            return
-        if parsed.path == "/api/worker/status":
-            self.send_json(self.server.worker.status())
-            return
-        self.send_error_json(HTTPStatus.NOT_FOUND, f"unknown route: {parsed.path}")
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        try:
-            payload = self.read_json_payload()
-            if parsed.path == "/api/missions":
-                self.send_json(enqueue_mission_from_payload(self.server.config, payload), HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/worker/run-once":
-                result = run_queue_worker(
-                    self.server.config.queue_db_path,
-                    owner=str(payload.get("owner") or self.server.config.worker_owner),
-                    concurrency=int_from_payload(payload, "concurrency", 1, minimum=1),
-                    lease_seconds=float(payload.get("lease_seconds") or 7200.0),
-                    max_items=int_from_payload(payload, "max_items", 1, minimum=1),
-                )
-                self.send_json(result.model_dump(mode="json"))
-                return
-            if parsed.path == "/api/worker/start":
-                result = self.server.worker.start(
-                    concurrency=int_from_payload(payload, "concurrency", 1, minimum=1),
-                    lease_seconds=float(payload.get("lease_seconds") or 7200.0),
-                    poll_interval_seconds=float(payload.get("poll_interval_seconds") or 5.0),
-                    max_loops=int(payload["max_loops"]) if payload.get("max_loops") not in {None, ""} else None,
-                    max_idle_loops=int(payload["max_idle_loops"]) if payload.get("max_idle_loops") not in {None, ""} else None,
-                )
-                self.send_json(result)
-                return
-            if parsed.path == "/api/worker/stop":
-                self.send_json(self.server.worker.stop())
-                return
-            if parsed.path == "/api/recover":
-                self.send_json(recover_stale_items(self.server.config.queue_db_path))
-                return
-            if parsed.path == "/api/llm/check":
-                result = check_llm_health().model_dump(mode="json")
-                self.server.last_llm_status = result
-                self.send_json(result)
-                return
-            if parsed.path == "/api/settings/llm":
-                result = save_llm_settings_from_payload(payload)
-                self.server.last_llm_status = None
-                self.send_json(result)
-                return
-            item_action = self.match_item_action(parsed.path)
-            if item_action:
-                queue_id, action = item_action
-                if action == "pause":
-                    self.send_json(pause_item(self.server.config.queue_db_path, queue_id).model_dump(mode="json"))
-                    return
-                if action == "resume":
-                    self.send_json(resume_item(self.server.config.queue_db_path, queue_id).model_dump(mode="json"))
-                    return
-                if action == "cancel":
-                    self.send_json(cancel_item(self.server.config.queue_db_path, queue_id).model_dump(mode="json"))
-                    return
-                if action == "approve":
-                    self.send_json(approve_item_confirmation(self.server.config, queue_id))
-                    return
-                if action == "reject":
-                    self.send_json(reject_item_confirmation(self.server.config, queue_id))
-                    return
-            self.send_error_json(HTTPStatus.NOT_FOUND, f"unknown route: {parsed.path}")
-        except Exception as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
-
-    @staticmethod
-    def match_item_action(path: str) -> tuple[str, str] | None:
-        parts = [part for part in path.split("/") if part]
-        if len(parts) == 4 and parts[0] == "api" and parts[1] == "items":
-            return parts[2], parts[3]
-        return None
-
-
-def create_server(config: WebAppConfig) -> TCADWebServer:
-    config.root = config.root.resolve()
-    config.queue_db_path = config.queue_db_path.resolve()
-    if config.index_db_path is not None:
-        config.index_db_path = config.index_db_path.resolve()
-    config.worker_stop_file = config.worker_stop_file.resolve()
-    recover_owner_running_items(config.queue_db_path, owner=config.worker_owner)
-    return TCADWebServer((config.host, config.port), config)
-
-
-def serve(config: WebAppConfig) -> None:
-    server = create_server(config)
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()

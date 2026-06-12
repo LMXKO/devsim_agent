@@ -1,6 +1,6 @@
 # TCAD Mission Workbench
 
-`tcad_agent.tools.web_app` starts a local browser UI for long-running autonomous TCAD work. The page stays intentionally minimal: one transcript, one composer, and only the queue controls needed for the current item. It is the interactive page entrypoint for:
+`tcad_agent.asgi_web` exposes the local browser UI for long-running autonomous TCAD work. The page stays intentionally minimal: one transcript, one composer, and only the queue controls needed for the current item. It is the interactive page entrypoint for:
 
 - submitting a natural-language TCAD mission;
 - running that mission through the long-duration `agent_soak` wrapper by default;
@@ -45,14 +45,6 @@ The compact `例子` menu floats above the `Send` button and contains natural-la
 Run:
 
 ```bash
-python3.11 -m tcad_agent.tools.web_app \
-  --host 127.0.0.1 \
-  --port 8765
-```
-
-If the stdlib web server cannot bind a local port in a restricted runtime, use the ASGI entrypoint:
-
-```bash
 python3.11 -m uvicorn tcad_agent.asgi_web:app \
   --host 127.0.0.1 \
   --port 8766 \
@@ -62,7 +54,7 @@ python3.11 -m uvicorn tcad_agent.asgi_web:app \
 Open:
 
 ```text
-http://127.0.0.1:8765
+http://127.0.0.1:8766
 ```
 
 ## Mission Flow
