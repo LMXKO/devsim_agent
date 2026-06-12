@@ -84,3 +84,16 @@ python3.11 -m tcad_agent.long_run_validation \
 ```
 
 The real scenario is considered valid when the agent either completes or stops at an explicit confirmation gate. A failed/cancelled real run fails the validation and keeps the state, heartbeat, logs, and artifacts under `runs/long_run_validation/<validation_id>/`.
+
+For a repo-local public user-deck acceptance sample, use:
+
+```bash
+python3.11 -m tcad_agent.autonomous_devsim_agent \
+  --goal "读取公开 PN diode DEVSIM deck，把 N 区掺杂调低后运行并输出验收证据" \
+  --source-deck-path tcad_agent/examples/user_deck_acceptance/pn_diode_acceptance_deck.py \
+  --deck-patches-json '[{"deck_path":"doping.n_doping_cm3","request_path":"n_doping_cm3","value":8e17}]' \
+  --execute \
+  --allow-user-confirmation-actions \
+  --no-llm \
+  --max-steps 6
+```

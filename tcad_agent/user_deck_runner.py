@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,14 @@ def parse_stdout_json(stdout: str | None) -> dict[str, Any]:
     return {}
 
 
+def dict_value(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
     deck_path = Path(request.deck_path).expanduser().resolve()
     if not deck_path.exists():
@@ -62,6 +71,9 @@ def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
     stderr_path = run_dir / "stderr.log"
     state_path = run_dir / "user_deck_state.json"
     command = [sys.executable, str(deck_path)]
+    env = dict(os.environ)
+    env.setdefault("ACTSOFT_PROJECT_ROOT", str(PROJECT_ROOT))
+    env["PYTHONPATH"] = str(PROJECT_ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     started_at = utc_timestamp()
     completed = run_cancellable(
         command,
@@ -71,6 +83,7 @@ def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
         timeout=request.timeout_seconds,
         check=False,
         cancel_file=request.cancel_file,
+        env=env,
     )
     stdout_path.write_text(completed.stdout or "", encoding="utf-8")
     stderr_path.write_text(completed.stderr or "", encoding="utf-8")
@@ -78,10 +91,16 @@ def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
     status = "completed" if completed.returncode == 0 else "failed"
     quality_status = "passed" if completed.returncode == 0 else "failed"
     issues = [] if completed.returncode == 0 else [{"code": "user_deck_execution_failed", "severity": "error"}]
+    reported_quality = dict_value(parsed.get("quality_report"))
+    if completed.returncode == 0 and reported_quality.get("status"):
+        quality_status = str(reported_quality["status"])
+        issues = list_value(reported_quality.get("issues"))
     if "ACTSOFT_CANCELLED" in (completed.stderr or ""):
         status = "cancelled"
         quality_status = "failed"
         issues = [{"code": "user_deck_execution_cancelled", "severity": "error"}]
+    reported_metrics = dict_value(parsed.get("metrics"))
+    reported_artifacts = dict_value(parsed.get("artifacts"))
     artifacts = {
         "source_deck": str(deck_path),
         "stdout": str(stdout_path),
@@ -91,6 +110,11 @@ def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
         artifacts["reported_run_dir"] = str(parsed["run_dir"])
     if parsed.get("summary_path"):
         artifacts["reported_summary"] = str(parsed["summary_path"])
+    artifacts.update({str(key): value for key, value in reported_artifacts.items()})
+    metrics = {
+        "returncode": completed.returncode,
+        **{str(key): value for key, value in reported_metrics.items()},
+    }
     state = {
         "tool_name": "user_deck_execution",
         "status": status,
@@ -106,16 +130,12 @@ def run_user_deck(request: UserDeckRunRequest) -> dict[str, Any]:
         "reported_stdout_json": parsed,
         "final_summary": {
             "artifacts": artifacts,
-            "metrics": {
-                "returncode": completed.returncode,
-            },
+            "metrics": metrics,
         },
         "quality_report": {
             "status": quality_status,
             "issues": issues,
-            "metrics": {
-                "returncode": completed.returncode,
-            },
+            "metrics": metrics,
         },
         "next_action": "inspect user deck artifacts" if status != "completed" else "benchmark or inspect user deck artifacts",
     }
