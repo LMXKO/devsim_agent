@@ -10,14 +10,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tcad_agent.control_panel import collect_control_panel_data
 from tcad_agent.llm import (
     DEFAULT_API_KEY,
     LLMClient,
     LLMConfig,
     save_persisted_llm_settings,
 )
-from tcad_agent.llm_health import check_llm_health
 from tcad_agent.run_queue import (
     cancel_item,
     default_queue_db_path,

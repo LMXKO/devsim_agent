@@ -15,7 +15,6 @@ from tcad_agent.reporting import (
     ReportKind,
     best_optimization_observation,
     best_sweep_case,
-    best_value_for_axis,
     detect_report_kind,
     final_artifacts,
     final_metrics,

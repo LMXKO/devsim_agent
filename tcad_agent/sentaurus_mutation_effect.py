@@ -24,7 +24,7 @@ from tcad_agent.engineering_objectives import (
     assign_pareto_front,
     evaluate_candidate,
 )
-from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
+from tcad_agent.reporting import final_artifacts, final_metrics
 
 
 LOWER_BETTER_ALIASES = [

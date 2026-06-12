@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field, model_validator
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from http import HTTPStatus
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote
 
@@ -11,7 +10,6 @@ from tcad_agent.llm_health import check_llm_health
 from tcad_agent.run_queue import (
     cancel_item,
     default_queue_db_path,
-    enqueue_run,
     pause_item,
     recover_stale_items,
     resume_item,

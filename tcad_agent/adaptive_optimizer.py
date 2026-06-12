@@ -18,7 +18,7 @@ from tcad_agent.parameter_sweep import (
     run_parameter_sweep,
 )
 from tcad_agent.task_spec import PROJECT_ROOT, TaskSpec, load_task_spec, write_task_spec
-from tcad_agent.tools.task_runner import TaskRunState, run_task
+from tcad_agent.tools.task_runner import run_task
 
 
 class OptimizationStatus(str, Enum):
