@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import html
 import json
 import math
@@ -1186,3 +1187,21 @@ def generate_experiment_dashboard(source: Path, output_path: Path | None = None)
             source_state_path=str(source),
             failure_reason=str(exc),
         )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate a static HTML dashboard for a TCAD run state.")
+    parser.add_argument("--state", type=Path, required=True, help="State file or containing run directory.")
+    parser.add_argument("--output", type=Path, default=None, help="HTML dashboard path.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    result = generate_experiment_dashboard(args.state, args.output)
+    print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    raise SystemExit(0 if result.status == DashboardStatus.COMPLETED else 2)
+
+
+if __name__ == "__main__":
+    main()

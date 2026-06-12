@@ -59,7 +59,7 @@ It marks results as suspicious when:
 Generate a conclusion-oriented report:
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_conclusion \
+python3.11 -m tcad_agent.conclusion \
   --state runs/agent_tools/diode_breakdown/diode_reverse/state.json
 ```
 

@@ -1,6 +1,6 @@
 # Experiment Conclusion
 
-`tcad_agent.tools.experiment_conclusion` generates a conclusion-oriented Markdown summary from TCAD state.
+`tcad_agent.conclusion` generates a conclusion-oriented Markdown summary from TCAD state.
 
 Unlike `experiment_report`, which focuses on tables and artifact links, the conclusion report focuses on:
 
@@ -16,7 +16,7 @@ Unlike `experiment_report`, which focuses on tables and artifact links, the conc
 ## Generate From An Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_conclusion \
+python3.11 -m tcad_agent.conclusion \
   --state runs/optimizations/p_doping_opt_smoke
 ```
 
@@ -29,7 +29,7 @@ runs/optimizations/p_doping_opt_smoke/conclusion.md
 ## Generate From A Multi-Dimensional Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_conclusion \
+python3.11 -m tcad_agent.conclusion \
   --state runs/optimizations/pn_2d_opt
 ```
 
@@ -38,7 +38,7 @@ For multi-axis states, the conclusion report treats the result as a response sur
 ## Generate From A Tool State
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_conclusion \
+python3.11 -m tcad_agent.conclusion \
   --state runs/supervisor/supervisor_mos_smoke2/agent_tools/mos_capacitor_cv/supervisor_mos_smoke2_mos_cv_002/state.json
 ```
 

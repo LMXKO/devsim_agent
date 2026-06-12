@@ -136,8 +136,8 @@ python3.11 -m tcad_agent.tools.run_queue show q_mosfet_goal
 For completed TCAD artifacts, rebuild and query the experiment index as the second memory layer:
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_index --rebuild --root runs
-python3.11 -m tcad_agent.tools.experiment_index --list --limit 20
+python3.11 -m tcad_agent.experiment_index --rebuild --root runs
+python3.11 -m tcad_agent.experiment_index --list --limit 20
 ```
 
 ## Pause, Resume, Cancel

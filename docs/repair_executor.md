@@ -1,6 +1,6 @@
 # TCAD Repair Executor
 
-`tcad_agent.tools.repair_executor` closes the loop after `repair_strategy`.
+`tcad_agent.repair_executor` closes the loop after `repair_strategy`.
 
 It reads a suspicious or failed run `state.json`, builds a repair plan, selects the highest-priority executable action, applies the action patch to the original request, launches the corresponding TCAD tool again, then repeats until:
 
@@ -14,14 +14,14 @@ It reads a suspicious or failed run `state.json`, builds a repair plan, selects 
 Plan the next repair without running TCAD:
 
 ```bash
-python3.11 -m tcad_agent.tools.repair_executor \
+python3.11 -m tcad_agent.repair_executor \
   --state runs/agent_tools/pn_junction_iv/quality_extreme/state.json
 ```
 
 Execute the repair loop:
 
 ```bash
-python3.11 -m tcad_agent.tools.repair_executor \
+python3.11 -m tcad_agent.repair_executor \
   --state runs/agent_tools/pn_junction_iv/quality_extreme/state.json \
   --execute \
   --max-rounds 3
@@ -30,7 +30,7 @@ python3.11 -m tcad_agent.tools.repair_executor \
 Allow sensitive actions such as geometry or unit repair:
 
 ```bash
-python3.11 -m tcad_agent.tools.repair_executor \
+python3.11 -m tcad_agent.repair_executor \
   --state runs/agent_tools/pn_junction_iv/bad_geometry/state.json \
   --execute \
   --allow-user-confirmation-actions

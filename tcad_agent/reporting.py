@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from datetime import datetime
@@ -551,3 +552,21 @@ def generate_experiment_report(source: Path, output_path: Path | None = None) ->
             source_state_path=str(source),
             failure_reason=str(exc),
         )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate a Markdown report for a TCAD run state.")
+    parser.add_argument("--state", type=Path, required=True, help="State file or containing run directory.")
+    parser.add_argument("--output", type=Path, default=None, help="Markdown report path.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    result = generate_experiment_report(args.state, args.output)
+    print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    raise SystemExit(0 if result.status == ReportStatus.COMPLETED else 2)
+
+
+if __name__ == "__main__":
+    main()

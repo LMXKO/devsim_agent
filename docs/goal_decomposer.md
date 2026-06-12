@@ -1,13 +1,13 @@
 # Goal Decomposer
 
-`tcad_agent.tools.goal_decomposer` converts a long-horizon natural-language TCAD goal into durable agent steps.
+`tcad_agent.goal_decomposer` converts a long-horizon natural-language TCAD goal into durable agent steps.
 
 It is the planning layer above `supervisor` and `mission_agent`.
 
 ## Deterministic Plan
 
 ```bash
-python3.11 -m tcad_agent.tools.goal_decomposer \
+python3.11 -m tcad_agent.goal_decomposer \
   --plan-id mosfet_goal \
   --goal "做 MOSFET Id-Vg，并做 mesh convergence，最后给工程结论"
 ```
@@ -32,7 +32,7 @@ If a goal matches a `compact_baseline` template, the plan can continue into `ext
 ## LLM Plan
 
 ```bash
-python3.11 -m tcad_agent.tools.goal_decomposer \
+python3.11 -m tcad_agent.goal_decomposer \
   --plan-id mosfet_goal_llm \
   --goal "优化 MOSFET，让漏电低且 Ion/Ioff 达标，失败时自动修复，最后给结论" \
   --use-llm

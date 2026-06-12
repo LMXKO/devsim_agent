@@ -41,7 +41,7 @@ When an OpenAI-compatible model supports native tool/function calling, the agent
 For broad natural-language requests, use `agent_goal_router` first:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_goal_router \
+python3.11 -m tcad_agent.agent_goal_router \
   --goal "AI 长时间自主操作 DEVSIM/Sentaurus 完成功率器件优化任务"
 ```
 

@@ -81,13 +81,13 @@ Use log scale for doping-like quantities and linear scale for geometry, temperat
 The multi-dimensional optimizer works with the normal report tools:
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_report \
+python3.11 -m tcad_agent.reporting \
   --state runs/optimizations/diode_bv_2d_opt
 
-python3.11 -m tcad_agent.tools.experiment_dashboard \
+python3.11 -m tcad_agent.dashboard \
   --state runs/optimizations/diode_bv_2d_opt
 
-python3.11 -m tcad_agent.tools.experiment_conclusion \
+python3.11 -m tcad_agent.conclusion \
   --state runs/optimizations/diode_bv_2d_opt
 ```
 

@@ -97,14 +97,14 @@ python3.11 -m tcad_agent.tools.mission_agent \
 Route public device templates:
 
 ```bash
-python3.11 -m tcad_agent.tools.device_templates route \
+python3.11 -m tcad_agent.device_templates route \
   --goal "LDMOS BV and Ron tradeoff with field peak review"
 ```
 
 Route a broad autonomous-agent goal:
 
 ```bash
-python3.11 -m tcad_agent.tools.agent_goal_router \
+python3.11 -m tcad_agent.agent_goal_router \
   --goal "AI 长时间自主操作 DEVSIM/Sentaurus 完成功率器件优化任务"
 ```
 
@@ -112,7 +112,7 @@ Fetch public evidence and build an industrial runner-promotion work package:
 
 ```bash
 python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
-python3.11 -m tcad_agent.tools.industrial_runner_promotion --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
+python3.11 -m tcad_agent.industrial_runner_promotion --goal "GaN HEMT BV current collapse" --template-id gan_hemt_id_bv
 ```
 
 Run the promoted Power MOSFET/LDMOS 2D field-plate runner:
@@ -124,7 +124,7 @@ python3.11 -m tcad_agent.tools.extended_device_sweep --device-type power_mosfet_
 Build the Power MOSFET/LDMOS signoff evidence gate:
 
 ```bash
-python3.11 -m tcad_agent.tools.power_mosfet_signoff --run-id ldmos_gate_001
+python3.11 -m tcad_agent.power_mosfet_signoff --run-id ldmos_gate_001
 ```
 
 Gate an external Sentaurus industrial runner without committing commercial assets:
@@ -164,8 +164,8 @@ python3.11 -m tcad_agent.tools.long_run_validation --suite autonomous_e2e --scen
 Generate a dashboard or report:
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_dashboard --state path/to/state.json
-python3.11 -m tcad_agent.tools.experiment_report --state path/to/state.json
+python3.11 -m tcad_agent.dashboard --state path/to/state.json
+python3.11 -m tcad_agent.reporting --state path/to/state.json
 ```
 
 ## Sentaurus Adapter

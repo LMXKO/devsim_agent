@@ -1,6 +1,6 @@
 # Experiment Dashboard
 
-`tcad_agent.tools.experiment_dashboard` generates a static HTML dashboard from a TCAD sweep, adaptive optimization, or multi-dimensional optimization state.
+`tcad_agent.dashboard` generates a static HTML dashboard from a TCAD sweep, adaptive optimization, or multi-dimensional optimization state.
 
 It supports:
 
@@ -13,7 +13,7 @@ The dashboard is a single HTML file and does not require a local server.
 ## Generate From An Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_dashboard \
+python3.11 -m tcad_agent.dashboard \
   --state runs/optimizations/p_doping_opt_smoke
 ```
 
@@ -26,14 +26,14 @@ runs/optimizations/p_doping_opt_smoke/dashboard.html
 ## Generate From A Sweep
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_dashboard \
+python3.11 -m tcad_agent.dashboard \
   --state runs/sweeps/p_doping_auto_smoke3
 ```
 
 ## Custom Output
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_dashboard \
+python3.11 -m tcad_agent.dashboard \
   --state runs/optimizations/p_doping_opt_smoke/optimization_state.json \
   --output runs/optimizations/p_doping_opt_smoke/p_doping_dashboard.html
 ```

@@ -1,6 +1,6 @@
 # Experiment Index
 
-`tcad_agent.tools.experiment_index` builds a SQLite index over checkpointed TCAD runs.
+`tcad_agent.experiment_index` builds a SQLite index over checkpointed TCAD runs.
 
 It scans:
 
@@ -33,7 +33,7 @@ Known kinds include:
 ## Rebuild
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_index \
+python3.11 -m tcad_agent.experiment_index \
   --rebuild \
   --root runs
 ```
@@ -47,7 +47,7 @@ runs/experiment_index.sqlite
 ## List Recent Experiments
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_index \
+python3.11 -m tcad_agent.experiment_index \
   --list \
   --limit 20
 ```
@@ -55,7 +55,7 @@ python3.11 -m tcad_agent.tools.experiment_index \
 ## Filter
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_index \
+python3.11 -m tcad_agent.experiment_index \
   --list \
   --kind adaptive_optimization \
   --status completed

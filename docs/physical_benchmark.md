@@ -1,13 +1,13 @@
 # Physical Benchmark
 
-`tcad_agent.tools.physical_benchmark` runs a second-layer physical sanity benchmark over a saved TCAD state.
+`tcad_agent.physical_benchmark` runs a second-layer physical sanity benchmark over a saved TCAD state.
 
 It is complementary to `quality_report`: quality checks answer "did the run produce usable numeric artifacts?", while benchmark checks answer "are the numbers plausible against simple physics or engineering golden ranges?"
 
 ## Run
 
 ```bash
-python3.11 -m tcad_agent.tools.physical_benchmark \
+python3.11 -m tcad_agent.physical_benchmark \
   --state runs/agent_tools/mosfet_2d_id/fet_a/state.json
 ```
 

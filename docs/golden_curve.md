@@ -1,6 +1,6 @@
 # Golden / Measured Curve Comparison
 
-`tcad_agent.tools.golden_curve` compares a TCAD state curve against a trusted or measured reference curve.
+`tcad_agent.golden_curve` compares a TCAD state curve against a trusted or measured reference curve.
 
 The comparison now supports:
 
@@ -16,7 +16,7 @@ The comparison now supports:
 Example:
 
 ```bash
-python3.11 -m tcad_agent.tools.golden_curve \
+python3.11 -m tcad_agent.golden_curve \
   --source-state runs/example/state.json \
   --reference-curve measured_iv.csv \
   --match-mode interpolate

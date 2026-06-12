@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import hashlib
 import re
@@ -618,3 +619,40 @@ def run_repair_executor(
         state.next_action = "inspect last repair attempt and decide whether to extend budget"
     write_state(state, actual_state_path)
     return state
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Execute TCAD repair plans in a closed loop.")
+    parser.add_argument("--state", type=Path, required=True, help="Source run state.json.")
+    parser.add_argument("--execution-id", default=None)
+    parser.add_argument("--execution-root", type=Path, default=None)
+    parser.add_argument("--max-rounds", type=int, default=3)
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--allow-user-confirmation-actions", action="store_true")
+    parser.add_argument("--use-agent-policy", action="store_true", help="Let the configured LLM choose the next repair action before deterministic fallback.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    try:
+        args = parse_args()
+        result = run_repair_executor(
+            args.state,
+            execution_id=args.execution_id,
+            execution_root=args.execution_root,
+            execute=args.execute,
+            resume=args.resume,
+            max_rounds=args.max_rounds,
+            allow_user_confirmation_actions=args.allow_user_confirmation_actions,
+            use_agent_policy=args.use_agent_policy,
+        )
+        print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+        raise SystemExit(0 if result.status != RepairExecutionStatus.FAILED else 1)
+    except Exception as exc:
+        print(json.dumps({"tool_name": "tcad_repair_executor", "status": "failed", "failure_reason": str(exc)}, indent=2, ensure_ascii=False))
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main()

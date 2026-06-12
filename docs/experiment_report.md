@@ -1,6 +1,6 @@
 # Experiment Report
 
-`tcad_agent.tools.experiment_report` generates a Markdown report from a finished or planned TCAD sweep/optimization state.
+`tcad_agent.reporting` generates a Markdown report from a finished or planned TCAD sweep/optimization state.
 
 It supports:
 
@@ -11,7 +11,7 @@ It supports:
 ## Generate From An Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_report \
+python3.11 -m tcad_agent.reporting \
   --state runs/optimizations/p_doping_opt_smoke
 ```
 
@@ -24,21 +24,21 @@ runs/optimizations/p_doping_opt_smoke/report.md
 ## Generate From A Sweep
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_report \
+python3.11 -m tcad_agent.reporting \
   --state runs/sweeps/p_doping_auto_smoke3
 ```
 
 ## Generate From A Multi-Dimensional Optimization
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_report \
+python3.11 -m tcad_agent.reporting \
   --state runs/optimizations/pn_2d_opt
 ```
 
 ## Custom Output
 
 ```bash
-python3.11 -m tcad_agent.tools.experiment_report \
+python3.11 -m tcad_agent.reporting \
   --state runs/optimizations/p_doping_opt_smoke/optimization_state.json \
   --output runs/optimizations/p_doping_opt_smoke/p_doping_report.md
 ```

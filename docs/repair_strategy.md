@@ -1,6 +1,6 @@
 # TCAD Repair Strategy
 
-`tcad_agent.tools.repair_strategy` turns a completed or failed run state into a TCAD-specific repair plan.
+`tcad_agent.repair_strategy` turns a completed or failed run state into a TCAD-specific repair plan.
 
 It does not blindly rerun. It reads:
 
@@ -20,7 +20,7 @@ repair_plan.json
 ## Command
 
 ```bash
-python3.11 -m tcad_agent.tools.repair_strategy \
+python3.11 -m tcad_agent.repair_strategy \
   --state runs/agent_tools/pn_junction_iv/suspicious_run/state.json
 ```
 

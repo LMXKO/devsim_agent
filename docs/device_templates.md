@@ -1,6 +1,6 @@
 # Device Task Templates
 
-`tcad_agent.tools.device_templates` is the device-routing catalog for long-horizon TCAD missions.
+`tcad_agent.device_templates` is the device-routing catalog for long-horizon TCAD missions.
 
 It separates three states that should not be confused:
 
@@ -11,16 +11,16 @@ It separates three states that should not be confused:
 ## List Templates
 
 ```bash
-python3.11 -m tcad_agent.tools.device_templates list
-python3.11 -m tcad_agent.tools.device_templates list --support executable
-python3.11 -m tcad_agent.tools.device_templates list --support compact_baseline
-python3.11 -m tcad_agent.tools.device_templates list --support planned
+python3.11 -m tcad_agent.device_templates list
+python3.11 -m tcad_agent.device_templates list --support executable
+python3.11 -m tcad_agent.device_templates list --support compact_baseline
+python3.11 -m tcad_agent.device_templates list --support planned
 ```
 
 ## Route A Goal
 
 ```bash
-python3.11 -m tcad_agent.tools.device_templates route \
+python3.11 -m tcad_agent.device_templates route \
   --goal "做 Schottky/SBD forward IV 并提取 barrier height"
 ```
 
@@ -33,7 +33,7 @@ For public-source seeding, route results can also include `public_source_categor
 Industrial `physics_1d`, compact, or planned routes can produce an explicit promotion work package:
 
 ```bash
-python3.11 -m tcad_agent.tools.industrial_runner_promotion \
+python3.11 -m tcad_agent.industrial_runner_promotion \
   --goal "GaN HEMT current collapse and BV signoff" \
   --template-id gan_hemt_id_bv \
   --output /tmp/gan_runner_promotion.json
@@ -54,7 +54,7 @@ The 2D runner invokes DEVSIM through the existing 2D MOS layout seed, emits a ru
 Power MOSFET/LDMOS also has a bundled evidence-gate workflow:
 
 ```bash
-python3.11 -m tcad_agent.tools.power_mosfet_signoff --run-id ldmos_gate_001
+python3.11 -m tcad_agent.power_mosfet_signoff --run-id ldmos_gate_001
 ```
 
 It collects the 2D baseline, physical benchmark, mesh/model convergence, optional golden/measured correlation, and a machine-readable signoff gate. If golden/measured evidence is absent, the verdict remains conditional or blocked.
@@ -74,9 +74,9 @@ The seven public source categories are recorded in `tcad_agent.public_sources` a
 List the registry:
 
 ```bash
-python3.11 -m tcad_agent.tools.device_templates sources
-python3.11 -m tcad_agent.tools.device_templates sources --kind categories
-python3.11 -m tcad_agent.tools.device_templates sources --kind sources
+python3.11 -m tcad_agent.device_templates sources
+python3.11 -m tcad_agent.device_templates sources --kind categories
+python3.11 -m tcad_agent.device_templates sources --kind sources
 ```
 
 ## Executable Templates

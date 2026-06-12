@@ -5,9 +5,9 @@
 Use it from the CLI:
 
 ```bash
-python3.11 -m tcad_agent.tools.device_templates sources
-python3.11 -m tcad_agent.tools.device_templates sources --kind categories
-python3.11 -m tcad_agent.tools.device_templates sources --kind sources
+python3.11 -m tcad_agent.device_templates sources
+python3.11 -m tcad_agent.device_templates sources --kind categories
+python3.11 -m tcad_agent.device_templates sources --kind sources
 python3.11 -m tcad_agent.tools.public_evidence_lookup --goal "Sentaurus LDMOS BV field plate" --simulator sentaurus
 python3.11 -m tcad_agent.tools.public_evidence_lookup --live --goal "Sentaurus LDMOS BV field plate" --simulator sentaurus
 ```
