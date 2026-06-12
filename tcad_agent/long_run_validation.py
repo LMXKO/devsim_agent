@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 import json
+import os
 import shutil
 import time
 from datetime import datetime
@@ -997,6 +998,95 @@ def scenario_natural_language_power_marathon(
     )
 
 
+def scenario_public_user_deck_acceptance(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    deck_path = PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_acceptance" / "pn_diode_acceptance_deck.py"
+    previous_root = os.environ.get("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT")
+    os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = str((scenario_dir / "deck_runs").resolve())
+    try:
+        state = run_autonomous_devsim_agent(
+            AutonomousDevsimRequest(
+                goal_text="读取公开 PN diode DEVSIM deck，把 N 区掺杂调低后运行并输出验收证据",
+                agent_id="public_user_deck_acceptance_agent",
+                agent_root=scenario_dir / "agents",
+                execute=True,
+                use_llm=False,
+                allow_llm_fallback=request.allow_llm_fallback,
+                max_steps=max(request.agent_max_steps, 6),
+                source_deck_path=str(deck_path),
+                deck_patches=[
+                    {
+                        "deck_path": "doping.n_doping_cm3",
+                        "request_path": "n_doping_cm3",
+                        "value": 8.0e17,
+                    }
+                ],
+                initial_request={"run_root": str(scenario_dir / "user_deck_states")},
+                allow_user_confirmation_actions=True,
+                generate_report=False,
+                generate_dashboard=False,
+            )
+        )
+    finally:
+        if previous_root is None:
+            os.environ.pop("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT", None)
+        else:
+            os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = previous_root
+
+    final_state = Path(str(state.final_state_path or state.latest_state_path))
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    quality = final_payload.get("quality_report") if isinstance(final_payload.get("quality_report"), dict) else {}
+    metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+    artifacts = (final_payload.get("final_summary") or {}).get("artifacts") if isinstance(final_payload.get("final_summary"), dict) else {}
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+    diff_path = Path(str(state.checkpoint.get("semantic_deck_diff") or ""))
+    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
+    step_kinds = [step.kind for step in state.steps]
+
+    assertions = [
+        require(deck_path.exists(), "public DEVSIM user deck fixture exists"),
+        require(state.status == DevsimAgentStatus.COMPLETED, "public user deck acceptance agent completed"),
+        require(DevsimAgentActionKind.INGEST_DECK in step_kinds, "agent ingested the public user deck"),
+        require(DevsimAgentActionKind.APPLY_DECK_PATCH in step_kinds, "agent applied a semantic deck patch"),
+        require(DevsimAgentActionKind.RUN_USER_DECK in step_kinds, "agent executed the patched user deck directly"),
+        require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK in step_kinds, "agent benchmarked the user deck result"),
+        require(bool(state.checkpoint.get("deck_patch_verified")), "semantic patch was verified against an existing deck binding"),
+        require(not state.checkpoint.get("deck_patch_unverified"), "no unverified fallback deck patch was needed"),
+        require("-    \"n_doping_cm3\": 1.0e18" in diff_text and "+    \"n_doping_cm3\": 8e+17" in diff_text, "deck diff records the N doping change"),
+        require(quality.get("status") == "passed", "patched user deck quality passed"),
+        require(metrics.get("n_doping_cm3") == 8.0e17, "patched deck execution reported updated N doping"),
+        require(Path(str(artifacts.get("csv") or "")).exists(), "patched user deck emitted a CSV artifact"),
+        require(Path(str(artifacts.get("plot") or "")).exists(), "patched user deck emitted a plot artifact"),
+        require(Path(str(state.checkpoint.get("physical_benchmark_path") or "")).exists(), "physical benchmark artifact exists"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("source_deck", deck_path),
+            artifact("patched_deck", state.checkpoint.get("patched_source_deck")),
+            artifact("semantic_deck_diff", state.checkpoint.get("semantic_deck_diff")),
+            artifact("deck_ir", state.checkpoint.get("tcad_deck_ir")),
+            artifact("final_user_deck_state", final_state),
+            artifact("user_deck_csv", artifacts.get("csv"), kind="csv"),
+            artifact("user_deck_plot", artifacts.get("plot"), kind="png"),
+            artifact("physical_benchmark", state.checkpoint.get("physical_benchmark_path")),
+        ],
+        {
+            "agent_status": state.status,
+            "step_kinds": [kind.value for kind in step_kinds],
+            "deck_patch_verified": state.checkpoint.get("deck_patch_verified"),
+            "updated_n_doping_cm3": metrics.get("n_doping_cm3"),
+            "quality_status": quality.get("status"),
+            "final_state_path": str(final_state),
+        },
+    )
+
+
 def scenario_queue_confirmation_resume(
     scenario_dir: Path,
     request: LongRunValidationRequest,
@@ -1209,6 +1299,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
         "Natural-language goal drives Power MOSFET DEVSIM, signoff, cockpit, resume, and cancel",
         scenario_natural_language_power_marathon,
     ),
+    "public_user_deck_acceptance": (
+        "Public DEVSIM user deck is ingested, patched, executed, and benchmarked",
+        scenario_public_user_deck_acceptance,
+    ),
     "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
     "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),
     "real_autonomous_agent": ("Real LLM/DEVSIM autonomous agent run", scenario_real_autonomous_agent),
@@ -1222,6 +1316,7 @@ DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
     "mutation_refinement_multiround",
     "sentaurus_autonomous_refinement",
     "natural_language_power_marathon",
+    "public_user_deck_acceptance",
     "queue_confirmation_resume",
     "queue_interruption_recovery",
 ]

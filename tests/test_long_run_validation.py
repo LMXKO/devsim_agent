@@ -49,6 +49,7 @@ class LongRunValidationTest(unittest.TestCase):
                 "mutation_refinement_multiround",
                 "sentaurus_autonomous_refinement",
                 "natural_language_power_marathon",
+                "public_user_deck_acceptance",
                 "queue_confirmation_resume",
                 "queue_interruption_recovery",
             },
@@ -82,6 +83,10 @@ class LongRunValidationTest(unittest.TestCase):
                 for artifact in scenario_by_id["natural_language_power_marathon"]["artifacts"]
             )
         )
+        public_deck = scenario_by_id["public_user_deck_acceptance"]["details"]
+        self.assertTrue(public_deck["deck_patch_verified"])
+        self.assertEqual(public_deck["updated_n_doping_cm3"], 8e17)
+        self.assertEqual(public_deck["quality_status"], "passed")
         self.assertEqual(
             scenario_by_id["queue_confirmation_resume"]["details"]["completed_status"],
             "completed",

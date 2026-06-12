@@ -30,6 +30,7 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 - baseline-vs-mutation curve comparison followed by two finer mutation-refinement rounds;
 - Sentaurus baseline run, verified patch planning, mutation-effect analysis, effect-driven patch refinement, second patched run, lineage archive, and Pareto/best-entry evidence using the public-syntax fake contract;
 - a natural-language "AI 长时间自主操作 DEVSIM/Sentaurus" marathon that routes to Power MOSFET/LDMOS, runs the DEVSIM 2D field-plate runner, plans and executes the `power_mosfet_signoff` evidence pack, writes a minimal cockpit, and proves resume/cancel boundaries;
+- public DEVSIM user-deck acceptance that ingests a Python deck, applies a verified semantic patch, executes the patched deck, and benchmarks the resulting artifacts;
 - queue pause, approval, resume, and explicit unverified-patch approval;
 - worker interruption recovery for queued long-run agent items.
 
@@ -50,6 +51,15 @@ python3.11 -m tcad_agent.long_run_validation \
   --suite autonomous_e2e \
   --scenario-id natural_language_power_marathon \
   --validation-id nl_power_marathon
+```
+
+Run only the public user-deck acceptance scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_user_deck_acceptance \
+  --validation-id public_user_deck_acceptance
 ```
 
 The Sentaurus E2E scenario is deliberately an interface and agent-control validation. It uses the public fixture and fake CSV/log artifacts to prove the agent can run baseline -> patch planner -> patched run -> curve/effect analyzer -> patch refiner -> patched run -> lineage/Pareto -> final benchmark. It does not simulate proprietary Sentaurus physics.

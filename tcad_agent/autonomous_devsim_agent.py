@@ -1038,9 +1038,12 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
         )
     if request.source_deck_path and not request.initial_tool_name and not state.checkpoint.get("user_deck_done"):
         deck_path = state.checkpoint.get("patched_source_deck") or request.source_deck_path
+        deck_request = dict(request.initial_request)
+        deck_request["deck_path"] = deck_path
+        deck_request.setdefault("run_id", f"{state.agent_id}_user_deck")
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_USER_DECK,
-            request={"deck_path": deck_path, "run_id": f"{state.agent_id}_user_deck"},
+            request=deck_request,
             reason="No initial tool was requested; execute the user DEVSIM deck directly after ingest/patch setup.",
         )
     pending_refinement = state.checkpoint.get("pending_mutation_refinement")
