@@ -166,7 +166,6 @@ Generate a dashboard or report:
 ```bash
 python3.11 -m tcad_agent.tools.experiment_dashboard --state path/to/state.json
 python3.11 -m tcad_agent.tools.experiment_report --state path/to/state.json
-python3.11 -m tcad_agent.tools.agent_cockpit --state path/to/state.json
 ```
 
 ## Sentaurus Adapter
