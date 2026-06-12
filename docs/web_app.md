@@ -40,7 +40,7 @@ The transcript shows:
 
 The transcript follows the latest visible event only while the user is already near the bottom. Scrolling upward pauses auto-follow so earlier TCAD output can be inspected without being pulled back down; mission submission and the compact `最新` button force the view back to the newest event.
 
-The compact `例子` menu floats above the `Send` button and contains natural-language semiconductor-engineering test cases aligned to the seven public TCAD source categories: MOSCAP/capacitance, MOSFET Id-Vg/Id-Vd/DIBL, diode/SBD breakdown, LDMOS/IGBT power devices, GaN HEMT, BJT Gummel/output, and FinFET/SOI variability. Each example shows a short title plus expected outputs. The canonical list is in `docs/semiconductor_engineering_test_cases.md`.
+The composer intentionally has no example picker or mode panel. The user describes the TCAD task in natural language, and the backend router selects the device template, runner, queue item, and capability gates.
 
 Run:
 
@@ -101,4 +101,4 @@ The workbench routes through the same mission, supervisor, and queue runners use
 
 ## LLM Health
 
-The page shows configured LLM status without blocking on a network call. Press `LLM Check` to make a live OpenAI-compatible chat-completions request to the configured endpoint.
+The page shows configured LLM status without blocking on a network call. The settings modal writes the local OpenAI-compatible endpoint, model, and API key preview; `/api/llm/check` remains available for programmatic live health checks.

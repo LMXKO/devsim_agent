@@ -31,35 +31,6 @@ from tcad_agent.run_queue import (
 from tcad_agent.task_spec import PROJECT_ROOT
 from tcad_agent.tcad_deck import compact_tcad_deck_spec
 
-
-CAPABILITIES: list[dict[str, Any]] = [
-    {
-        "name": "Autonomous DEVSIM Agent",
-        "tool": "autonomous_devsim_agent",
-        "scope": "long-horizon DEVSIM execution, observation, repair, objective checks, conclusion",
-    },
-    {
-        "name": "Device Coverage",
-        "tool": "supervisor",
-        "scope": "MOSCAP, MOSFET/DIBL, diode/SBD breakdown, LDMOS/IGBT, GaN HEMT, BJT, FinFET/SOI variability",
-    },
-    {
-        "name": "Quality",
-        "tool": "physical_benchmark",
-        "scope": "physical sanity checks, golden-profile comparison, convergence evidence",
-    },
-    {
-        "name": "Optimization",
-        "tool": "multidim_optimizer",
-        "scope": "1D/multidimensional sweeps, Pareto objectives, engineering constraints",
-    },
-    {
-        "name": "Reporting",
-        "tool": "experiment_report",
-        "scope": "ranked results, best parameter summary, artifacts, next action",
-    },
-]
-
 @dataclass
 class WebAppConfig:
     root: Path = PROJECT_ROOT / "runs"
