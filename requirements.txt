@@ -1,9 +1,5 @@
 devsim
-numpy
 openai
-pandas
 matplotlib
-optuna
 pydantic
-pyyaml
 uvicorn
