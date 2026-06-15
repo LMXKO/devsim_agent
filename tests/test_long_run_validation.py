@@ -18,8 +18,10 @@ class LongRunValidationTest(unittest.TestCase):
     def test_live_llm_user_deck_acceptance_is_explicit_not_default(self) -> None:
         self.assertIn("public_user_deck_live_llm_acceptance", SCENARIO_REGISTRY)
         self.assertIn("public_user_deck_live_llm_soak", SCENARIO_REGISTRY)
+        self.assertIn("public_curve_decision_live_llm_eval", SCENARIO_REGISTRY)
         self.assertNotIn("public_user_deck_live_llm_acceptance", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_user_deck_live_llm_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
+        self.assertNotIn("public_curve_decision_live_llm_eval", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
 
     def test_runs_queue_daemon_benchmarks_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -59,6 +61,7 @@ class LongRunValidationTest(unittest.TestCase):
                 "natural_language_power_marathon",
                 "public_user_deck_acceptance",
                 "public_user_deck_corpus_acceptance",
+                "public_curve_decision_eval",
                 "queue_confirmation_resume",
                 "queue_interruption_recovery",
             },
@@ -102,6 +105,19 @@ class LongRunValidationTest(unittest.TestCase):
         self.assertEqual(
             {item["shape"] for item in corpus["cases"]},
             {"function_wrapped_config", "package_imports_with_local_overrides", "multi_sweep_bias_sequence"},
+        )
+        curve_eval = scenario_by_id["public_curve_decision_eval"]["details"]
+        self.assertEqual(curve_eval["case_count"], 4)
+        self.assertEqual(curve_eval["failed_count"], 0)
+        self.assertEqual(curve_eval["fallback_count"], 0)
+        self.assertEqual(
+            {item["recommended_action"] for item in curve_eval["cases"]},
+            {
+                "refine_effective_mutation",
+                "pareto_review_before_next_patch",
+                "switch_mutation_target",
+                "repair_curve_shape",
+            },
         )
         self.assertEqual(
             scenario_by_id["queue_confirmation_resume"]["details"]["completed_status"],

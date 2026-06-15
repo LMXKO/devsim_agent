@@ -22,6 +22,7 @@ from tcad_agent.autonomous_devsim_agent import (
 from tcad_agent.agent_cockpit import generate_agent_cockpit
 from tcad_agent.agent_goal_router import AgentGoalRouteRequest, route_agent_goal
 from tcad_agent.agent_soak import AgentSoakRequest, AgentSoakStatus, run_agent_soak
+from tcad_agent.curve_decision_eval import CurveDecisionEvalRequest, CurveDecisionEvalStatus, run_curve_decision_eval
 from tcad_agent.experiment_index import list_records, rebuild_index
 from tcad_agent.llm import LLMConfig
 from tcad_agent.physical_benchmark import run_physical_benchmark
@@ -1192,6 +1193,118 @@ def live_llm_config_or_raise() -> LLMConfig:
     return llm_config
 
 
+def run_curve_decision_eval_acceptance(
+    scenario_dir: Path,
+    *,
+    eval_id: str,
+    use_llm: bool,
+    allow_llm_fallback: bool,
+    require_live_llm: bool,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    if require_live_llm:
+        live_llm_config_or_raise()
+    eval_root = scenario_dir / "curve_decision_eval"
+    if eval_root.exists():
+        shutil.rmtree(eval_root)
+    result = run_curve_decision_eval(
+        CurveDecisionEvalRequest(
+            eval_id=eval_id,
+            eval_root=eval_root,
+            use_llm=use_llm,
+            allow_llm_fallback=allow_llm_fallback,
+        )
+    )
+    case_summaries = [
+        {
+            "case_id": item.case_id,
+            "status": item.status,
+            "recommended_action": item.recommended_action,
+            "recommended_target": item.recommended_target,
+            "decision_source": item.decision_source,
+            "fallback_used": item.fallback_used,
+            "model": item.model,
+        }
+        for item in result.cases
+    ]
+    actions_by_case = {item.case_id: item.recommended_action for item in result.cases}
+    assertions = [
+        require(result.status == CurveDecisionEvalStatus.COMPLETED, "curve decision eval completed"),
+        require(result.case_count >= 4, "curve decision eval covered multiple curve-decision cases"),
+        require(result.passed_count == result.case_count, "all curve decision cases passed"),
+        require(all(path_exists(item.overlay_svg_path) for item in result.cases), "each curve decision case emitted an overlay SVG"),
+        require(actions_by_case.get("lifetime_leakage_improved") == "refine_effective_mutation", "lifetime improvement refines same direction"),
+        require(actions_by_case.get("field_plate_ron_tradeoff") == "pareto_review_before_next_patch", "field-plate Ron tradeoff triggers Pareto review"),
+        require(actions_by_case.get("drift_doping_ron_not_improved") == "switch_mutation_target", "ineffective drift doping switches target"),
+        require(actions_by_case.get("nonmonotonic_curve_requires_repair") == "repair_curve_shape", "nonmonotonic curve triggers bias/mesh repair"),
+    ]
+    if require_live_llm:
+        assertions.extend(
+            [
+                require(use_llm, "curve decision eval ran with use_llm enabled"),
+                require(not allow_llm_fallback, "live curve decision eval disabled deterministic fallback"),
+                require(result.llm_decision_count == result.case_count, "every curve decision came from the LLM"),
+                require(result.fallback_count == 0, "no deterministic fallback was used in live curve decision eval"),
+                require(result.raw_response_count == result.case_count, "raw LLM responses were recorded for every curve case"),
+                require(bool(result.models), "LLM model name was recorded for curve decision eval"),
+            ]
+        )
+    artifacts = [
+        artifact("curve_decision_eval_result", result.result_path, description="Full curve decision evaluation result"),
+    ]
+    artifacts.extend(
+        artifact(f"{item.case_id}_overlay", item.overlay_svg_path, kind="svg", description=item.title)
+        for item in result.cases
+    )
+    return (
+        assertions,
+        artifacts,
+        {
+            "eval_status": result.status,
+            "case_count": result.case_count,
+            "passed_count": result.passed_count,
+            "failed_count": result.failed_count,
+            "use_llm": result.use_llm,
+            "allow_llm_fallback": result.allow_llm_fallback,
+            "llm_decision_count": result.llm_decision_count,
+            "fallback_count": result.fallback_count,
+            "raw_response_count": result.raw_response_count,
+            "models": result.models,
+            "cases": case_summaries,
+            "result_path": result.result_path,
+        },
+    )
+
+
+def scenario_public_curve_decision_eval(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del request, queue_db
+    return run_curve_decision_eval_acceptance(
+        scenario_dir,
+        eval_id="public_curve_decision_eval",
+        use_llm=False,
+        allow_llm_fallback=True,
+        require_live_llm=False,
+    )
+
+
+def scenario_public_curve_decision_live_llm_eval(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del request, queue_db
+    return run_curve_decision_eval_acceptance(
+        scenario_dir,
+        eval_id="public_curve_decision_live_llm_eval",
+        use_llm=True,
+        allow_llm_fallback=False,
+        require_live_llm=True,
+    )
+
+
 def live_llm_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
     raw = request.real_agent_request.get("public_user_deck_live_llm_soak")
     options = raw if isinstance(raw, dict) else {}
@@ -1702,6 +1815,14 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
         "Public real-style DEVSIM user deck corpus is ingested, patched, executed, and benchmarked",
         scenario_public_user_deck_corpus_acceptance,
     ),
+    "public_curve_decision_eval": (
+        "Public baseline-vs-mutation curves drive next patch decisions with overlay evidence",
+        scenario_public_curve_decision_eval,
+    ),
+    "public_curve_decision_live_llm_eval": (
+        "A real configured LLM chooses next patch directions from public curve overlays without fallback",
+        scenario_public_curve_decision_live_llm_eval,
+    ),
     "public_user_deck_live_llm_acceptance": (
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",
         scenario_public_user_deck_live_llm_acceptance,
@@ -1725,6 +1846,7 @@ DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
     "natural_language_power_marathon",
     "public_user_deck_acceptance",
     "public_user_deck_corpus_acceptance",
+    "public_curve_decision_eval",
     "queue_confirmation_resume",
     "queue_interruption_recovery",
 ]

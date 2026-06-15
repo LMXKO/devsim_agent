@@ -74,6 +74,17 @@ python3.11 -m tcad_agent.long_run_validation \
   --validation-id public_user_deck_corpus_acceptance
 ```
 
+Run the curve-driven next-patch decision scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_curve_decision_eval \
+  --validation-id public_curve_decision_eval
+```
+
+This scenario compares public baseline/mutation curve fixtures, writes overlay SVGs and mutation-effect artifacts, then verifies that the agent chooses refine, switch, Pareto review, or curve-shape repair as appropriate.
+
 Run the true live-LLM user-deck acceptance scenario:
 
 ```bash
@@ -90,6 +101,19 @@ python3.11 -m tcad_agent.long_run_validation \
 ```
 
 This scenario is not part of the default deterministic E2E suite. It is a live acceptance gate: no configured model, failed model call, invalid model action, or any deterministic fallback makes the scenario fail.
+
+Run the true live-LLM curve-decision scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_curve_decision_live_llm_eval \
+  --validation-id public_curve_decision_live_llm_eval \
+  --use-llm \
+  --no-llm-fallback
+```
+
+This live gate requires the model to return valid JSON decisions for every curve case, with raw responses recorded and fallback count fixed at zero.
 
 Run the sliced live-LLM soak scenario:
 
