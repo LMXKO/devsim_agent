@@ -16,6 +16,7 @@ from tcad_agent.curve_diagnostics import compare_state_mutation_effect, curve_sh
 from tcad_agent.deck_ir import parse_devsim_deck_file, write_semantic_deck_patch_artifacts
 from tcad_agent.device_templates import route_device_goal
 from tcad_agent.engineering_objectives import EngineeringConstraint, EngineeringObjective
+from tcad_agent.agent_curve_decision import CurveDecisionPlannerRequest, CurveDecisionPlannerStatus, build_curve_decision_plan
 from tcad_agent.agent_experiment_design import build_agent_experiment_design_plan
 from tcad_agent.agent_guidance_patch import build_guidance_patch_plan, guidance_is_actionable_patch
 from tcad_agent.evidence_lookup import PublicEvidenceLookupRequest, run_public_evidence_lookup
@@ -96,6 +97,7 @@ class DevsimAgentActionKind(str, Enum):
     INGEST_DECK = "ingest_deck"
     APPLY_DECK_PATCH = "apply_deck_patch"
     RUN_USER_DECK = "run_user_deck"
+    PLAN_CURVE_DECISION = "plan_curve_decision"
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
     PLAN_GUIDANCE_PATCH = "plan_guidance_patch"
     PLAN_SENTAURUS_PATCH = "plan_sentaurus_patch"
@@ -207,6 +209,15 @@ class AgentToolSpec(BaseModel):
 
 def utc_timestamp() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def same_path(left: Any, right: Any) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(str(left)).expanduser().resolve() == Path(str(right)).expanduser().resolve()
+    except Exception:
+        return str(left) == str(right)
 
 
 def default_agent_id() -> str:
@@ -663,6 +674,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"deck_path": {"type": "string"}, "timeout_seconds": {"type": "number"}}, required=["deck_path"]),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_CURVE_DECISION.value,
+            action_kind=DevsimAgentActionKind.PLAN_CURVE_DECISION.value,
+            description="Ask the curve-review agent/LLM to choose refine, switch target, Pareto review, or curve-shape repair from baseline-vs-mutation evidence.",
+            parameters=object_schema({"source_state_path": {"type": "string"}}, required=["source_state_path"]),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value,
             action_kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value,
             description="Turn baseline-vs-mutation curve diagnostics into the next finer deck/request patch.",
@@ -794,6 +811,8 @@ def build_agent_context(
         "enable_experiment_design": request.enable_experiment_design,
         "max_experiment_design_rounds": request.max_experiment_design_rounds,
         "auto_execute_experiment_design": request.auto_execute_experiment_design,
+        "generate_report": request.generate_report,
+        "generate_dashboard": request.generate_dashboard,
         "toolbelt": toolbelt_summary(specs),
         "supported_action_kinds": [kind.value for kind in DevsimAgentActionKind],
     }
@@ -832,11 +851,15 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "规划 simulator-specific patch 前必须使用 public_evidence_dossier 与本地 deck/state 证据；没有证据时先补证据而不是猜。",
             "public_evidence_dossier 只能作为公开方法/来源索引，不能当成私有 PDK、商业模型或校准 deck。",
             "失败或可疑 state 优先 repair/benchmark，而不是直接报告成功。",
+            "如果最新 observation 有 mutation_effect_analysis，先 plan_curve_decision，让模型根据曲线/effect 选择 refine、switch、Pareto review 或 repair curve。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
             "如果 sentaurus_mutation_effect_analysis 显示 patch 有效，可以继续细化；如果出现 tradeoff，必须进行约束/Pareto 复核或等待确认。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
             "generate_report、generate_dashboard、stop_success 之前必须先 run_physical_benchmark，除非 checkpoint.physical_benchmark_done 已经为 true。",
+            "如果 context.generate_report 为 false，不要选择 generate_report；如果 context.generate_dashboard 为 false，不要选择 generate_dashboard。",
+            "如果 checkpoint.physical_benchmark_done 为 true 且 context.generate_report/context.generate_dashboard 都为 false，优先 stop_success。",
+            "不要重复 plan_curve_decision 超过 max_mutation_refinements；如果 checkpoint.curve_decision_runs 已达到 max_mutation_refinements，转向 benchmark、report 或 stop_success。",
             "预算感知：如果 completed_steps + 1 >= max_steps，且已经有 baseline/benchmark/signoff/report 之一作为可解释证据，优先 stop_success 或 ask_user 总结剩余缺口，不要再开启新实验。",
             "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
@@ -1076,6 +1099,62 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             reason=str(pending_guidance_patch.get("reason") or "Execute the curve-guidance deck/request patch."),
             user_confirmation_required=bool(pending_guidance_patch.get("requires_user_confirmation")),
         )
+    pending_curve_decision = state.checkpoint.get("pending_curve_decision_plan")
+    if (
+        isinstance(pending_curve_decision, dict)
+        and same_path(pending_curve_decision.get("source_state_path"), state.latest_state_path)
+        and not pending_curve_decision.get("executed")
+    ):
+        plan_id = str(pending_curve_decision.get("output_path") or pending_curve_decision.get("source_state_path") or "")
+        next_agent_action = str(pending_curve_decision.get("next_agent_action") or "")
+        guidance = pending_curve_decision.get("curve_guidance") if isinstance(pending_curve_decision.get("curve_guidance"), dict) else {}
+        if next_agent_action == DevsimAgentActionKind.PLAN_GUIDANCE_PATCH.value and guidance_is_actionable_patch(guidance):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.PLAN_GUIDANCE_PATCH,
+                source_state_path=state.latest_state_path,
+                request={
+                    "curve_guidance": guidance,
+                    "guidance_signature": guidance_signature(guidance, state.latest_state_path),
+                    "curve_decision_plan_id": plan_id,
+                },
+                reason=str(pending_curve_decision.get("rationale") or "Curve decision selected an executable next patch."),
+            )
+        if next_agent_action == DevsimAgentActionKind.RUN_REPAIR_EXECUTOR.value:
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
+                source_state_path=state.latest_state_path,
+                request={"curve_decision_plan_id": plan_id},
+                reason=str(pending_curve_decision.get("rationale") or "Curve decision found curve-shape evidence that needs repair before more physical patches."),
+            )
+        if next_agent_action == "collect_more_evidence":
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
+                source_state_path=state.latest_state_path,
+                request={"curve_decision_plan_id": plan_id, "curve_decision_evidence_gap": True},
+                reason=str(pending_curve_decision.get("rationale") or "Curve decision needs more curve evidence before selecting another physical patch."),
+            )
+        if next_agent_action == "pareto_review":
+            if request.objectives or request.constraints:
+                return DevsimAgentAction(
+                    kind=DevsimAgentActionKind.EVALUATE_OBJECTIVES,
+                    source_state_path=state.latest_state_path,
+                    request={
+                        "curve_decision_plan_id": plan_id,
+                        "objectives": [item.model_dump(mode="json") for item in request.objectives],
+                        "constraints": [item.model_dump(mode="json") for item in request.constraints],
+                    },
+                    reason=str(pending_curve_decision.get("rationale") or "Curve decision requires Pareto/constraint review before another patch."),
+                )
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.ASK_USER,
+                source_state_path=state.latest_state_path,
+                request={
+                    "curve_decision_plan_id": plan_id,
+                    "question": "Curve decision found a tradeoff; review Pareto/constraints before the agent applies another patch.",
+                    "curve_decision_plan": pending_curve_decision,
+                },
+                reason=str(pending_curve_decision.get("rationale") or "Curve decision requires Pareto/constraint review before another patch."),
+            )
     pending_experiment = state.checkpoint.get("pending_agent_experiment_candidate")
     if (
         request.auto_execute_experiment_design
@@ -1114,6 +1193,21 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
         )
     mutation_refinement_runs = int(state.checkpoint.get("mutation_refinement_runs") or 0)
     latest_analysis = observation.get("mutation_effect_analysis")
+    curve_decision_runs = int(state.checkpoint.get("curve_decision_runs") or 0)
+    if (
+        request.use_llm
+        and isinstance(latest_analysis, dict)
+        and latest_analysis
+        and observation.get("tool_name") != "sentaurus_run"
+        and curve_decision_runs < request.max_mutation_refinements
+        and state.checkpoint.get("curve_decision_plan_source_path") != state.latest_state_path
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_CURVE_DECISION,
+            source_state_path=state.latest_state_path,
+            request={"use_llm": True, "allow_llm_fallback": request.allow_llm_fallback},
+            reason="Latest state contains baseline-vs-mutation curve evidence; ask the curve-review agent to choose refine, switch target, Pareto review, or curve repair.",
+        )
     if (
         isinstance(latest_analysis, dict)
         and latest_analysis
@@ -1298,6 +1392,24 @@ def normalize_agent_action(parsed: dict[str, Any], state: AutonomousDevsimAgentS
     )
 
 
+def agent_action_safety_failure(
+    action: DevsimAgentAction,
+    request: AutonomousDevsimRequest,
+    tool_specs: list[AgentToolSpec],
+) -> str | None:
+    if action.kind == DevsimAgentActionKind.GENERATE_REPORT and not request.generate_report:
+        return "agent selected generate_report while report generation is disabled"
+    if action.kind == DevsimAgentActionKind.GENERATE_DASHBOARD and not request.generate_dashboard:
+        return "agent selected generate_dashboard while dashboard generation is disabled"
+    if action.kind == DevsimAgentActionKind.RUN_TOOL:
+        if action.tool_name == "autonomous_devsim_agent":
+            return None
+        registered = {str(spec.runner_name) for spec in tool_specs if spec.runner_name}
+        if not action.tool_name or action.tool_name not in registered:
+            return f"agent selected unregistered run_tool: {action.tool_name}"
+    return None
+
+
 def parse_agent_decision_json(raw: str) -> dict[str, Any] | None:
     parsed = parse_json_object(raw)
     if not isinstance(parsed, dict):
@@ -1365,6 +1477,12 @@ def decide_next_action(
         if request.allow_llm_fallback:
             return fallback, decision
         raise ValueError("autonomous DEVSIM agent action was invalid or unsafe")
+    safety_failure = agent_action_safety_failure(action, request, specs)
+    if safety_failure:
+        decision["failure_reason"] = safety_failure
+        if request.allow_llm_fallback:
+            return fallback, decision
+        raise ValueError(safety_failure)
     decision.update(
         {
             "status": "completed",
@@ -1495,6 +1613,25 @@ def process_metadata_from_result(result: dict[str, Any]) -> dict[str, Any]:
         if key in result:
             metadata[key] = result[key]
     return metadata
+
+
+def mark_pending_curve_decision_executed(
+    state: AutonomousDevsimAgentState,
+    *,
+    action: DevsimAgentAction,
+    result_state_path: str | None = None,
+) -> None:
+    plan_id = action.request.get("curve_decision_plan_id")
+    if not plan_id:
+        return
+    pending = state.checkpoint.get("pending_curve_decision_plan")
+    if isinstance(pending, dict):
+        state.checkpoint["pending_curve_decision_plan"] = {
+            **pending,
+            "executed": True,
+            "executed_action": action.kind.value,
+            "result_state_path": result_state_path,
+        }
 
 
 def deck_session_state_path(state: AutonomousDevsimAgentState, name: str) -> Path:
@@ -1726,6 +1863,7 @@ def execute_action(
     *,
     runner_registry: dict[str, Runner],
     repair_runner: RepairRunner = run_repair_executor,
+    llm_client: ChatClient | None = None,
 ) -> tuple[dict[str, Any], str | None]:
     if action.kind == DevsimAgentActionKind.AUDIT_CAPABILITY:
         route = route_device_goal(str(action.request.get("goal_text") or state.goal_text))
@@ -1903,7 +2041,9 @@ def execute_action(
             state.checkpoint["executed_agent_experiment_candidates"] = int(
                 state.checkpoint.get("executed_agent_experiment_candidates") or 0
             ) + 1
-        return result, infer_result_state_path(result) or result.get("final_state_path") or result.get("current_state_path")
+        repair_result_path = infer_result_state_path(result) or result.get("final_state_path") or result.get("current_state_path")
+        mark_pending_curve_decision_executed(state, action=action, result_state_path=repair_result_path)
+        return result, repair_result_path
     if action.kind == DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK:
         source = action.source_state_path or state.latest_state_path
         if not source:
@@ -1928,6 +2068,7 @@ def execute_action(
         state.checkpoint["pareto_front"] = result.get("pareto_front") or []
         state.checkpoint["best_candidate"] = result.get("best_candidate")
         state.checkpoint["engineering_objective_decision"] = result.get("decision") or {}
+        mark_pending_curve_decision_executed(state, action=action, result_state_path=source)
         if "Sentaurus patch" in action.reason:
             state.checkpoint["sentaurus_tradeoff_review_source_path"] = source
             state.checkpoint["sentaurus_tradeoff_review"] = result
@@ -1973,6 +2114,37 @@ def execute_action(
         state.checkpoint["user_deck_done"] = True
         state.checkpoint["user_deck_state_path"] = result.get("state_path")
         return result, infer_result_state_path(result) or result.get("state_path")
+    if action.kind == DevsimAgentActionKind.PLAN_CURVE_DECISION:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("curve decision action requires a source state")
+        output_dir = Path(state.agent_dir) / "curve_decisions"
+        output_path = output_dir / f"curve_decision_{int(state.checkpoint.get('curve_decision_plans') or 0) + 1:03d}.json"
+        plan = build_curve_decision_plan(
+            CurveDecisionPlannerRequest(
+                source_state_path=Path(source),
+                goal_text=state.goal_text,
+                output_path=output_path,
+                use_llm=bool(action.request.get("use_llm", request.use_llm)),
+                allow_llm_fallback=bool(action.request.get("allow_llm_fallback", request.allow_llm_fallback)),
+            ),
+            llm_client=llm_client,
+        )
+        result = plan.model_dump(mode="json")
+        state.checkpoint["curve_decision_runs"] = int(state.checkpoint.get("curve_decision_runs") or 0) + 1
+        state.checkpoint["curve_decision_plans"] = int(state.checkpoint.get("curve_decision_plans") or 0) + 1
+        state.checkpoint["curve_decision_plan_path"] = result.get("output_path")
+        state.checkpoint["curve_decision_plan_source_path"] = source
+        state.checkpoint["latest_curve_decision_plan"] = result
+        if plan.curve_guidance:
+            state.checkpoint["curve_guidance"] = plan.curve_guidance
+        if plan.status in {CurveDecisionPlannerStatus.COMPLETED, CurveDecisionPlannerStatus.FALLBACK}:
+            state.checkpoint["pending_curve_decision_plan"] = result
+        else:
+            state.checkpoint["failed_curve_decision_plan"] = result
+            if not action.request.get("allow_llm_fallback", request.allow_llm_fallback):
+                raise ValueError(str(plan.failure_reason or "curve decision planner failed"))
+        return result, source
     if action.kind == DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT:
         source = action.source_state_path or state.latest_state_path
         if not source:
@@ -2013,6 +2185,7 @@ def execute_action(
         state.checkpoint["guidance_patch_plan_path"] = result.get("output_path")
         state.checkpoint["guidance_patch_plan_source_path"] = source
         state.checkpoint["guidance_patch_signature"] = action.request.get("guidance_signature") or guidance_signature(guidance, source)
+        mark_pending_curve_decision_executed(state, action=action, result_state_path=source)
         if plan.status == "completed" and plan.next_request:
             state.checkpoint["pending_guidance_patch"] = result
         elif plan.status == "no_action":
@@ -2271,6 +2444,7 @@ def run_autonomous_devsim_agent(
                 action,
                 runner_registry=registry,
                 repair_runner=repair_runner,
+                llm_client=llm_client,
             )
             step.result = result
             state.checkpoint["last_process"] = process_metadata_from_result(result)

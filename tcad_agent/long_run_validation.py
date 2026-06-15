@@ -1305,6 +1305,135 @@ def scenario_public_curve_decision_live_llm_eval(
     )
 
 
+def scenario_public_curve_decision_live_llm_agent_loop(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    live_llm_config_or_raise()
+    source_state = write_curve_state(
+        scenario_dir / "source" / "state.json",
+        tool_name="extended_device_sweep",
+        run_id="curve_decision_loop_source",
+        request={
+            "device_type": "power_mosfet_bv_ron",
+            "fidelity": "devsim_2d_field_plate",
+            "power_mos_drift_region_doping_cm3": 1.0e16,
+        },
+        quality_status="passed",
+        metrics={
+            "leakage_current_a": 1.0e-8,
+            "breakdown_voltage_v": -80.0,
+            "specific_on_resistance_ohm_cm2": 5.0e-3,
+            "max_electric_field_v_per_cm": 2.8e5,
+        },
+        csv_header="drain_voltage_v,off_current_a,electric_field_v_per_cm",
+        csv_rows=["0,1e-10,1e4", "-20,1e-8,1.8e5", "-40,1e-6,2.8e5"],
+        extra={
+            "mutation_effect_analysis": {
+                "mutation_target": "drift_doping",
+                "primary_metric": "specific_on_resistance_ohm_cm2",
+                "primary_improved": True,
+                "worth_continuing": True,
+                "decision": "continue_same_target",
+                "rationale": "Ron improved without blocking tradeoffs after the drift doping probe.",
+                "recommended_next_target": "drift_doping",
+                "recommended_next_direction": "decrease",
+                "improved_metrics": ["specific_on_resistance_ohm_cm2"],
+                "regressed_metrics": [],
+                "tradeoff_violations": [],
+            }
+        },
+    )
+    refined_state = scenario_dir / "refined" / "state.json"
+    tool_requests: list[dict[str, Any]] = []
+
+    def fake_extended_device(tool_request: dict[str, Any]) -> dict[str, Any]:
+        tool_requests.append(tool_request)
+        write_curve_state(
+            refined_state,
+            tool_name="extended_device_sweep",
+            run_id="curve_decision_loop_refined",
+            request=tool_request,
+            quality_status="passed",
+            metrics={
+                "leakage_current_a": 8.0e-9,
+                "breakdown_voltage_v": -82.0,
+                "specific_on_resistance_ohm_cm2": 4.6e-3,
+                "max_electric_field_v_per_cm": 2.65e5,
+            },
+            csv_header="drain_voltage_v,off_current_a,electric_field_v_per_cm",
+            csv_rows=["0,8e-11,9e3", "-20,8e-9,1.6e5", "-40,8e-7,2.65e5"],
+        )
+        return {"status": "completed", "state_path": str(refined_state)}
+
+    state = run_autonomous_devsim_agent(
+        AutonomousDevsimRequest(
+            goal_text="Use the LLM curve reviewer to refine the Power MOSFET drift doping patch from mutation-effect curve evidence.",
+            agent_id="public_curve_decision_live_llm_agent_loop",
+            agent_root=scenario_dir / "agents",
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=False,
+            source_state_path=str(source_state),
+            max_steps=max(6, request.agent_max_steps),
+            max_mutation_refinements=1,
+            allow_user_confirmation_actions=True,
+            generate_report=False,
+            generate_dashboard=False,
+        ),
+        runner_registry={
+            "extended_device_sweep": fake_extended_device,
+            "physical_benchmark": lambda tool_request: {
+                "status": "completed",
+                "benchmark_path": str(scenario_dir / "physical_benchmark.json"),
+            },
+        },
+    )
+    step_kinds = [step.kind for step in state.steps]
+    decision_evidence = decision_evidence_from_agent_state(state)
+    curve_plan = state.checkpoint.get("latest_curve_decision_plan") if isinstance(state.checkpoint.get("latest_curve_decision_plan"), dict) else {}
+    assertions = [
+        require(
+            state.status == DevsimAgentStatus.COMPLETED,
+            f"live curve-decision agent loop completed (status={state.status}, failure_reason={state.failure_reason})",
+        ),
+        require(DevsimAgentActionKind.PLAN_CURVE_DECISION in step_kinds, "agent planned a curve decision from mutation-effect evidence"),
+        require(DevsimAgentActionKind.PLAN_GUIDANCE_PATCH in step_kinds, "agent converted curve decision into a guidance patch"),
+        require(DevsimAgentActionKind.RUN_TOOL in step_kinds, "agent executed the curve-selected next tool request"),
+        require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK in step_kinds, "agent benchmarked the refined result before stopping"),
+        require(bool(tool_requests), "curve-selected runner request was executed"),
+        require(bool(tool_requests[0].get("guidance_patch_id")), "executed request carried guidance patch lineage"),
+        require(curve_plan.get("decision_source") == "llm", "curve decision itself came from the LLM"),
+        require(not curve_plan.get("fallback_used"), "curve decision planner did not use deterministic fallback"),
+        require(bool(curve_plan.get("raw_response")), "curve decision raw LLM response was recorded"),
+        require(decision_evidence["decision_count"] >= 4, "agent recorded model decisions across the loop"),
+        require(decision_evidence["llm_decision_count"] == decision_evidence["decision_count"], "every outer agent action came from the LLM"),
+        require(decision_evidence["fallback_count"] == 0, "outer agent action selection used no fallback"),
+        require(decision_evidence["raw_response_count"] == decision_evidence["decision_count"], "raw model responses were recorded for every outer agent action"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+            artifact("curve_decision_plan", curve_plan.get("output_path")),
+            artifact("guidance_patch_plan", state.checkpoint.get("guidance_patch_plan_path")),
+            artifact("refined_state", refined_state),
+        ],
+        {
+            "agent_status": state.status,
+            "step_kinds": [kind.value for kind in step_kinds],
+            "decision_evidence": decision_evidence,
+            "curve_decision_source": curve_plan.get("decision_source"),
+            "curve_decision_action": curve_plan.get("recommended_action"),
+            "curve_decision_target": curve_plan.get("recommended_target"),
+            "curve_decision_fallback_used": curve_plan.get("fallback_used"),
+            "executed_request_has_guidance_patch": bool(tool_requests and tool_requests[0].get("guidance_patch_id")),
+        },
+    )
+
+
 def live_llm_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
     raw = request.real_agent_request.get("public_user_deck_live_llm_soak")
     options = raw if isinstance(raw, dict) else {}
@@ -1822,6 +1951,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "public_curve_decision_live_llm_eval": (
         "A real configured LLM chooses next patch directions from public curve overlays without fallback",
         scenario_public_curve_decision_live_llm_eval,
+    ),
+    "public_curve_decision_live_llm_agent_loop": (
+        "A real configured LLM drives the autonomous agent from curve decision to guidance patch execution",
+        scenario_public_curve_decision_live_llm_agent_loop,
     ),
     "public_user_deck_live_llm_acceptance": (
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",

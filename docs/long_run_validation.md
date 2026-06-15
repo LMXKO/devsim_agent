@@ -115,6 +115,19 @@ python3.11 -m tcad_agent.long_run_validation \
 
 This live gate requires the model to return valid JSON decisions for every curve case, with raw responses recorded and fallback count fixed at zero.
 
+Run the true live-LLM curve-decision agent loop:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_curve_decision_live_llm_agent_loop \
+  --validation-id public_curve_decision_live_llm_agent_loop \
+  --use-llm \
+  --no-llm-fallback
+```
+
+This scenario starts from a state that already has `mutation_effect_analysis`, then requires the autonomous agent to call the curve-decision planner, convert the model decision into a guidance patch, execute the next runner request, benchmark the refined state, and stop without fallback.
+
 Run the sliced live-LLM soak scenario:
 
 ```bash

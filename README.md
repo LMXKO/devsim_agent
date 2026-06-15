@@ -167,6 +167,12 @@ Validate live-LLM curve decisions:
 python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_curve_decision_live_llm_eval --use-llm --no-llm-fallback
 ```
 
+Validate the live-LLM curve decision agent loop:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_curve_decision_live_llm_agent_loop --use-llm --no-llm-fallback
+```
+
 Validate the sliced live-LLM soak path:
 
 ```bash

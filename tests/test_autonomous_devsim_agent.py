@@ -869,6 +869,128 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertIn("mutation_effect_analysis", refined)
         self.assertIn("baseline_mutation_overlay", refined["final_summary"]["artifacts"])
 
+    def test_agent_uses_llm_curve_decision_before_guidance_patch(self) -> None:
+        source_dir = self.root / "runs" / "curve_decision_source"
+        source_csv = source_dir / "curve.csv"
+        source_csv.parent.mkdir(parents=True, exist_ok=True)
+        source_csv.write_text(
+            "drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,1e4\n-10,1e-8,2e5\n-20,1e-6,5e5\n",
+            encoding="utf-8",
+        )
+        source_state = source_dir / "state.json"
+        write_json(
+            source_state,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "run_id": "curve_decision_source",
+                "request": {
+                    "device_type": "power_mosfet_bv_ron",
+                    "fidelity": "devsim_2d_field_plate",
+                    "power_mos_drift_region_doping_cm3": 1.0e16,
+                },
+                "final_summary": {
+                    "artifacts": {"csv": str(source_csv)},
+                    "metrics": {
+                        "leakage_current_a": 1e-8,
+                        "breakdown_voltage_v": -20,
+                        "specific_on_resistance_ohm_cm2": 0.05,
+                    },
+                },
+                "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 1e-8}},
+                "mutation_effect_analysis": {
+                    "mutation_target": "drift_doping",
+                    "primary_metric": "specific_on_resistance_ohm_cm2",
+                    "primary_improved": True,
+                    "worth_continuing": True,
+                    "decision": "continue_same_target",
+                    "rationale": "Ron improved without blocking tradeoffs.",
+                    "recommended_next_target": "drift_doping",
+                    "recommended_next_direction": "decrease",
+                    "improved_metrics": ["specific_on_resistance_ohm_cm2"],
+                    "regressed_metrics": [],
+                    "tradeoff_violations": [],
+                },
+            },
+        )
+        refined_dir = self.root / "runs" / "curve_decision_refined"
+        refined_csv = refined_dir / "curve.csv"
+        refined_state = refined_dir / "state.json"
+        tool_requests: list[dict[str, object]] = []
+
+        def fake_extended_device(request: dict[str, object]) -> dict[str, object]:
+            tool_requests.append(request)
+            refined_csv.parent.mkdir(parents=True, exist_ok=True)
+            refined_csv.write_text(
+                "drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,1e4\n-10,7e-9,1.7e5\n-20,7e-7,4.0e5\n",
+                encoding="utf-8",
+            )
+            write_json(
+                refined_state,
+                {
+                    "tool_name": "extended_device_sweep",
+                    "status": "completed",
+                    "run_id": "curve_decision_refined",
+                    "request": request,
+                    "final_summary": {
+                        "artifacts": {"csv": str(refined_csv)},
+                        "metrics": {
+                            "leakage_current_a": 7e-9,
+                            "breakdown_voltage_v": -24,
+                            "specific_on_resistance_ohm_cm2": 0.046,
+                        },
+                    },
+                    "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 7e-9}},
+                },
+            )
+            return {"status": "completed", "state_path": str(refined_state)}
+
+        client = FakeAgentClient(
+            json.dumps(
+                {
+                    "recommended_action": "refine_effective_mutation",
+                    "recommended_target": "drift_doping",
+                    "recommended_direction": "decrease",
+                    "rationale": "The mutation improved Ron without tradeoffs, so refine drift doping with a smaller step.",
+                    "evidence_used": ["mutation_effect_analysis", "metric_deltas", "curve_shape"],
+                }
+            )
+        )
+        request = AutonomousDevsimRequest(
+            goal_text="Use the LLM curve reviewer to continue Power MOSFET drift doping optimization",
+            agent_id="agent_curve_decision",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=True,
+            max_steps=6,
+            source_state_path=str(source_state),
+            max_mutation_refinements=1,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        state = run_autonomous_devsim_agent(
+            request,
+            runner_registry={
+                "extended_device_sweep": fake_extended_device,
+                "physical_benchmark": lambda request: {"status": "completed", "benchmark_path": str(self.root / "benchmark.json")},
+            },
+            llm_client=client,
+        )
+
+        self.assertEqual(state.status, DevsimAgentStatus.COMPLETED)
+        self.assertIn(DevsimAgentActionKind.PLAN_CURVE_DECISION, [step.kind for step in state.steps])
+        self.assertIn(DevsimAgentActionKind.PLAN_GUIDANCE_PATCH, [step.kind for step in state.steps])
+        self.assertEqual(len(tool_requests), 1)
+        self.assertIn("guidance_patch_id", tool_requests[0])
+        self.assertLess(tool_requests[0]["power_mos_drift_region_doping_cm3"], 1.0e16)
+        plan = state.checkpoint["latest_curve_decision_plan"]
+        self.assertEqual(plan["decision_source"], "llm")
+        self.assertEqual(plan["recommended_action"], "refine_effective_mutation")
+        self.assertTrue(state.checkpoint["pending_curve_decision_plan"]["executed"])
+        self.assertEqual(state.checkpoint["curve_decision_runs"], 1)
+
     def test_sentaurus_effect_triggers_refinement_before_generic_patch_planning(self) -> None:
         project = self.root / "sentaurus_project"
         project.mkdir()
