@@ -22,6 +22,7 @@ from tcad_agent.autonomous_devsim_agent import (
 from tcad_agent.agent_cockpit import generate_agent_cockpit
 from tcad_agent.agent_goal_router import AgentGoalRouteRequest, route_agent_goal
 from tcad_agent.experiment_index import list_records, rebuild_index
+from tcad_agent.llm import LLMConfig
 from tcad_agent.physical_benchmark import run_physical_benchmark
 from tcad_agent.power_mosfet_signoff import PowerMOSFETSignoffRequest, run_power_mosfet_signoff
 from tcad_agent.run_queue import (
@@ -228,6 +229,12 @@ def artifact(name: str, path: Path | str | None, *, kind: str = "file", descript
         "description": description,
         "exists": resolved.exists(),
     }
+
+
+def path_exists(value: Any) -> bool:
+    if not value:
+        return False
+    return Path(str(value)).exists()
 
 
 def write_curve_state(
@@ -565,8 +572,9 @@ def scenario_mutation_refinement_multiround(
         },
     )
     values = [item.get("power_mos_field_plate_length_um") for item in tool_requests]
-    final_state = Path(str(state.final_state_path or state.latest_state_path))
-    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    final_state_path = state.final_state_path or state.latest_state_path
+    final_state = Path(str(final_state_path)) if final_state_path else None
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
     artifacts = (final_payload.get("final_summary") or {}).get("artifacts") or {}
     assertions = [
         require(state.status == DevsimAgentStatus.COMPLETED, "agent completed after two mutation refinement rounds"),
@@ -1003,19 +1011,64 @@ def scenario_public_user_deck_acceptance(
     request: LongRunValidationRequest,
     queue_db: Path,
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    return run_public_user_deck_acceptance(
+        scenario_dir,
+        request,
+        queue_db,
+        agent_id="public_user_deck_acceptance_agent",
+        use_llm=False,
+        allow_llm_fallback=request.allow_llm_fallback,
+        require_live_llm=False,
+    )
+
+
+def decision_evidence_from_agent_state(state: Any) -> dict[str, Any]:
+    decisions: list[dict[str, Any]] = []
+    for step in getattr(state, "steps", []) or []:
+        observation = step.observation if isinstance(step.observation, dict) else {}
+        decision = observation.get("agent_decision")
+        if isinstance(decision, dict):
+            decisions.append(decision)
+    models = sorted({str(item.get("model")) for item in decisions if item.get("model")})
+    return {
+        "decision_count": len(decisions),
+        "llm_decision_count": sum(1 for item in decisions if item.get("status") == "completed" and not item.get("fallback_used")),
+        "fallback_count": sum(1 for item in decisions if item.get("fallback_used")),
+        "raw_response_count": sum(1 for item in decisions if item.get("raw_response")),
+        "models": models,
+    }
+
+
+def run_public_user_deck_acceptance(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+    *,
+    agent_id: str,
+    use_llm: bool,
+    allow_llm_fallback: bool,
+    require_live_llm: bool,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
     del queue_db
     deck_path = PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_acceptance" / "pn_diode_acceptance_deck.py"
+    if require_live_llm:
+        llm_config = LLMConfig.from_env()
+        if not llm_config.base_url or not llm_config.model:
+            raise RuntimeError(
+                "live LLM user-deck acceptance requires ACTSOFT_LLM_BASE_URL and ACTSOFT_LLM_MODEL "
+                "or a local runs/llm_settings.json; deterministic fallback is disabled for this scenario."
+            )
     previous_root = os.environ.get("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT")
     os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = str((scenario_dir / "deck_runs").resolve())
     try:
         state = run_autonomous_devsim_agent(
             AutonomousDevsimRequest(
                 goal_text="读取公开 PN diode DEVSIM deck，把 N 区掺杂调低后运行并输出验收证据",
-                agent_id="public_user_deck_acceptance_agent",
+                agent_id=agent_id,
                 agent_root=scenario_dir / "agents",
                 execute=True,
-                use_llm=False,
-                allow_llm_fallback=request.allow_llm_fallback,
+                use_llm=use_llm,
+                allow_llm_fallback=allow_llm_fallback,
                 max_steps=max(request.agent_max_steps, 6),
                 source_deck_path=str(deck_path),
                 deck_patches=[
@@ -1043,13 +1096,18 @@ def scenario_public_user_deck_acceptance(
     metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
     artifacts = (final_payload.get("final_summary") or {}).get("artifacts") if isinstance(final_payload.get("final_summary"), dict) else {}
     artifacts = artifacts if isinstance(artifacts, dict) else {}
-    diff_path = Path(str(state.checkpoint.get("semantic_deck_diff") or ""))
-    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
+    diff_value = state.checkpoint.get("semantic_deck_diff")
+    diff_path = Path(str(diff_value)) if diff_value else None
+    diff_text = diff_path.read_text(encoding="utf-8") if diff_path and diff_path.is_file() else ""
     step_kinds = [step.kind for step in state.steps]
+    decision_evidence = decision_evidence_from_agent_state(state)
 
     assertions = [
         require(deck_path.exists(), "public DEVSIM user deck fixture exists"),
-        require(state.status == DevsimAgentStatus.COMPLETED, "public user deck acceptance agent completed"),
+        require(
+            state.status == DevsimAgentStatus.COMPLETED,
+            f"public user deck acceptance agent completed (status={state.status}, failure_reason={state.failure_reason})",
+        ),
         require(DevsimAgentActionKind.INGEST_DECK in step_kinds, "agent ingested the public user deck"),
         require(DevsimAgentActionKind.APPLY_DECK_PATCH in step_kinds, "agent applied a semantic deck patch"),
         require(DevsimAgentActionKind.RUN_USER_DECK in step_kinds, "agent executed the patched user deck directly"),
@@ -1059,10 +1117,22 @@ def scenario_public_user_deck_acceptance(
         require("-    \"n_doping_cm3\": 1.0e18" in diff_text and "+    \"n_doping_cm3\": 8e+17" in diff_text, "deck diff records the N doping change"),
         require(quality.get("status") == "passed", "patched user deck quality passed"),
         require(metrics.get("n_doping_cm3") == 8.0e17, "patched deck execution reported updated N doping"),
-        require(Path(str(artifacts.get("csv") or "")).exists(), "patched user deck emitted a CSV artifact"),
-        require(Path(str(artifacts.get("plot") or "")).exists(), "patched user deck emitted a plot artifact"),
-        require(Path(str(state.checkpoint.get("physical_benchmark_path") or "")).exists(), "physical benchmark artifact exists"),
+        require(path_exists(artifacts.get("csv")), "patched user deck emitted a CSV artifact"),
+        require(path_exists(artifacts.get("plot")), "patched user deck emitted a plot artifact"),
+        require(path_exists(state.checkpoint.get("physical_benchmark_path")), "physical benchmark artifact exists"),
     ]
+    if require_live_llm:
+        assertions.extend(
+            [
+                require(use_llm, "live acceptance ran with use_llm enabled"),
+                require(not allow_llm_fallback, "live acceptance disabled deterministic LLM fallback"),
+                require(decision_evidence["decision_count"] >= 5, "agent recorded model decisions across the full user-deck loop"),
+                require(decision_evidence["llm_decision_count"] == decision_evidence["decision_count"], "every agent decision came from the LLM"),
+                require(decision_evidence["fallback_count"] == 0, "no deterministic fallback was used in live LLM acceptance"),
+                require(bool(decision_evidence["models"]), "LLM model name was recorded in decision evidence"),
+                require(decision_evidence["raw_response_count"] == decision_evidence["decision_count"], "raw model responses were recorded for every decision"),
+            ]
+        )
     return (
         assertions,
         [
@@ -1079,11 +1149,31 @@ def scenario_public_user_deck_acceptance(
         {
             "agent_status": state.status,
             "step_kinds": [kind.value for kind in step_kinds],
+            "use_llm": use_llm,
+            "allow_llm_fallback": allow_llm_fallback,
+            "live_llm_required": require_live_llm,
+            "llm_decision_evidence": decision_evidence,
             "deck_patch_verified": state.checkpoint.get("deck_patch_verified"),
             "updated_n_doping_cm3": metrics.get("n_doping_cm3"),
             "quality_status": quality.get("status"),
-            "final_state_path": str(final_state),
+            "final_state_path": str(final_state) if final_state else None,
         },
+    )
+
+
+def scenario_public_user_deck_live_llm_acceptance(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    return run_public_user_deck_acceptance(
+        scenario_dir,
+        request,
+        queue_db,
+        agent_id="public_user_deck_live_llm_acceptance_agent",
+        use_llm=True,
+        allow_llm_fallback=False,
+        require_live_llm=True,
     )
 
 
@@ -1300,8 +1390,12 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
         scenario_natural_language_power_marathon,
     ),
     "public_user_deck_acceptance": (
-        "Public DEVSIM user deck is ingested, patched, executed, and benchmarked",
+        "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by deterministic guardrails",
         scenario_public_user_deck_acceptance,
+    ),
+    "public_user_deck_live_llm_acceptance": (
+        "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",
+        scenario_public_user_deck_live_llm_acceptance,
     ),
     "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
     "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),

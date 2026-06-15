@@ -12,7 +12,7 @@ Run the deck directly:
 python3.11 tcad_agent/examples/user_deck_acceptance/pn_diode_acceptance_deck.py
 ```
 
-Run it through the autonomous agent with a verified semantic patch:
+Run it through the autonomous agent with a verified semantic patch in deterministic regression mode:
 
 ```bash
 python3.11 -m tcad_agent.autonomous_devsim_agent \
@@ -24,5 +24,18 @@ python3.11 -m tcad_agent.autonomous_devsim_agent \
   --no-llm \
   --max-steps 6
 ```
+
+Run the strict live LLM acceptance gate:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_user_deck_live_llm_acceptance \
+  --validation-id public_user_deck_live_llm_acceptance \
+  --use-llm \
+  --no-llm-fallback
+```
+
+The live gate requires local LLM configuration through environment variables or `runs/llm_settings.json`. It fails if the model is unavailable, returns an invalid action, or any deterministic fallback is used.
 
 Generated artifacts are written under `runs/user_deck_acceptance/` and the agent state is written under `runs/autonomous_devsim_agent/`.

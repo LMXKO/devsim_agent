@@ -5,14 +5,20 @@ import unittest
 from pathlib import Path
 
 from tcad_agent.long_run_validation import (
+    DEFAULT_AUTONOMOUS_E2E_SCENARIOS,
     LongRunValidationRequest,
     LongRunValidationStatus,
     LongRunValidationSuite,
+    SCENARIO_REGISTRY,
     run_long_run_validation,
 )
 
 
 class LongRunValidationTest(unittest.TestCase):
+    def test_live_llm_user_deck_acceptance_is_explicit_not_default(self) -> None:
+        self.assertIn("public_user_deck_live_llm_acceptance", SCENARIO_REGISTRY)
+        self.assertNotIn("public_user_deck_live_llm_acceptance", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
+
     def test_runs_queue_daemon_benchmarks_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state = run_long_run_validation(

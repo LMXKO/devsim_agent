@@ -840,7 +840,8 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
             "compact/planned evidence 不能 stop_success 为签核结论。",
-            "如果没有 state 且没有 initial tool，先 run_supervisor。",
+            "如果 source_deck_path 存在且 deck 还没 ingested，先 ingest_deck；有 deck_patches 时再 apply_deck_patch，然后 run_user_deck。",
+            "如果没有 state、没有 source_deck_path、也没有 initial tool，先 run_supervisor。",
         ],
         "context": context,
     }

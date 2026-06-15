@@ -30,7 +30,8 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 - baseline-vs-mutation curve comparison followed by two finer mutation-refinement rounds;
 - Sentaurus baseline run, verified patch planning, mutation-effect analysis, effect-driven patch refinement, second patched run, lineage archive, and Pareto/best-entry evidence using the public-syntax fake contract;
 - a natural-language "AI 长时间自主操作 DEVSIM/Sentaurus" marathon that routes to Power MOSFET/LDMOS, runs the DEVSIM 2D field-plate runner, plans and executes the `power_mosfet_signoff` evidence pack, writes a minimal cockpit, and proves resume/cancel boundaries;
-- public DEVSIM user-deck acceptance that ingests a Python deck, applies a verified semantic patch, executes the patched deck, and benchmarks the resulting artifacts;
+- deterministic public DEVSIM user-deck acceptance that ingests a Python deck, applies a verified semantic patch, executes the patched deck, and benchmarks the resulting artifacts;
+- explicit live-LLM public user-deck acceptance that requires a configured OpenAI-compatible model, disables deterministic fallback, and fails unless the model decision ledger proves every agent step came from the LLM;
 - queue pause, approval, resume, and explicit unverified-patch approval;
 - worker interruption recovery for queued long-run agent items.
 
@@ -61,6 +62,23 @@ python3.11 -m tcad_agent.long_run_validation \
   --scenario-id public_user_deck_acceptance \
   --validation-id public_user_deck_acceptance
 ```
+
+Run the true live-LLM user-deck acceptance scenario:
+
+```bash
+export ACTSOFT_LLM_BASE_URL="http://localhost:8000/v1"
+export ACTSOFT_LLM_MODEL="your-chat-model"
+export ACTSOFT_LLM_API_KEY=""
+
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_user_deck_live_llm_acceptance \
+  --validation-id public_user_deck_live_llm_acceptance \
+  --use-llm \
+  --no-llm-fallback
+```
+
+This scenario is not part of the default deterministic E2E suite. It is a live acceptance gate: no configured model, failed model call, invalid model action, or any deterministic fallback makes the scenario fail.
 
 The Sentaurus E2E scenario is deliberately an interface and agent-control validation. It uses the public fixture and fake CSV/log artifacts to prove the agent can run baseline -> patch planner -> patched run -> curve/effect analyzer -> patch refiner -> patched run -> lineage/Pareto -> final benchmark. It does not simulate proprietary Sentaurus physics.
 
@@ -107,3 +125,5 @@ python3.11 -m tcad_agent.autonomous_devsim_agent \
   --no-llm \
   --max-steps 6
 ```
+
+For the same sample under strict live LLM control, remove `--no-llm` and add `--no-llm-fallback`. A configured model must choose each action; otherwise the run fails instead of silently falling back.

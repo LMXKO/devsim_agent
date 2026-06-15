@@ -143,6 +143,12 @@ Validate long-run behavior:
 python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --validation-id autonomous_e2e
 ```
 
+Validate the strict live-LLM user-deck path:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_user_deck_live_llm_acceptance --use-llm --no-llm-fallback
+```
+
 Run a long-duration autonomous soak:
 
 ```bash
