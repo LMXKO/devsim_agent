@@ -21,6 +21,7 @@ from tcad_agent.autonomous_devsim_agent import (
 )
 from tcad_agent.agent_cockpit import generate_agent_cockpit
 from tcad_agent.agent_goal_router import AgentGoalRouteRequest, route_agent_goal
+from tcad_agent.agent_soak import AgentSoakRequest, AgentSoakStatus, run_agent_soak
 from tcad_agent.experiment_index import list_records, rebuild_index
 from tcad_agent.llm import LLMConfig
 from tcad_agent.physical_benchmark import run_physical_benchmark
@@ -1022,10 +1023,14 @@ def scenario_public_user_deck_acceptance(
     )
 
 
-def decision_evidence_from_agent_state(state: Any) -> dict[str, Any]:
+def decision_evidence_from_steps(steps: list[Any]) -> dict[str, Any]:
     decisions: list[dict[str, Any]] = []
-    for step in getattr(state, "steps", []) or []:
-        observation = step.observation if isinstance(step.observation, dict) else {}
+    for step in steps:
+        if isinstance(step, dict):
+            observation = step.get("observation") if isinstance(step.get("observation"), dict) else {}
+        else:
+            raw_observation = getattr(step, "observation", {})
+            observation = raw_observation if isinstance(raw_observation, dict) else {}
         decision = observation.get("agent_decision")
         if isinstance(decision, dict):
             decisions.append(decision)
@@ -1037,6 +1042,10 @@ def decision_evidence_from_agent_state(state: Any) -> dict[str, Any]:
         "raw_response_count": sum(1 for item in decisions if item.get("raw_response")),
         "models": models,
     }
+
+
+def decision_evidence_from_agent_state(state: Any) -> dict[str, Any]:
+    return decision_evidence_from_steps(list(getattr(state, "steps", []) or []))
 
 
 def run_public_user_deck_acceptance(
@@ -1052,12 +1061,7 @@ def run_public_user_deck_acceptance(
     del queue_db
     deck_path = PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_acceptance" / "pn_diode_acceptance_deck.py"
     if require_live_llm:
-        llm_config = LLMConfig.from_env()
-        if not llm_config.base_url or not llm_config.model:
-            raise RuntimeError(
-                "live LLM user-deck acceptance requires ACTSOFT_LLM_BASE_URL and ACTSOFT_LLM_MODEL "
-                "or a local runs/llm_settings.json; deterministic fallback is disabled for this scenario."
-            )
+        live_llm_config_or_raise()
     previous_root = os.environ.get("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT")
     os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = str((scenario_dir / "deck_runs").resolve())
     try:
@@ -1090,8 +1094,9 @@ def run_public_user_deck_acceptance(
         else:
             os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = previous_root
 
-    final_state = Path(str(state.final_state_path or state.latest_state_path))
-    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
+    final_state_path = state.final_state_path or state.latest_state_path
+    final_state = Path(str(final_state_path)) if final_state_path else None
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
     quality = final_payload.get("quality_report") if isinstance(final_payload.get("quality_report"), dict) else {}
     metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
     artifacts = (final_payload.get("final_summary") or {}).get("artifacts") if isinstance(final_payload.get("final_summary"), dict) else {}
@@ -1174,6 +1179,152 @@ def scenario_public_user_deck_live_llm_acceptance(
         use_llm=True,
         allow_llm_fallback=False,
         require_live_llm=True,
+    )
+
+
+def live_llm_config_or_raise() -> LLMConfig:
+    llm_config = LLMConfig.from_env()
+    if not llm_config.base_url or not llm_config.model:
+        raise RuntimeError(
+            "live LLM validation requires ACTSOFT_LLM_BASE_URL and ACTSOFT_LLM_MODEL "
+            "or a local runs/llm_settings.json; deterministic fallback is disabled for this scenario."
+        )
+    return llm_config
+
+
+def live_llm_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
+    raw = request.real_agent_request.get("public_user_deck_live_llm_soak")
+    options = raw if isinstance(raw, dict) else {}
+    return {
+        "duration_hours": float(options.get("duration_hours", 0.0)),
+        "max_steps": max(6, int(options.get("max_steps", max(request.agent_max_steps, 6)))),
+        "step_slice": max(1, int(options.get("step_slice", 2))),
+    }
+
+
+def scenario_public_user_deck_live_llm_soak(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    live_llm_config_or_raise()
+    options = live_llm_soak_options(request)
+    deck_path = PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_acceptance" / "pn_diode_acceptance_deck.py"
+    soak_root = scenario_dir / "soak"
+    soak_id = "public_user_deck_live_llm_soak"
+    for stale_dir in [soak_root / soak_id, scenario_dir / "user_deck_states", scenario_dir / "deck_runs"]:
+        if stale_dir.exists():
+            shutil.rmtree(stale_dir)
+    previous_root = os.environ.get("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT")
+    os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = str((scenario_dir / "deck_runs").resolve())
+    try:
+        state = run_agent_soak(
+            AgentSoakRequest(
+                goal_text="长时间自主读取公开 PN diode DEVSIM deck，把 N 区掺杂调低，分片运行并持续输出验收证据",
+                soak_id=soak_id,
+                soak_root=soak_root,
+                execute=True,
+                duration_hours=options["duration_hours"],
+                max_steps=options["max_steps"],
+                step_slice=options["step_slice"],
+                poll_interval_seconds=0.0,
+                memory_path=scenario_dir / "agent_memory.jsonl",
+                compile_mission_spec=False,
+                enable_curve_guidance=False,
+                autonomous_request={
+                    "source_deck_path": str(deck_path),
+                    "deck_patches": [
+                        {
+                            "deck_path": "doping.n_doping_cm3",
+                            "request_path": "n_doping_cm3",
+                            "value": 8.0e17,
+                        }
+                    ],
+                    "initial_request": {"run_root": str(scenario_dir / "user_deck_states")},
+                    "use_llm": True,
+                    "allow_llm_fallback": False,
+                    "allow_user_confirmation_actions": True,
+                    "generate_report": True,
+                    "generate_dashboard": False,
+                },
+            )
+        )
+    finally:
+        if previous_root is None:
+            os.environ.pop("ACTSOFT_USER_DECK_ACCEPTANCE_ROOT", None)
+        else:
+            os.environ["ACTSOFT_USER_DECK_ACCEPTANCE_ROOT"] = previous_root
+
+    agent_state_path = Path(str(state.agent_state_path)) if state.agent_state_path else None
+    agent_state = None
+    if agent_state_path and agent_state_path.exists():
+        agent_state = json.loads(agent_state_path.read_text(encoding="utf-8"))
+    final_state_path = Path(str(state.final_state_path)) if state.final_state_path else None
+    final_payload = json.loads(final_state_path.read_text(encoding="utf-8")) if final_state_path and final_state_path.exists() else {}
+    quality = final_payload.get("quality_report") if isinstance(final_payload.get("quality_report"), dict) else {}
+    metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+    final_artifacts = (final_payload.get("final_summary") or {}).get("artifacts") if isinstance(final_payload.get("final_summary"), dict) else {}
+    final_artifacts = final_artifacts if isinstance(final_artifacts, dict) else {}
+    cycle_statuses = [cycle.status for cycle in state.cycles]
+    step_kinds = []
+    if isinstance(agent_state, dict):
+        step_kinds = [str(step.get("kind")) for step in agent_state.get("steps") or [] if isinstance(step, dict)]
+    decision_evidence = decision_evidence_from_steps((agent_state or {}).get("steps", []))
+
+    assertions = [
+        require(deck_path.exists(), "public DEVSIM user deck fixture exists"),
+        require(state.status == AgentSoakStatus.COMPLETED, f"live LLM soak completed (status={state.status}, failure_reason={state.failure_reason})"),
+        require(len(state.cycles) >= 2, "soak split the autonomous mission across multiple cycles"),
+        require("slice_exhausted" in cycle_statuses, "soak hit at least one step-slice boundary before completion"),
+        require(cycle_statuses[-1] == AgentSoakStatus.COMPLETED, "final soak cycle completed the agent mission"),
+        require(state.model_decisions >= 6, "soak recorded live model decisions across the mission"),
+        require(state.fallback_decisions == 0, "strict live LLM soak used no deterministic fallback"),
+        require(decision_evidence["decision_count"] == state.model_decisions, "agent decision ledger matches soak model-decision count"),
+        require(decision_evidence["llm_decision_count"] == decision_evidence["decision_count"], "every soak decision came from the LLM"),
+        require(bool(decision_evidence["models"]), "LLM model name was recorded in soak decision evidence"),
+        require(DevsimAgentActionKind.INGEST_DECK.value in step_kinds, "soak agent ingested the public deck"),
+        require(DevsimAgentActionKind.APPLY_DECK_PATCH.value in step_kinds, "soak agent applied the semantic deck patch"),
+        require(DevsimAgentActionKind.RUN_USER_DECK.value in step_kinds, "soak agent executed the patched user deck"),
+        require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK.value in step_kinds, "soak agent benchmarked the user deck result"),
+        require(
+            DevsimAgentActionKind.GENERATE_REPORT.value not in step_kinds
+            or step_kinds.index(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK.value) < step_kinds.index(DevsimAgentActionKind.GENERATE_REPORT.value),
+            "soak generated report only after physical benchmark",
+        ),
+        require(quality.get("status") == "passed", "final soak user deck quality passed"),
+        require(metrics.get("n_doping_cm3") == 8.0e17, "final soak user deck reported updated N doping"),
+        require(path_exists(final_artifacts.get("csv")), "final soak user deck emitted a CSV artifact"),
+        require(path_exists(final_artifacts.get("plot")), "final soak user deck emitted a plot artifact"),
+        require(path_exists(state.heartbeat_path), "soak heartbeat artifact exists"),
+        require(path_exists(state.agent_state_path), "nested autonomous agent state artifact exists"),
+        require(path_exists(state.latest_cockpit_path), "soak cockpit artifact exists"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("soak_state", state.state_path),
+            artifact("soak_heartbeat", state.heartbeat_path),
+            artifact("agent_state", state.agent_state_path),
+            artifact("latest_cockpit", state.latest_cockpit_path, kind="html"),
+            artifact("source_deck", deck_path),
+            artifact("final_user_deck_state", final_state_path),
+            artifact("user_deck_csv", final_artifacts.get("csv"), kind="csv"),
+            artifact("user_deck_plot", final_artifacts.get("plot"), kind="png"),
+        ],
+        {
+            "soak_status": state.status,
+            "cycle_count": len(state.cycles),
+            "cycle_statuses": cycle_statuses,
+            "completed_steps": state.completed_steps,
+            "model_decisions": state.model_decisions,
+            "fallback_decisions": state.fallback_decisions,
+            "llm_decision_evidence": decision_evidence,
+            "step_kinds": step_kinds,
+            "updated_n_doping_cm3": metrics.get("n_doping_cm3"),
+            "quality_status": quality.get("status"),
+            "final_state_path": str(final_state_path) if final_state_path else None,
+        },
     )
 
 
@@ -1396,6 +1547,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "public_user_deck_live_llm_acceptance": (
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",
         scenario_public_user_deck_live_llm_acceptance,
+    ),
+    "public_user_deck_live_llm_soak": (
+        "Live LLM user-deck mission is sliced through agent_soak with resume, heartbeat, cockpit, and no fallback",
+        scenario_public_user_deck_live_llm_soak,
     ),
     "queue_confirmation_resume": ("Queue approval resumes a waiting agent", scenario_queue_confirmation_resume),
     "queue_interruption_recovery": ("Queue recovers interrupted long-run work", scenario_queue_interruption_recovery),

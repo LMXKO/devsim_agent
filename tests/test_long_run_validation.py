@@ -17,7 +17,9 @@ from tcad_agent.long_run_validation import (
 class LongRunValidationTest(unittest.TestCase):
     def test_live_llm_user_deck_acceptance_is_explicit_not_default(self) -> None:
         self.assertIn("public_user_deck_live_llm_acceptance", SCENARIO_REGISTRY)
+        self.assertIn("public_user_deck_live_llm_soak", SCENARIO_REGISTRY)
         self.assertNotIn("public_user_deck_live_llm_acceptance", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
+        self.assertNotIn("public_user_deck_live_llm_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
 
     def test_runs_queue_daemon_benchmarks_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

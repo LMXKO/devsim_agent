@@ -32,6 +32,7 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 - a natural-language "AI 长时间自主操作 DEVSIM/Sentaurus" marathon that routes to Power MOSFET/LDMOS, runs the DEVSIM 2D field-plate runner, plans and executes the `power_mosfet_signoff` evidence pack, writes a minimal cockpit, and proves resume/cancel boundaries;
 - deterministic public DEVSIM user-deck acceptance that ingests a Python deck, applies a verified semantic patch, executes the patched deck, and benchmarks the resulting artifacts;
 - explicit live-LLM public user-deck acceptance that requires a configured OpenAI-compatible model, disables deterministic fallback, and fails unless the model decision ledger proves every agent step came from the LLM;
+- explicit live-LLM user-deck soak that slices the same mission across multiple `agent_soak` cycles and verifies resume state, heartbeat, cockpit, model decisions, and zero fallback;
 - queue pause, approval, resume, and explicit unverified-patch approval;
 - worker interruption recovery for queued long-run agent items.
 
@@ -79,6 +80,19 @@ python3.11 -m tcad_agent.long_run_validation \
 ```
 
 This scenario is not part of the default deterministic E2E suite. It is a live acceptance gate: no configured model, failed model call, invalid model action, or any deterministic fallback makes the scenario fail.
+
+Run the sliced live-LLM soak scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_user_deck_live_llm_soak \
+  --validation-id public_user_deck_live_llm_soak \
+  --use-llm \
+  --no-llm-fallback
+```
+
+The soak scenario uses `agent_soak` with small step slices so the mission crosses resume boundaries before completion. For longer local runs, pass a `public_user_deck_live_llm_soak` object through `--real-agent-request-json`, for example `{"public_user_deck_live_llm_soak":{"duration_hours":1,"max_steps":40,"step_slice":4}}`.
 
 The Sentaurus E2E scenario is deliberately an interface and agent-control validation. It uses the public fixture and fake CSV/log artifacts to prove the agent can run baseline -> patch planner -> patched run -> curve/effect analyzer -> patch refiner -> patched run -> lineage/Pareto -> final benchmark. It does not simulate proprietary Sentaurus physics.
 

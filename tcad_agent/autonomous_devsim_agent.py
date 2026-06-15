@@ -836,6 +836,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
             "如果 sentaurus_mutation_effect_analysis 显示 patch 有效，可以继续细化；如果出现 tradeoff，必须进行约束/Pareto 复核或等待确认。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
+            "generate_report、generate_dashboard、stop_success 之前必须先 run_physical_benchmark，除非 checkpoint.physical_benchmark_done 已经为 true。",
             "预算感知：如果 completed_steps + 1 >= max_steps，且已经有 baseline/benchmark/signoff/report 之一作为可解释证据，优先 stop_success 或 ask_user 总结剩余缺口，不要再开启新实验。",
             "每一步都维护 hypothesis_tree_update：假设、预期观察、停止条件和备选假设。",
             "高风险 geometry/process/model patch 必须要求用户确认。",
@@ -1962,6 +1963,7 @@ def execute_action(
         if not deck_path:
             raise ValueError("user deck execution requires deck_path")
         payload = {
+            **request.initial_request,
             **action.request,
             "deck_path": deck_path,
             "cancel_file": state.cancel_file,

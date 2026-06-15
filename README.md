@@ -149,6 +149,12 @@ Validate the strict live-LLM user-deck path:
 python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_user_deck_live_llm_acceptance --use-llm --no-llm-fallback
 ```
 
+Validate the sliced live-LLM soak path:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_user_deck_live_llm_soak --use-llm --no-llm-fallback
+```
+
 Run a long-duration autonomous soak:
 
 ```bash
