@@ -413,9 +413,17 @@ def collect_state_paths(value: Any) -> list[str]:
 
 
 def infer_result_state_path(result: dict[str, Any]) -> str | None:
-    for path in reversed(collect_state_paths(result)):
+    for key in [
+        "state_path",
+        "final_state_path",
+        "current_state_path",
+        "verified_state_path",
+        "sweep_state_path",
+        "optimization_state_path",
+    ]:
+        path = result.get(key)
         if path:
-            return path
+            return str(path)
     run_dir = result.get("run_dir") or result.get("convergence_dir") or result.get("supervisor_dir") or result.get("mission_dir")
     if run_dir:
         for name in [
@@ -429,6 +437,9 @@ def infer_result_state_path(result: dict[str, Any]) -> str | None:
             candidate = Path(str(run_dir)) / name
             if candidate.exists():
                 return str(candidate.resolve())
+    for path in reversed(collect_state_paths(result)):
+        if path:
+            return path
     return None
 
 
@@ -1424,6 +1435,95 @@ def parse_agent_decision_json(raw: str) -> dict[str, Any] | None:
     return parsed
 
 
+def queued_llm_plan_context(state: AutonomousDevsimAgentState, action: DevsimAgentAction) -> dict[str, Any] | None:
+    pending_curve = state.checkpoint.get("pending_curve_decision_plan")
+    if isinstance(pending_curve, dict) and action.request.get("curve_decision_plan_id"):
+        return {
+            "source": "pending_curve_decision_plan",
+            "reason": "Execute the queued action selected by the prior LLM curve-decision plan.",
+            "model": pending_curve.get("model"),
+            "raw_response": pending_curve.get("raw_response"),
+            "queued_plan": pending_curve,
+            "evidence_used": pending_curve.get("evidence_used") or ["pending_curve_decision_plan"],
+        }
+    pending_guidance = state.checkpoint.get("pending_guidance_patch")
+    if isinstance(pending_guidance, dict) and action.kind == DevsimAgentActionKind.RUN_TOOL and action.request.get("guidance_patch_id"):
+        latest_curve_plan = state.checkpoint.get("latest_curve_decision_plan")
+        latest_curve_plan = latest_curve_plan if isinstance(latest_curve_plan, dict) else {}
+        return {
+            "source": "pending_guidance_patch",
+            "reason": "Execute the runnable patch request produced from the prior LLM curve-decision plan.",
+            "model": latest_curve_plan.get("model"),
+            "raw_response": latest_curve_plan.get("raw_response"),
+            "queued_plan": pending_guidance,
+            "evidence_used": latest_curve_plan.get("evidence_used") or ["pending_guidance_patch"],
+        }
+    return None
+
+
+def enforce_queued_llm_plan_decision(
+    *,
+    queued_action: DevsimAgentAction,
+    queued_context: dict[str, Any],
+    chat_client: ChatClient,
+    raw_response: str | None = None,
+    parsed_response: dict[str, Any] | None = None,
+    requested_action: DevsimAgentAction | None = None,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    queued_dump = queued_action.model_dump(mode="json")
+    requested_dump = requested_action.model_dump(mode="json") if requested_action else None
+    return {
+        "schema_version": "actsoft.tcad.autonomous_devsim_agent_decision.v1",
+        "status": "completed",
+        "fallback_used": False,
+        "decision_source": "queued_llm_plan",
+        "queued_plan_source": queued_context.get("source"),
+        "queued_plan_enforced": requested_dump != queued_dump,
+        "model": getattr(getattr(chat_client, "config", None), "model", None) or queued_context.get("model"),
+        "raw_response": raw_response or queued_context.get("raw_response"),
+        "parsed_response": parsed_response,
+        "action": queued_dump,
+        "llm_requested_action": requested_dump,
+        "observation_summary": queued_context.get("reason"),
+        "hypothesis_zh": queued_action.reason,
+        "hypothesis_tree_update": None,
+        "evidence_used": queued_context.get("evidence_used") or [],
+        "guardrail_reason": queued_context.get("reason"),
+        "failure_reason": failure_reason,
+    }
+
+
+CURRENT_STATE_ACTION_KINDS = {
+    DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
+    DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK,
+    DevsimAgentActionKind.EVALUATE_OBJECTIVES,
+    DevsimAgentActionKind.GENERATE_REPORT,
+    DevsimAgentActionKind.STOP_SUCCESS,
+    DevsimAgentActionKind.PLAN_CURVE_DECISION,
+    DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
+    DevsimAgentActionKind.PLAN_GUIDANCE_PATCH,
+    DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN,
+}
+
+
+def bind_action_to_latest_state(
+    action: DevsimAgentAction,
+    state: AutonomousDevsimAgentState,
+) -> tuple[DevsimAgentAction, dict[str, Any] | None]:
+    if action.kind not in CURRENT_STATE_ACTION_KINDS or not state.latest_state_path:
+        return action, None
+    if same_path(action.source_state_path, state.latest_state_path):
+        return action, None
+    original = action.source_state_path
+    updated = action.model_copy(update={"source_state_path": state.latest_state_path})
+    return updated, {
+        "original_source_state_path": original,
+        "latest_state_path": state.latest_state_path,
+        "reason": "State-bound actions must operate on the latest produced TCAD state.",
+    }
+
+
 def decide_next_action(
     state: AutonomousDevsimAgentState,
     request: AutonomousDevsimRequest,
@@ -1444,6 +1544,7 @@ def decide_next_action(
     if not request.use_llm:
         return fallback, decision
     chat_client = llm_client or LLMClient()
+    queued_context = queued_llm_plan_context(state, fallback)
     specs = tool_specs or build_agent_tool_specs()
     context = build_agent_context(state, request, tool_specs=specs)
     system, user = build_agent_messages(context)
@@ -1460,6 +1561,13 @@ def decide_next_action(
             raw = chat_client.chat(system=system, user=user, temperature=0.2)
     except Exception as exc:
         decision["failure_reason"] = str(exc)
+        if queued_context:
+            return fallback, enforce_queued_llm_plan_decision(
+                queued_action=fallback,
+                queued_context=queued_context,
+                chat_client=chat_client,
+                failure_reason=str(exc),
+            )
         if request.allow_llm_fallback:
             return fallback, decision
         raise
@@ -1467,6 +1575,14 @@ def decide_next_action(
     decision["raw_response"] = raw
     if parsed is None:
         decision["failure_reason"] = "agent did not return JSON"
+        if queued_context:
+            return fallback, enforce_queued_llm_plan_decision(
+                queued_action=fallback,
+                queued_context=queued_context,
+                chat_client=chat_client,
+                raw_response=raw,
+                failure_reason="agent did not return JSON",
+            )
         if request.allow_llm_fallback:
             return fallback, decision
         raise ValueError("autonomous DEVSIM agent did not return JSON")
@@ -1474,15 +1590,44 @@ def decide_next_action(
     decision["parsed_response"] = parsed
     if action is None:
         decision["failure_reason"] = "agent action was invalid or unsafe"
+        if queued_context:
+            return fallback, enforce_queued_llm_plan_decision(
+                queued_action=fallback,
+                queued_context=queued_context,
+                chat_client=chat_client,
+                raw_response=raw,
+                parsed_response=parsed,
+                failure_reason="agent action was invalid or unsafe",
+            )
         if request.allow_llm_fallback:
             return fallback, decision
         raise ValueError("autonomous DEVSIM agent action was invalid or unsafe")
     safety_failure = agent_action_safety_failure(action, request, specs)
     if safety_failure:
         decision["failure_reason"] = safety_failure
+        if queued_context:
+            return fallback, enforce_queued_llm_plan_decision(
+                queued_action=fallback,
+                queued_context=queued_context,
+                chat_client=chat_client,
+                raw_response=raw,
+                parsed_response=parsed,
+                requested_action=action,
+                failure_reason=safety_failure,
+            )
         if request.allow_llm_fallback:
             return fallback, decision
         raise ValueError(safety_failure)
+    action, source_guardrail = bind_action_to_latest_state(action, state)
+    if queued_context:
+        return fallback, enforce_queued_llm_plan_decision(
+            queued_action=fallback,
+            queued_context=queued_context,
+            chat_client=chat_client,
+            raw_response=raw,
+            parsed_response=parsed,
+            requested_action=action,
+        )
     decision.update(
         {
             "status": "completed",
@@ -1493,6 +1638,7 @@ def decide_next_action(
             "hypothesis_zh": parsed.get("hypothesis_zh"),
             "hypothesis_tree_update": parsed.get("hypothesis_tree_update") if isinstance(parsed.get("hypothesis_tree_update"), dict) else None,
             "evidence_used": parsed.get("evidence_used") or [],
+            "source_state_guardrail": source_guardrail,
         }
     )
     return action, decision

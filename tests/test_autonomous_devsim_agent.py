@@ -11,7 +11,9 @@ from tcad_agent.autonomous_devsim_agent import (
     AutonomousDevsimRequest,
     DevsimAgentActionKind,
     DevsimAgentStatus,
+    decide_next_action,
     deterministic_action,
+    infer_result_state_path,
     observe_state,
     run_autonomous_devsim_agent,
     state_needs_repair_before_signoff_planning,
@@ -36,6 +38,18 @@ class FakeToolCallClient(FakeAgentClient):
     def tool_call(self, system: str, user: str, tools: list[dict[str, object]], temperature: float = 0.1) -> dict[str, object]:
         self.calls.append({"system": system, "user": user, "tools": tools, "temperature": temperature})
         return json.loads(self.response)
+
+
+class FakeSequenceClient(FakeAgentClient):
+    def __init__(self, responses: list[str]) -> None:
+        super().__init__(responses[-1] if responses else "{}")
+        self.responses = list(responses)
+
+    def chat(self, system: str, user: str, temperature: float = 0.1) -> str:
+        self.calls.append({"system": system, "user": user, "temperature": temperature})
+        if self.responses:
+            return self.responses.pop(0)
+        return self.response
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -76,6 +90,61 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
             },
         )
         return state_path
+
+    def test_infer_result_state_prefers_run_dir_state_over_nested_source_paths(self) -> None:
+        old_state = self.write_tool_state("old_source", "passed")
+        new_state = self.write_tool_state("new_output", "passed")
+
+        inferred = infer_result_state_path(
+            {
+                "status": "completed",
+                "run_dir": str(new_state.parent),
+                "request": {"source_state_path": str(old_state)},
+            }
+        )
+
+        self.assertEqual(inferred, str(new_state.resolve()))
+
+    def test_llm_state_bound_action_uses_latest_state_not_stale_source(self) -> None:
+        old_state = self.write_tool_state("old_benchmark_source", "passed")
+        latest_state = self.write_tool_state("latest_benchmark_source", "passed")
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_source_guard",
+            agent_dir=str(self.root / "agents" / "agent_source_guard"),
+            goal_text="Benchmark the latest TCAD evidence.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            latest_state_path=str(latest_state),
+            checkpoint={"public_evidence_gate_done": True},
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=False,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+        client = FakeAgentClient(
+            json.dumps(
+                {
+                    "kind": "run_physical_benchmark",
+                    "reason": "Benchmark the state I referenced.",
+                    "source_state_path": str(old_state),
+                }
+            )
+        )
+
+        action, decision = decide_next_action(state, request, llm_client=client)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK)
+        self.assertEqual(action.source_state_path, str(latest_state))
+        self.assertFalse(decision["fallback_used"])
+        self.assertEqual(decision["source_state_guardrail"]["original_source_state_path"], str(old_state))
+        self.assertEqual(decision["source_state_guardrail"]["latest_state_path"], str(latest_state))
 
     def test_plan_only_records_next_tool_action(self) -> None:
         request = AutonomousDevsimRequest(
@@ -990,6 +1059,122 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(plan["recommended_action"], "refine_effective_mutation")
         self.assertTrue(state.checkpoint["pending_curve_decision_plan"]["executed"])
         self.assertEqual(state.checkpoint["curve_decision_runs"], 1)
+
+    def test_resume_enforces_queued_llm_curve_decision_before_benchmark(self) -> None:
+        source_dir = self.root / "runs" / "queued_curve_decision_source"
+        source_csv = source_dir / "curve.csv"
+        source_csv.parent.mkdir(parents=True, exist_ok=True)
+        source_csv.write_text(
+            "drain_voltage_v,off_current_a,electric_field_v_per_cm\n0,1e-10,1e4\n-10,1e-8,2e5\n-20,1e-6,5e5\n",
+            encoding="utf-8",
+        )
+        source_state = source_dir / "state.json"
+        write_json(
+            source_state,
+            {
+                "tool_name": "extended_device_sweep",
+                "status": "completed",
+                "run_id": "queued_curve_decision_source",
+                "request": {
+                    "device_type": "power_mosfet_bv_ron",
+                    "fidelity": "devsim_2d_field_plate",
+                    "power_mos_drift_region_doping_cm3": 1.0e16,
+                    "tcad_deck_mutations": [
+                        {
+                            "name": "drift_doping",
+                            "target": "drift_doping",
+                            "operation": "set",
+                            "request_path": "power_mos_drift_region_doping_cm3",
+                            "values": [7.5e15, 1.25e16],
+                        }
+                    ],
+                },
+                "final_summary": {
+                    "artifacts": {"csv": str(source_csv)},
+                    "metrics": {
+                        "leakage_current_a": 1e-8,
+                        "breakdown_voltage_v": -20,
+                        "specific_on_resistance_ohm_cm2": 0.05,
+                    },
+                },
+                "quality_report": {"status": "passed", "metrics": {"leakage_current_a": 1e-8}},
+                "mutation_effect_analysis": {
+                    "mutation_target": "drift_doping",
+                    "primary_metric": "specific_on_resistance_ohm_cm2",
+                    "primary_improved": True,
+                    "worth_continuing": True,
+                    "decision": "continue_same_target",
+                    "rationale": "Ron improved without blocking tradeoffs.",
+                    "recommended_next_target": "drift_doping",
+                    "recommended_next_direction": "increase",
+                    "improved_metrics": ["specific_on_resistance_ohm_cm2"],
+                    "regressed_metrics": [],
+                    "tradeoff_violations": [],
+                },
+            },
+        )
+        first_client = FakeSequenceClient(
+            [
+                json.dumps(
+                    {
+                        "kind": "plan_curve_decision",
+                        "reason": "Ask the curve reviewer to choose the next patch.",
+                        "request": {"use_llm": True, "allow_llm_fallback": False},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "recommended_action": "refine_effective_mutation",
+                        "recommended_target": "drift_doping",
+                        "recommended_direction": "increase",
+                        "rationale": "The mutation improved Ron without tradeoffs, so refine drift doping.",
+                        "evidence_used": ["mutation_effect_analysis", "metric_deltas", "curve_shape"],
+                    }
+                ),
+            ]
+        )
+        first_request = AutonomousDevsimRequest(
+            goal_text="Resume the LLM curve-decision loop without skipping the queued patch.",
+            agent_id="agent_curve_decision_resume",
+            agent_root=self.root / "agents",
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=False,
+            max_steps=1,
+            source_state_path=str(source_state),
+            max_mutation_refinements=1,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        first_state = run_autonomous_devsim_agent(first_request, llm_client=first_client)
+
+        self.assertEqual(first_state.steps[-1].kind, DevsimAgentActionKind.PLAN_CURVE_DECISION)
+        self.assertFalse(first_state.checkpoint["pending_curve_decision_plan"].get("executed", False))
+
+        resume_client = FakeSequenceClient(
+            [
+                json.dumps(
+                    {
+                        "kind": "run_physical_benchmark",
+                        "reason": "Try to benchmark immediately.",
+                        "source_state_path": str(source_state),
+                    }
+                )
+            ]
+        )
+        resume_state = run_autonomous_devsim_agent(
+            first_request.model_copy(update={"resume": True, "max_steps": 2}),
+            llm_client=resume_client,
+        )
+
+        self.assertEqual(resume_state.steps[-1].kind, DevsimAgentActionKind.PLAN_GUIDANCE_PATCH)
+        decision = resume_state.steps[-1].observation["agent_decision"]
+        self.assertFalse(decision["fallback_used"])
+        self.assertEqual(decision["decision_source"], "queued_llm_plan")
+        self.assertTrue(decision["queued_plan_enforced"])
+        self.assertEqual(decision["llm_requested_action"]["kind"], "run_physical_benchmark")
+        self.assertTrue(resume_state.checkpoint["pending_curve_decision_plan"]["executed"])
 
     def test_sentaurus_effect_triggers_refinement_before_generic_patch_planning(self) -> None:
         project = self.root / "sentaurus_project"

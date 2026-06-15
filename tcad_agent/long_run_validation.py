@@ -22,6 +22,7 @@ from tcad_agent.autonomous_devsim_agent import (
 from tcad_agent.agent_cockpit import generate_agent_cockpit
 from tcad_agent.agent_goal_router import AgentGoalRouteRequest, route_agent_goal
 from tcad_agent.agent_soak import AgentSoakRequest, AgentSoakStatus, run_agent_soak
+from tcad_agent.curve_diagnostics import compare_state_mutation_effect
 from tcad_agent.curve_decision_eval import CurveDecisionEvalRequest, CurveDecisionEvalStatus, run_curve_decision_eval
 from tcad_agent.experiment_index import list_records, rebuild_index
 from tcad_agent.llm import LLMConfig
@@ -237,6 +238,18 @@ def path_exists(value: Any) -> bool:
     if not value:
         return False
     return Path(str(value)).exists()
+
+
+def runner_state_path(result: dict[str, Any], *, label: str) -> Path:
+    raw_state = result.get("state_path")
+    if raw_state and Path(str(raw_state)).exists():
+        return Path(str(raw_state))
+    raw_run_dir = result.get("run_dir")
+    if raw_run_dir:
+        candidate = Path(str(raw_run_dir)) / "state.json"
+        if candidate.exists():
+            return candidate
+    raise RuntimeError(f"{label} did not emit a readable state path")
 
 
 def write_curve_state(
@@ -1434,6 +1447,188 @@ def scenario_public_curve_decision_live_llm_agent_loop(
     )
 
 
+def live_llm_devsim_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
+    raw = request.real_agent_request.get("public_curve_decision_live_llm_devsim_soak")
+    options = raw if isinstance(raw, dict) else {}
+    return {
+        "duration_hours": float(options.get("duration_hours", 0.0)),
+        "max_steps": max(6, int(options.get("max_steps", max(request.agent_max_steps, 6)))),
+        "step_slice": max(1, int(options.get("step_slice", 2))),
+    }
+
+
+def scenario_public_curve_decision_live_llm_devsim_soak(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    live_llm_config_or_raise()
+    options = live_llm_devsim_soak_options(request)
+    for stale_dir in ["real_devsim_runs", "soak"]:
+        target = scenario_dir / stale_dir
+        if target.exists():
+            shutil.rmtree(target)
+
+    real_registry = queue_default_runner_registry()
+    extended_runner = real_registry["extended_device_sweep"]
+    run_root = scenario_dir / "real_devsim_runs"
+    base_request = {
+        "device_type": "power_mosfet_bv_ron",
+        "fidelity": "devsim_2d_field_plate",
+        "evidence_level": "tcad_executable",
+        "run_root": str(run_root),
+        "start": 0.0,
+        "stop": -20.0,
+        "step": 10.0,
+        "quality_min_points": 3,
+        "timeout_seconds": 180.0,
+        "power_mos_drift_region_doping_cm3": 1.0e16,
+    }
+    baseline_result = extended_runner({**base_request, "run_id": "devsim_soak_baseline"})
+    mutation_result = extended_runner(
+        {
+            **base_request,
+            "run_id": "devsim_soak_mutation_high_drift_doping",
+            "power_mos_drift_region_doping_cm3": 2.0e16,
+        }
+    )
+    baseline_state = runner_state_path(baseline_result, label="baseline extended_device_sweep")
+    mutation_state = runner_state_path(mutation_result, label="mutation extended_device_sweep")
+    effect = compare_state_mutation_effect(
+        baseline_state,
+        mutation_state,
+        deck_patch={
+            "target": "drift_doping",
+            "request_path": "power_mos_drift_region_doping_cm3",
+            "baseline_value": 1.0e16,
+            "value": 2.0e16,
+        },
+        issue_codes=["ron_high"],
+        overlay_output_path=scenario_dir / "seed_baseline_mutation_overlay.svg",
+    ).model_dump(mode="json")
+    effect_path = scenario_dir / "seed_mutation_effect_analysis.json"
+    write_json(effect_path, effect)
+    mutation_payload = json.loads(mutation_state.read_text(encoding="utf-8"))
+    mutation_payload["mutation_effect_analysis"] = effect
+    summary = mutation_payload.get("final_summary") if isinstance(mutation_payload.get("final_summary"), dict) else {}
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    artifacts["baseline_mutation_overlay"] = effect.get("overlay_svg_path")
+    artifacts["mutation_effect_analysis"] = str(effect_path.resolve())
+    summary["artifacts"] = artifacts
+    mutation_payload["final_summary"] = summary
+    write_json(mutation_state, mutation_payload)
+
+    soak_id = "public_curve_decision_live_llm_devsim_soak"
+    soak_state = run_agent_soak(
+        AgentSoakRequest(
+            goal_text=(
+                "Live LLM agent_soak must review real DEVSIM Power MOSFET baseline-vs-mutation curves, "
+                "choose the next drift-doping patch, execute the real runner, benchmark, and stop."
+            ),
+            soak_id=soak_id,
+            soak_root=scenario_dir / "soak",
+            execute=True,
+            duration_hours=options["duration_hours"],
+            max_steps=options["max_steps"],
+            step_slice=options["step_slice"],
+            poll_interval_seconds=0.0,
+            memory_path=scenario_dir / "agent_memory.jsonl",
+            compile_mission_spec=False,
+            enable_recovery=False,
+            enable_curve_guidance=True,
+            auto_execute_curve_guidance=True,
+            max_curve_guided_patches=1,
+            autonomous_request={
+                "source_state_path": str(mutation_state),
+                "use_llm": True,
+                "allow_llm_fallback": False,
+                "allow_user_confirmation_actions": True,
+                "max_mutation_refinements": 1,
+                "generate_report": False,
+                "generate_dashboard": False,
+            },
+        )
+    )
+
+    agent_state_path = Path(str(soak_state.agent_state_path)) if soak_state.agent_state_path else None
+    agent_state = None
+    if agent_state_path and agent_state_path.exists():
+        agent_state = json.loads(agent_state_path.read_text(encoding="utf-8"))
+    agent_steps = agent_state.get("steps") if isinstance(agent_state, dict) else []
+    step_kinds = [str((step.get("kind") if isinstance(step, dict) else "")) for step in agent_steps if isinstance(step, dict)]
+    checkpoint = agent_state.get("checkpoint") if isinstance(agent_state, dict) and isinstance(agent_state.get("checkpoint"), dict) else {}
+    curve_plan = checkpoint.get("latest_curve_decision_plan") if isinstance(checkpoint.get("latest_curve_decision_plan"), dict) else {}
+    final_state = Path(str(soak_state.final_state_path)) if soak_state.final_state_path else None
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
+    final_request = final_payload.get("request") if isinstance(final_payload.get("request"), dict) else {}
+    final_repair_context = final_payload.get("repair_context") if isinstance(final_payload.get("repair_context"), dict) else {}
+    final_deck_patch = final_repair_context.get("deck_patch") if isinstance(final_repair_context.get("deck_patch"), dict) else {}
+    final_metrics = ((final_payload.get("quality_report") or {}).get("metrics") or {}) if isinstance(final_payload.get("quality_report"), dict) else {}
+    final_artifacts = ((final_payload.get("final_summary") or {}).get("artifacts") or {}) if isinstance(final_payload.get("final_summary"), dict) else {}
+    cycle_statuses = [cycle.status for cycle in soak_state.cycles]
+
+    assertions = [
+        require(soak_state.status == AgentSoakStatus.COMPLETED, f"live LLM DEVSIM soak completed (status={soak_state.status}, failure_reason={soak_state.failure_reason})"),
+        require(len(soak_state.cycles) >= 2, "agent_soak crossed at least one resume/slice boundary"),
+        require("slice_exhausted" in cycle_statuses, "agent_soak recorded a slice_exhausted resume boundary"),
+        require(soak_state.fallback_decisions == 0, "live LLM DEVSIM soak used no deterministic fallback"),
+        require(soak_state.model_decisions >= 4, "live LLM DEVSIM soak recorded model decisions across the loop"),
+        require("plan_curve_decision" in step_kinds, "soak agent planned a curve decision from real mutation evidence"),
+        require("plan_guidance_patch" in step_kinds, "soak agent converted the curve decision into a guidance patch"),
+        require("run_tool" in step_kinds, "soak agent executed the curve-selected real runner request"),
+        require("run_physical_benchmark" in step_kinds, "soak agent benchmarked the real refined state"),
+        require("stop_success" in step_kinds, "soak agent stopped after benchmark evidence"),
+        require(curve_plan.get("decision_source") == "llm", "curve decision planner used the live LLM"),
+        require(not curve_plan.get("fallback_used"), "curve decision planner used no fallback"),
+        require(bool(curve_plan.get("raw_response")), "curve decision planner recorded raw LLM response"),
+        require(bool(checkpoint.get("guidance_patch_runs")), "guidance patch execution was recorded in checkpoint"),
+        require(str(final_payload.get("run_id") or "").endswith("_guidance_patch"), "final refined run id preserves guidance patch lineage"),
+        require(final_request.get("run_id") == final_payload.get("run_id"), "final state request points at the guidance patch run"),
+        require(final_repair_context.get("action_name") == "agent_mutation_refinement", "final refined state records agent mutation-refinement context"),
+        require(final_deck_patch.get("curve_guidance_action") == "refine_effective_mutation", "final refined state records curve-guided deck patch lineage"),
+        require(bool(final_metrics.get("tcad_solver_invoked")), "final refined state records TCAD solver invocation"),
+        require(bool(final_metrics.get("devsim_2d_solver_invoked")), "final refined state records DEVSIM 2D solver invocation"),
+        require(final_metrics.get("runner_contract_id") == "power_mosfet_bv_ron_devsim_2d_field_plate", "final refined state used the Power MOSFET DEVSIM 2D field-plate runner"),
+        require(path_exists(effect.get("overlay_svg_path")), "seed baseline/mutation overlay exists"),
+        require(path_exists(final_artifacts.get("baseline_mutation_overlay")), "final guidance patch overlay exists"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("soak_state", soak_state.state_path),
+            artifact("agent_state", soak_state.agent_state_path),
+            artifact("baseline_state", baseline_state),
+            artifact("mutation_state_with_effect", mutation_state),
+            artifact("seed_mutation_effect", effect_path),
+            artifact("seed_overlay", effect.get("overlay_svg_path"), kind="svg"),
+            artifact("curve_decision_plan", curve_plan.get("output_path")),
+            artifact("guidance_patch_plan", checkpoint.get("guidance_patch_plan_path")),
+            artifact("final_refined_state", final_state),
+            artifact("final_overlay", final_artifacts.get("baseline_mutation_overlay"), kind="svg"),
+            artifact("soak_cockpit", soak_state.latest_cockpit_path, kind="html"),
+        ],
+        {
+            "soak_status": soak_state.status,
+            "cycle_statuses": cycle_statuses,
+            "completed_steps": soak_state.completed_steps,
+            "model_decisions": soak_state.model_decisions,
+            "fallback_decisions": soak_state.fallback_decisions,
+            "step_kinds": step_kinds,
+            "curve_decision_source": curve_plan.get("decision_source"),
+            "curve_decision_action": curve_plan.get("recommended_action"),
+            "curve_decision_target": curve_plan.get("recommended_target"),
+            "guidance_patch_runs": checkpoint.get("guidance_patch_runs"),
+            "final_run_id": final_payload.get("run_id"),
+            "final_curve_guidance_action": final_deck_patch.get("curve_guidance_action"),
+            "final_solver_invoked": final_metrics.get("tcad_solver_invoked"),
+            "final_devsim_2d_invoked": final_metrics.get("devsim_2d_solver_invoked"),
+            "final_runner_contract_id": final_metrics.get("runner_contract_id"),
+            "final_state_path": str(final_state) if final_state else None,
+        },
+    )
+
+
 def live_llm_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
     raw = request.real_agent_request.get("public_user_deck_live_llm_soak")
     options = raw if isinstance(raw, dict) else {}
@@ -1955,6 +2150,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "public_curve_decision_live_llm_agent_loop": (
         "A real configured LLM drives the autonomous agent from curve decision to guidance patch execution",
         scenario_public_curve_decision_live_llm_agent_loop,
+    ),
+    "public_curve_decision_live_llm_devsim_soak": (
+        "A real configured LLM drives agent_soak across resume slices with real DEVSIM runner evidence",
+        scenario_public_curve_decision_live_llm_devsim_soak,
     ),
     "public_user_deck_live_llm_acceptance": (
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",

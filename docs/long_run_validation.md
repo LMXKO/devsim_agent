@@ -128,6 +128,19 @@ python3.11 -m tcad_agent.long_run_validation \
 
 This scenario starts from a state that already has `mutation_effect_analysis`, then requires the autonomous agent to call the curve-decision planner, convert the model decision into a guidance patch, execute the next runner request, benchmark the refined state, and stop without fallback.
 
+Run the true live-LLM DEVSIM soak scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_curve_decision_live_llm_devsim_soak \
+  --validation-id public_curve_decision_live_llm_devsim_soak \
+  --use-llm \
+  --no-llm-fallback
+```
+
+This scenario seeds real `extended_device_sweep` DEVSIM 2D baseline/mutation states, adds a real mutation-effect overlay, then runs `agent_soak` across resume slices so the live LLM can choose and execute the next patch through the real runner.
+
 Run the sliced live-LLM soak scenario:
 
 ```bash
