@@ -58,6 +58,7 @@ class LongRunValidationTest(unittest.TestCase):
                 "sentaurus_autonomous_refinement",
                 "natural_language_power_marathon",
                 "public_user_deck_acceptance",
+                "public_user_deck_corpus_acceptance",
                 "queue_confirmation_resume",
                 "queue_interruption_recovery",
             },
@@ -95,6 +96,13 @@ class LongRunValidationTest(unittest.TestCase):
         self.assertTrue(public_deck["deck_patch_verified"])
         self.assertEqual(public_deck["updated_n_doping_cm3"], 8e17)
         self.assertEqual(public_deck["quality_status"], "passed")
+        corpus = scenario_by_id["public_user_deck_corpus_acceptance"]["details"]
+        self.assertEqual(corpus["case_count"], 3)
+        self.assertTrue(all(item["deck_patch_verified"] for item in corpus["cases"]))
+        self.assertEqual(
+            {item["shape"] for item in corpus["cases"]},
+            {"function_wrapped_config", "package_imports_with_local_overrides", "multi_sweep_bias_sequence"},
+        )
         self.assertEqual(
             scenario_by_id["queue_confirmation_resume"]["details"]["completed_status"],
             "completed",

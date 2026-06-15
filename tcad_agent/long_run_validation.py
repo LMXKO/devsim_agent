@@ -1328,6 +1328,160 @@ def scenario_public_user_deck_live_llm_soak(
     )
 
 
+USER_DECK_CORPUS_CASES: list[dict[str, Any]] = [
+    {
+        "case_id": "function_wrapped_pn",
+        "deck_path": PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_corpus" / "function_wrapped_pn_deck.py",
+        "patch": {"deck_path": "doping.n_doping_cm3", "request_path": "n_doping_cm3", "value": 7.5e17},
+        "expected_metric": "n_doping_cm3",
+        "expected_value": 7.5e17,
+        "shape": "function_wrapped_config",
+    },
+    {
+        "case_id": "imported_defaults_pn",
+        "deck_path": PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_corpus" / "imported_defaults_pn_deck.py",
+        "patch": {"deck_path": "geometry.length_um", "request_path": "length_um", "value": 0.14},
+        "expected_metric": "length_um",
+        "expected_value": 0.14,
+        "shape": "package_imports_with_local_overrides",
+    },
+    {
+        "case_id": "multi_sweep_lifetime",
+        "deck_path": PROJECT_ROOT / "tcad_agent" / "examples" / "user_deck_corpus" / "multi_sweep_lifetime_deck.py",
+        "patch": {"deck_path": "physics_models.electron_lifetime_s", "request_path": "electron_lifetime_s", "value": 1.0e-8},
+        "expected_metric": "electron_lifetime_s",
+        "expected_value": 1.0e-8,
+        "shape": "multi_sweep_bias_sequence",
+    },
+]
+
+
+def load_deck_ir_sections(path_value: str | None) -> list[str]:
+    if not path_value:
+        return []
+    path = Path(path_value)
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        str(section.get("name"))
+        for section in payload.get("sections") or []
+        if isinstance(section, dict) and section.get("name")
+    ]
+
+
+def scenario_public_user_deck_corpus_acceptance(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    for stale_dir in [scenario_dir / "agents", scenario_dir / "deck_runs", scenario_dir / "user_deck_states"]:
+        if stale_dir.exists():
+            shutil.rmtree(stale_dir)
+    previous_root = os.environ.get("ACTSOFT_USER_DECK_CORPUS_ROOT")
+    os.environ["ACTSOFT_USER_DECK_CORPUS_ROOT"] = str((scenario_dir / "deck_runs").resolve())
+    assertions: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+    case_results: list[dict[str, Any]] = []
+    try:
+        for case in USER_DECK_CORPUS_CASES:
+            case_id = str(case["case_id"])
+            deck_path = Path(case["deck_path"])
+            state = run_autonomous_devsim_agent(
+                AutonomousDevsimRequest(
+                    goal_text=f"读取真实风格公开 DEVSIM deck corpus case {case_id}，做语义 patch 后运行并输出验收证据",
+                    agent_id=f"user_deck_corpus_{case_id}",
+                    agent_root=scenario_dir / "agents",
+                    execute=True,
+                    use_llm=False,
+                    allow_llm_fallback=request.allow_llm_fallback,
+                    max_steps=max(request.agent_max_steps, 6),
+                    source_deck_path=str(deck_path),
+                    deck_patches=[case["patch"]],
+                    initial_request={"run_root": str(scenario_dir / "user_deck_states" / case_id)},
+                    allow_user_confirmation_actions=True,
+                    generate_report=False,
+                    generate_dashboard=False,
+                )
+            )
+            final_state_path = state.final_state_path or state.latest_state_path
+            final_state = Path(str(final_state_path)) if final_state_path else None
+            final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
+            quality = final_payload.get("quality_report") if isinstance(final_payload.get("quality_report"), dict) else {}
+            metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+            final_artifacts = (
+                (final_payload.get("final_summary") or {}).get("artifacts")
+                if isinstance(final_payload.get("final_summary"), dict)
+                else {}
+            )
+            final_artifacts = final_artifacts if isinstance(final_artifacts, dict) else {}
+            sections = load_deck_ir_sections(state.checkpoint.get("tcad_deck_ir"))
+            step_kinds = [step.kind for step in state.steps]
+            expected_metric = str(case["expected_metric"])
+            expected_value = case["expected_value"]
+            assertions.extend(
+                [
+                    require(deck_path.exists(), f"{case_id} source deck exists"),
+                    require(state.status == DevsimAgentStatus.COMPLETED, f"{case_id} agent completed"),
+                    require(DevsimAgentActionKind.INGEST_DECK in step_kinds, f"{case_id} deck was ingested"),
+                    require(DevsimAgentActionKind.APPLY_DECK_PATCH in step_kinds, f"{case_id} semantic patch was applied"),
+                    require(DevsimAgentActionKind.RUN_USER_DECK in step_kinds, f"{case_id} patched deck was executed"),
+                    require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK in step_kinds, f"{case_id} benchmark was executed"),
+                    require(bool(state.checkpoint.get("deck_patch_verified")), f"{case_id} semantic patch verified"),
+                    require(not state.checkpoint.get("deck_patch_unverified"), f"{case_id} had no unverified patches"),
+                    require({"geometry", "doping", "model", "mesh", "bias"}.intersection(sections), f"{case_id} deck IR found semantic sections"),
+                    require(quality.get("status") == "passed", f"{case_id} final quality passed"),
+                    require(metrics.get(expected_metric) == expected_value, f"{case_id} metric {expected_metric} was patched"),
+                    require(path_exists(final_artifacts.get("csv")), f"{case_id} emitted CSV artifact"),
+                    require(path_exists(final_artifacts.get("plot")), f"{case_id} emitted plot artifact"),
+                    require(path_exists(state.checkpoint.get("physical_benchmark_path")), f"{case_id} benchmark artifact exists"),
+                ]
+            )
+            artifacts.extend(
+                [
+                    artifact(f"{case_id}_agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
+                    artifact(f"{case_id}_source_deck", deck_path),
+                    artifact(f"{case_id}_patched_deck", state.checkpoint.get("patched_source_deck")),
+                    artifact(f"{case_id}_semantic_deck_diff", state.checkpoint.get("semantic_deck_diff")),
+                    artifact(f"{case_id}_deck_ir", state.checkpoint.get("tcad_deck_ir")),
+                    artifact(f"{case_id}_final_state", final_state),
+                    artifact(f"{case_id}_csv", final_artifacts.get("csv"), kind="csv"),
+                    artifact(f"{case_id}_plot", final_artifacts.get("plot"), kind="png"),
+                    artifact(f"{case_id}_benchmark", state.checkpoint.get("physical_benchmark_path")),
+                ]
+            )
+            case_results.append(
+                {
+                    "case_id": case_id,
+                    "shape": case["shape"],
+                    "status": state.status,
+                    "step_kinds": [kind.value for kind in step_kinds],
+                    "deck_patch_verified": state.checkpoint.get("deck_patch_verified"),
+                    "section_names": sections,
+                    "expected_metric": expected_metric,
+                    "expected_value": expected_value,
+                    "observed_value": metrics.get(expected_metric),
+                    "quality_status": quality.get("status"),
+                    "final_state_path": str(final_state) if final_state else None,
+                }
+            )
+    finally:
+        if previous_root is None:
+            os.environ.pop("ACTSOFT_USER_DECK_CORPUS_ROOT", None)
+        else:
+            os.environ["ACTSOFT_USER_DECK_CORPUS_ROOT"] = previous_root
+    return (
+        assertions,
+        artifacts,
+        {
+            "case_count": len(case_results),
+            "cases": case_results,
+            "shapes": [case["shape"] for case in USER_DECK_CORPUS_CASES],
+        },
+    )
+
+
 def scenario_queue_confirmation_resume(
     scenario_dir: Path,
     request: LongRunValidationRequest,
@@ -1544,6 +1698,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by deterministic guardrails",
         scenario_public_user_deck_acceptance,
     ),
+    "public_user_deck_corpus_acceptance": (
+        "Public real-style DEVSIM user deck corpus is ingested, patched, executed, and benchmarked",
+        scenario_public_user_deck_corpus_acceptance,
+    ),
     "public_user_deck_live_llm_acceptance": (
         "Public DEVSIM user deck is ingested, patched, executed, and benchmarked by a real configured LLM",
         scenario_public_user_deck_live_llm_acceptance,
@@ -1566,6 +1724,7 @@ DEFAULT_AUTONOMOUS_E2E_SCENARIOS = [
     "sentaurus_autonomous_refinement",
     "natural_language_power_marathon",
     "public_user_deck_acceptance",
+    "public_user_deck_corpus_acceptance",
     "queue_confirmation_resume",
     "queue_interruption_recovery",
 ]

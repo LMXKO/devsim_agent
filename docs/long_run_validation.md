@@ -31,6 +31,7 @@ The autonomous E2E suite validates the agent behavior contract around long-runni
 - Sentaurus baseline run, verified patch planning, mutation-effect analysis, effect-driven patch refinement, second patched run, lineage archive, and Pareto/best-entry evidence using the public-syntax fake contract;
 - a natural-language "AI 长时间自主操作 DEVSIM/Sentaurus" marathon that routes to Power MOSFET/LDMOS, runs the DEVSIM 2D field-plate runner, plans and executes the `power_mosfet_signoff` evidence pack, writes a minimal cockpit, and proves resume/cancel boundaries;
 - deterministic public DEVSIM user-deck acceptance that ingests a Python deck, applies a verified semantic patch, executes the patched deck, and benchmarks the resulting artifacts;
+- public real-style user-deck corpus acceptance covering function-wrapped config, package imports with overrides, and multi-sweep bias decks;
 - explicit live-LLM public user-deck acceptance that requires a configured OpenAI-compatible model, disables deterministic fallback, and fails unless the model decision ledger proves every agent step came from the LLM;
 - explicit live-LLM user-deck soak that slices the same mission across multiple `agent_soak` cycles and verifies resume state, heartbeat, cockpit, model decisions, and zero fallback;
 - queue pause, approval, resume, and explicit unverified-patch approval;
@@ -62,6 +63,15 @@ python3.11 -m tcad_agent.long_run_validation \
   --suite autonomous_e2e \
   --scenario-id public_user_deck_acceptance \
   --validation-id public_user_deck_acceptance
+```
+
+Run the public user-deck corpus scenario:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_user_deck_corpus_acceptance \
+  --validation-id public_user_deck_corpus_acceptance
 ```
 
 Run the true live-LLM user-deck acceptance scenario:
