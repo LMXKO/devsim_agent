@@ -206,6 +206,21 @@ The planner returns:
 
 The current vocabulary recognizes continuation/Math controls, BV `Goal` voltage, drift doping, lifetime, trap density, field plate, guard ring, oxide thickness, implant dose, junction depth, trench corner radius, and region-specific lifetime variables when those variables already exist in the deck. It does not invent proprietary process syntax; unsupported targets stay as unselected or confirmation-gated candidates until real project evidence or public/official documentation justifies a schema.
 
+## Mutation Schema Extension
+
+When a real deck exposes a target that is not in the static mutation vocabulary, generate a review package instead of inventing an executable patch:
+
+```bash
+python3.11 -m tcad_agent.mutation_schema_agent \
+  --goal "Reduce reverse leakage by tuning surface recombination velocity" \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --deck-file device.cmd \
+  --target "surface recombination velocity" \
+  --output-dir /tmp/mutation_schema_extension
+```
+
+The package contains a proposed vocabulary entry, public-evidence gate, local deck variable binding, fixture deck, and semantic patch validation records. It never edits `tcad_agent.mutation_vocabulary` directly and never runs the solver. The autonomous agent can invoke the same action after `sentaurus_patch_planner` returns no actionable candidates for the current state.
+
 ## Mutation Effect Analyzer
 
 Use the analyzer directly to compare a baseline run against a patched run:

@@ -229,6 +229,18 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(replay["tool_name"], "sentaurus_replay")
         self.assertTrue((self.root / "replay" / "sentaurus_replay_state.json").exists())
 
+    def test_default_mutation_schema_agent_runner_is_registered(self) -> None:
+        result = default_runner_registry()["mutation_schema_agent"](
+            {
+                "goal_text": "Reduce reverse leakage by adding a surface recombination schema.",
+                "output_dir": str(self.root / "schema_agent"),
+            }
+        )
+
+        self.assertEqual(result["tool_name"], "mutation_schema_agent")
+        self.assertEqual(result["status"], "no_deck_context")
+        self.assertTrue((self.root / "schema_agent" / "mutation_schema_extension.json").exists())
+
     def test_worker_pauses_autonomous_agent_waiting_for_user(self) -> None:
         enqueue_run(
             self.db,

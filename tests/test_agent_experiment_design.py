@@ -90,6 +90,38 @@ class AgentExperimentDesignTest(unittest.TestCase):
         self.assertEqual(candidates["collect_golden_measured_correlation"].tool_name, "golden_curve_comparison")
         self.assertTrue(Path(plan.output_path).exists())
 
+    def test_sentaurus_state_exposes_schema_extension_candidate(self) -> None:
+        project = self.root / "sentaurus_schema_design"
+        project.mkdir()
+        (project / "device.cmd").write_text("set SURFACE_RECOMB_VELOCITY 1e5\n", encoding="utf-8")
+        state_path = self.root / "sentaurus_schema_design_state" / "state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": "sentaurus_schema_design",
+                "project_copy_path": str(project),
+                "request": {"deck_files": ["device.cmd"]},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {"solver_backend": "sentaurus", "tcad_solver_invoked": True, "curve_points": 3},
+                },
+                "final_summary": {
+                    "artifacts": {"project_copy": str(project)},
+                    "parameters": {"deck_files": ["device.cmd"]},
+                    "metrics": {"solver_backend": "sentaurus", "tcad_solver_invoked": True},
+                },
+            },
+        )
+
+        plan = build_agent_experiment_design_plan(state_path, output_path=self.root / "sentaurus_schema_plan.json")
+        candidates = {candidate.candidate_id: candidate for candidate in plan.candidates}
+
+        self.assertIn("extend_mutation_schema_from_sentaurus_deck", candidates)
+        self.assertEqual(candidates["extend_mutation_schema_from_sentaurus_deck"].action_kind, "plan_mutation_schema_extension")
+        self.assertEqual(candidates["extend_mutation_schema_from_sentaurus_deck"].request["deck_files"], ["device.cmd"])
+
     def test_autonomous_agent_executes_highest_ranked_design_candidate(self) -> None:
         state_path = write_power_state(self.root / "power_agent" / "state.json")
         convergence_state = self.root / "convergence" / "state.json"

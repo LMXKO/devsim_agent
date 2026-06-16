@@ -31,6 +31,7 @@ Supported actions:
 - `plan_mutation_refinement`: read baseline-vs-mutation curve diagnostics and generate the next finer request/deck patch;
 - `plan_guidance_patch`: turn `curve_guidance.next_patch_hint` into an executable request/deck patch even before a full mutation-effect state exists;
 - `plan_experiment_design`: rank next experiments from signoff gaps, benchmark warnings, curve diagnostics, golden/measured availability, and deck mutations;
+- `plan_mutation_schema_extension`: generate a review-only mutation vocabulary extension package from public evidence plus local Sentaurus deck bindings when existing mutation classes have no actionable target;
 - `generate_report`: create a sweep/optimization report, or fall back to an engineering conclusion for single-run states;
 - `generate_dashboard`: create a dashboard for a sweep, optimization, or autonomous timeline;
 - `stop_success`: finish when enough evidence and artifacts exist;
@@ -139,6 +140,8 @@ For Sentaurus states, the same experiment-design budget first goes through `plan
 - `checkpoint.blocked_sentaurus_patch_candidates` when only confirmation-gated candidates exist.
 
 Each autonomous run also writes `checkpoint.public_evidence_dossier` before planning. The Sentaurus planner copies that gate into the patch plan, including matched public sources, convergence playbooks, model/metric expectations, and the rule that new simulator-specific operations require live lookup or local deck evidence before execution.
+
+If the Sentaurus patch planner exhausts existing mutation classes for the current state, the agent can run `plan_mutation_schema_extension`. That action writes a package under `mutation_schema_extensions/` with a proposed vocabulary entry, public-evidence gate, local deck variable binding, fixture deck, and semantic patch validation record. It is intentionally review-only: it does not edit `mutation_vocabulary.py`, does not run Sentaurus, and does not authorize an unverified new patch.
 
 If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`. The analysis includes an engineer-style curve review for leakage-window, BV-bracket, knee, and field-peak movement, plus a machine-readable Pareto decision. The same state also receives `sentaurus_lineage_archive.json`, which compactly records the multi-run patch trail, key metrics, Pareto front, and best entry.
 

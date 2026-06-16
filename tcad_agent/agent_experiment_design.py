@@ -234,6 +234,27 @@ def repair_candidate(source_state_path: Path, state: dict[str, Any], benchmark: 
     )
 
 
+def sentaurus_schema_extension_candidate(source_state_path: Path, state: dict[str, Any], request: dict[str, Any]) -> AgentExperimentCandidate | None:
+    if state.get("tool_name") != "sentaurus_run":
+        return None
+    project = state.get("project_copy_path") or state.get("project_path")
+    deck_files = request.get("deck_files") or ((state.get("final_summary") or {}).get("parameters") or {}).get("deck_files")
+    if not project and not deck_files:
+        return None
+    return AgentExperimentCandidate(
+        candidate_id="extend_mutation_schema_from_sentaurus_deck",
+        action_kind="plan_mutation_schema_extension",
+        score=0.56,
+        source_state_path=str(source_state_path),
+        evidence_gap="mutation_vocabulary_gap",
+        reason="Sentaurus state is available; if the existing mutation vocabulary has no verified target, generate a review-only schema extension from public evidence and local deck bindings.",
+        expected_effect="Produces a schema promotion package with fixture deck and semantic patch validation, without executing a new untrusted mutation.",
+        request={"project_path": project, "deck_files": deck_files if isinstance(deck_files, list) else []},
+        requires_user_confirmation=False,
+        risk_notes=["schema proposal only", "does not modify static vocabulary", "does not run solver"],
+    )
+
+
 def mutation_effect_from_state(source_state_path: Path, state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     existing = state.get("mutation_effect_analysis") or state.get("sentaurus_mutation_effect_analysis")
     if isinstance(existing, dict) and existing:
@@ -390,6 +411,9 @@ def build_agent_experiment_design_plan(
         repair = repair_candidate(actual_source, state, benchmark)
         if repair:
             candidates.append(repair)
+        schema_extension = sentaurus_schema_extension_candidate(actual_source, state, request)
+        if schema_extension:
+            candidates.append(schema_extension)
         candidates.extend(mutation_candidates(actual_source, state, request))
         selected = select_candidate(candidates)
         status = "completed" if candidates else "no_actionable_candidates"

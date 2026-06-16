@@ -656,6 +656,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.mesh_convergence import MeshConvergenceRequest, run_mesh_convergence
     from tcad_agent.mission_agent import run_mission_agent
     from tcad_agent.multidim_optimizer import MultiDimOptimizationRequest, run_multidim_optimization
+    from tcad_agent.mutation_schema_agent import MutationSchemaExtensionRequest, run_mutation_schema_extension
     from tcad_agent.parameter_sweep import ParameterSweepRequest, run_parameter_sweep
     from tcad_agent.physical_benchmark import run_physical_benchmark
     from tcad_agent.power_mosfet_signoff import PowerMOSFETSignoffRequest, run_power_mosfet_signoff
@@ -900,6 +901,9 @@ def default_runner_registry() -> dict[str, Runner]:
         ),
         "sentaurus_lineage_archive": lambda request: result_to_dict(
             build_sentaurus_lineage_archive(SentaurusLineageArchiveRequest.model_validate(request))
+        ),
+        "mutation_schema_agent": lambda request: result_to_dict(
+            run_mutation_schema_extension(MutationSchemaExtensionRequest.model_validate(request))
         ),
         "user_deck_execution": lambda request: run_user_deck(UserDeckRunRequest.model_validate(request)),
     }

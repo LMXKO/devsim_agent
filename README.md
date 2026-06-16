@@ -255,6 +255,18 @@ Replay existing Sentaurus states/logs/curves without running Sentaurus:
 python3.11 -m tcad_agent.sentaurus_replay --baseline path/to/baseline/sentaurus_state.json --mutation path/to/mutation/sentaurus_state.json
 ```
 
+Generate a review-only mutation schema extension when the current vocabulary has no verified target:
+
+```bash
+python3.11 -m tcad_agent.mutation_schema_agent \
+  --goal "Reduce reverse leakage by tuning surface recombination velocity" \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --deck-file device.cmd \
+  --target "surface recombination velocity"
+```
+
+The schema agent writes public-evidence, deck-binding, fixture, and semantic-patch validation artifacts. It does not modify `mutation_vocabulary.py` or execute a solver.
+
 When Sentaurus is not installed, validate only the agent-side contract:
 
 ```bash

@@ -13,6 +13,7 @@ from tcad_agent.autonomous_devsim_agent import (
     DevsimAgentStatus,
     decide_next_action,
     deterministic_action,
+    execute_action,
     infer_result_state_path,
     observe_state,
     run_autonomous_devsim_agent,
@@ -209,6 +210,134 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(decision["guarded_action_source"], "sentaurus_patch_plan")
         self.assertTrue(decision["queued_plan_enforced"])
         self.assertEqual(decision["llm_requested_action"]["kind"], "run_physical_benchmark")
+
+    def test_sentaurus_schema_extension_policy_after_patch_planner_exhausted(self) -> None:
+        project = self.root / "sentaurus_schema_project"
+        project.mkdir()
+        (project / "device.cmd").write_text("set SURFACE_RECOMB_VELOCITY 1e5\n", encoding="utf-8")
+        state_path = self.root / "sentaurus_schema" / "sentaurus_state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": "sentaurus_schema_baseline",
+                "project_copy_path": str(project),
+                "request": {"deck_files": ["device.cmd"]},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {"solver_backend": "sentaurus", "tcad_solver_invoked": True, "curve_points": 3},
+                },
+                "final_summary": {"artifacts": {"project_copy": str(project)}, "metrics": {"solver_backend": "sentaurus"}},
+            },
+        )
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_schema_policy",
+            agent_dir=str(self.root / "agents" / "agent_schema_policy"),
+            goal_text="Reduce Sentaurus reverse leakage by tuning surface recombination velocity.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            latest_state_path=str(state_path),
+            checkpoint={
+                "sentaurus_initial_run_done": True,
+                "sentaurus_patch_plan_source_path": str(state_path),
+                "sentaurus_patch_planner_exhausted": {
+                    "status": "no_actionable_candidates",
+                    "source_state_path": str(state_path),
+                },
+            },
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=False,
+            sentaurus_project_path=project,
+            sentaurus_request={"deck_files": ["device.cmd"]},
+            enable_experiment_design=True,
+            max_experiment_design_rounds=1,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+        client = FakeAgentClient(
+            json.dumps(
+                {
+                    "kind": "run_physical_benchmark",
+                    "reason": "Try to benchmark before schema extension.",
+                    "source_state_path": str(state_path),
+                }
+            )
+        )
+
+        action, decision = decide_next_action(state, request, llm_client=client)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION)
+        self.assertFalse(decision["fallback_used"])
+        self.assertEqual(decision["guarded_action_source"], "mutation_schema_extension")
+        self.assertTrue(decision["queued_plan_enforced"])
+
+    def test_execute_mutation_schema_extension_records_checkpoint_package(self) -> None:
+        project = self.root / "sentaurus_schema_exec_project"
+        project.mkdir()
+        (project / "device.cmd").write_text("set SURFACE_RECOMB_VELOCITY 1e5\n", encoding="utf-8")
+        state_path = self.root / "sentaurus_schema_exec" / "sentaurus_state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": "sentaurus_schema_exec",
+                "project_copy_path": str(project),
+                "request": {"deck_files": ["device.cmd"]},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {"solver_backend": "sentaurus", "tcad_solver_invoked": True, "curve_points": 3},
+                },
+                "final_summary": {"artifacts": {"project_copy": str(project)}, "metrics": {"solver_backend": "sentaurus"}},
+            },
+        )
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_schema_exec",
+            agent_dir=str(self.root / "agents" / "agent_schema_exec"),
+            goal_text="Reduce Sentaurus reverse leakage by tuning surface recombination velocity.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            latest_state_path=str(state_path),
+            checkpoint={},
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=False,
+            sentaurus_project_path=project,
+            sentaurus_request={"deck_files": ["device.cmd"]},
+            enable_experiment_design=True,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        result, result_state_path = execute_action(
+            state,
+            request,
+            agent_mod.DevsimAgentAction(
+                kind=DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION,
+                reason="Build schema extension package.",
+                source_state_path=str(state_path),
+            ),
+            runner_registry={},
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result_state_path, str(state_path))
+        self.assertEqual(state.checkpoint["mutation_schema_extension_runs"], 1)
+        self.assertTrue(Path(state.checkpoint["mutation_schema_extension_path"]).exists())
+        self.assertTrue(state.checkpoint["pending_mutation_schema_extension_candidate"]["ready_for_review"])
 
     def test_plan_only_records_next_tool_action(self) -> None:
         request = AutonomousDevsimRequest(

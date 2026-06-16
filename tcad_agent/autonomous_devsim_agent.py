@@ -24,6 +24,7 @@ from tcad_agent.industrial_runner_registry import industrial_runner_coverage_mat
 from tcad_agent.industrial_runner_promotion import build_industrial_runner_promotion_plan
 from tcad_agent.llm import LLMClient, LLMConfig
 from tcad_agent.mutation_refinement import build_mutation_refinement_plan
+from tcad_agent.mutation_schema_agent import MutationSchemaExtensionRequest, run_mutation_schema_extension
 from tcad_agent.public_sources import build_public_evidence_dossier
 from tcad_agent.reporting import final_artifacts, final_metrics, load_final_state
 from tcad_agent.repair_executor import run_repair_executor
@@ -101,6 +102,7 @@ class DevsimAgentActionKind(str, Enum):
     PLAN_MUTATION_REFINEMENT = "plan_mutation_refinement"
     PLAN_GUIDANCE_PATCH = "plan_guidance_patch"
     PLAN_SENTAURUS_PATCH = "plan_sentaurus_patch"
+    PLAN_MUTATION_SCHEMA_EXTENSION = "plan_mutation_schema_extension"
     PLAN_SENTAURUS_REFINEMENT = "plan_sentaurus_refinement"
     PLAN_EXPERIMENT_DESIGN = "plan_experiment_design"
     GENERATE_REPORT = "generate_report"
@@ -144,6 +146,8 @@ class AutonomousDevsimRequest(BaseModel):
     enable_experiment_design: bool = False
     max_experiment_design_rounds: int = Field(default=1, ge=0)
     auto_execute_experiment_design: bool = True
+    enable_mutation_schema_extension: bool = True
+    max_mutation_schema_extensions: int = Field(default=1, ge=0)
     generate_report: bool = True
     generate_dashboard: bool = True
     require_capability_audit: bool = False
@@ -721,6 +725,12 @@ def build_agent_tool_specs(runner_registry: dict[str, Runner] | None = None) -> 
             parameters=object_schema({"source_state_path": {"type": "string"}}),
         ),
         AgentToolSpec(
+            name=DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION.value,
+            action_kind=DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION.value,
+            description="Generate a review-only mutation vocabulary schema extension package from public evidence and local deck bindings when existing Sentaurus mutation vocabulary has no actionable target.",
+            parameters=object_schema({"source_state_path": {"type": "string"}, "proposed_target": {"type": "string"}}),
+        ),
+        AgentToolSpec(
             name=DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT.value,
             action_kind=DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT.value,
             description="Use Sentaurus baseline-vs-mutation curve evidence to refine the same patch direction or switch to a better verified target.",
@@ -822,6 +832,8 @@ def build_agent_context(
         "enable_experiment_design": request.enable_experiment_design,
         "max_experiment_design_rounds": request.max_experiment_design_rounds,
         "auto_execute_experiment_design": request.auto_execute_experiment_design,
+        "enable_mutation_schema_extension": request.enable_mutation_schema_extension,
+        "max_mutation_schema_extensions": request.max_mutation_schema_extensions,
         "generate_report": request.generate_report,
         "generate_dashboard": request.generate_dashboard,
         "toolbelt": toolbelt_summary(specs),
@@ -865,6 +877,7 @@ def build_agent_messages(context: dict[str, Any]) -> tuple[str, str]:
             "如果最新 observation 有 mutation_effect_analysis，先 plan_curve_decision，让模型根据曲线/effect 选择 refine、switch、Pareto review 或 repair curve。",
             "如果 mutation_effect_analysis 显示方向有效，先生成更细 refinement patch；如果 tradeoff 变坏，要求 Pareto/约束复核。",
             "如果最新 state 来自 Sentaurus，优先 plan_sentaurus_patch 生成可验证语义 patch，再决定是否执行下一轮 Sentaurus。",
+            "如果 Sentaurus patch planner 对当前 state 没有 actionable candidate，且本地 deck 暴露未知变量，先 plan_mutation_schema_extension 生成证据约束的 schema promotion package，不要编造 patch。",
             "如果 sentaurus_mutation_effect_analysis 显示 patch 有效，可以继续细化；如果出现 tradeoff，必须进行约束/Pareto 复核或等待确认。",
             "如果 benchmark/signoff evidence 有缺口，可以先 plan_experiment_design，让候选实验而不是单条规则驱动下一步。",
             "generate_report、generate_dashboard、stop_success 之前必须先 run_physical_benchmark，除非 checkpoint.physical_benchmark_done 已经为 true。",
@@ -909,6 +922,14 @@ def action_from_experiment_candidate(candidate: dict[str, Any], latest_state_pat
     if kind == DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT.value:
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
+            source_state_path=source_state_path,
+            request=request,
+            reason=reason,
+            user_confirmation_required=requires_confirmation,
+        )
+    if kind == DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION.value:
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION,
             source_state_path=source_state_path,
             request=request,
             reason=reason,
@@ -1291,6 +1312,23 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             request={"allow_high_risk": request.allow_user_confirmation_actions},
             reason="Latest state is a Sentaurus run; plan verified semantic deck patches from the natural-language goal before generic repair/reporting.",
         )
+    schema_extension_runs = int(state.checkpoint.get("mutation_schema_extension_runs") or 0)
+    sentaurus_exhausted = state.checkpoint.get("sentaurus_patch_planner_exhausted")
+    if (
+        request.enable_experiment_design
+        and request.enable_mutation_schema_extension
+        and observation.get("tool_name") == "sentaurus_run"
+        and isinstance(sentaurus_exhausted, dict)
+        and same_path(sentaurus_exhausted.get("source_state_path"), state.latest_state_path)
+        and schema_extension_runs < request.max_mutation_schema_extensions
+        and state.checkpoint.get("mutation_schema_extension_source_path") != state.latest_state_path
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION,
+            source_state_path=state.latest_state_path,
+            request={"use_llm": request.use_llm, "allow_llm_fallback": request.allow_llm_fallback},
+            reason="Existing Sentaurus mutation vocabulary had no actionable verified patch; generate a public-evidence and deck-binding schema extension package before inventing a new mutation.",
+        )
     if state_needs_repair_before_signoff_planning(observation):
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_REPAIR_EXECUTOR,
@@ -1501,6 +1539,18 @@ def queued_llm_plan_context(
             "evidence_used": ["sentaurus_state", "sentaurus_deck_ir", "public_evidence_dossier"],
         }
     if (
+        action.kind == DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION
+        and request.sentaurus_project_path
+        and state.latest_state_path
+        and state.checkpoint.get("mutation_schema_extension_source_path") != state.latest_state_path
+    ):
+        return {
+            "source": "mutation_schema_extension",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Existing Sentaurus mutation vocabulary produced no actionable verified patch, so generate a review-only schema extension package before inventing simulator semantics.",
+            "evidence_used": ["sentaurus_patch_planner_exhausted", "sentaurus_deck_ir", "public_evidence_dossier"],
+        }
+    if (
         action.kind == DevsimAgentActionKind.RUN_TOOL
         and action.tool_name == "sentaurus_run"
         and request.sentaurus_project_path
@@ -1573,6 +1623,7 @@ CURRENT_STATE_ACTION_KINDS = {
     DevsimAgentActionKind.PLAN_MUTATION_REFINEMENT,
     DevsimAgentActionKind.PLAN_GUIDANCE_PATCH,
     DevsimAgentActionKind.PLAN_EXPERIMENT_DESIGN,
+    DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION,
 }
 
 
@@ -2447,6 +2498,47 @@ def execute_action(
         else:
             state.checkpoint["sentaurus_patch_planner_exhausted"] = result
         return result, source
+    if action.kind == DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_EXTENSION:
+        source = action.source_state_path or state.latest_state_path
+        if not source:
+            raise ValueError("mutation schema extension action requires a source state")
+        output_dir = Path(state.agent_dir) / "mutation_schema_extensions"
+        output_path = output_dir / f"mutation_schema_extension_{int(state.checkpoint.get('mutation_schema_extension_count') or 0) + 1:03d}.json"
+        runner = runner_registry.get("mutation_schema_agent")
+        payload = {
+            "goal_text": state.goal_text,
+            "source_state_path": source,
+            "project_path": action.request.get("project_path") or (str(request.sentaurus_project_path) if request.sentaurus_project_path else None),
+            "output_dir": str(output_dir),
+            "output_path": str(output_path),
+            "proposed_target": action.request.get("proposed_target"),
+            "enable_live_lookup": request.enable_live_evidence_lookup,
+            "live_lookup_max_sources": request.live_evidence_max_sources,
+            "use_llm": bool(action.request.get("use_llm", request.use_llm)),
+            "allow_llm_fallback": bool(action.request.get("allow_llm_fallback", request.allow_llm_fallback)),
+        }
+        deck_files = action.request.get("deck_files") if isinstance(action.request.get("deck_files"), list) else []
+        if not deck_files:
+            deck_files = request.sentaurus_request.get("deck_files") if isinstance(request.sentaurus_request.get("deck_files"), list) else []
+        if deck_files:
+            payload["deck_files"] = deck_files
+        if runner is None:
+            result = run_mutation_schema_extension(
+                MutationSchemaExtensionRequest.model_validate(payload),
+                llm_client=llm_client,
+            ).model_dump(mode="json")
+        else:
+            result = runner(payload)
+        state.checkpoint["mutation_schema_extension_count"] = int(state.checkpoint.get("mutation_schema_extension_count") or 0) + 1
+        state.checkpoint["mutation_schema_extension_runs"] = int(state.checkpoint.get("mutation_schema_extension_runs") or 0) + 1
+        state.checkpoint["mutation_schema_extension_path"] = result.get("output_path")
+        state.checkpoint["mutation_schema_extension_source_path"] = source
+        state.checkpoint["mutation_schema_extension_candidates"] = result.get("candidates") or []
+        state.checkpoint["latest_mutation_schema_extension"] = result
+        selected = result.get("selected_candidate")
+        if isinstance(selected, dict):
+            state.checkpoint["pending_mutation_schema_extension_candidate"] = selected
+        return result, source
     if action.kind == DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT:
         source = action.source_state_path or state.latest_state_path
         if not source:
@@ -2751,6 +2843,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-experiment-design", action="store_true")
     parser.add_argument("--max-experiment-design-rounds", type=int, default=1)
     parser.add_argument("--no-auto-experiment-design", action="store_true")
+    parser.add_argument("--no-mutation-schema-extension", action="store_true")
+    parser.add_argument("--max-mutation-schema-extensions", type=int, default=1)
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--no-dashboard", action="store_true")
     parser.add_argument("--require-capability-audit", action="store_true")
@@ -2822,6 +2916,8 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
         enable_experiment_design=args.enable_experiment_design,
         max_experiment_design_rounds=args.max_experiment_design_rounds,
         auto_execute_experiment_design=not args.no_auto_experiment_design,
+        enable_mutation_schema_extension=not args.no_mutation_schema_extension,
+        max_mutation_schema_extensions=args.max_mutation_schema_extensions,
         generate_report=not args.no_report,
         generate_dashboard=not args.no_dashboard,
         require_capability_audit=args.require_capability_audit,
