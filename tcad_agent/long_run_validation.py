@@ -658,6 +658,7 @@ def scenario_sentaurus_autonomous_refinement(
     source_project = scenario_dir / "source_project"
     shutil.copytree(fixture, source_project)
     calls: list[dict[str, Any]] = []
+    preflight_calls: list[dict[str, Any]] = []
 
     def lifetime_value(project_copy: Path) -> float:
         text = (project_copy / "device.cmd").read_text(encoding="utf-8")
@@ -666,6 +667,27 @@ def scenario_sentaurus_autonomous_refinement(
             if len(parts) == 3 and parts[0] == "set" and parts[1] == "LIFETIME_SCALE":
                 return float(parts[2])
         return 1.0
+
+    def fake_preflight(tool_request: dict[str, Any]) -> dict[str, Any]:
+        preflight_calls.append(dict(tool_request))
+        output_path = Path(str(tool_request.get("output_path") or scenario_dir / "sentaurus_preflight.json"))
+        report_path = Path(str(tool_request.get("report_path") or scenario_dir / "sentaurus_preflight.md"))
+        payload = {
+            "tool_name": "sentaurus_preflight",
+            "status": "ready",
+            "ready_to_execute_real_sentaurus": True,
+            "blocked_code": None,
+            "project_path": tool_request.get("project_path"),
+            "profile_path": tool_request.get("profile_path"),
+            "flow": tool_request.get("flow") or ["sdevice"],
+            "deck_files": tool_request.get("deck_files") or ["device.cmd"],
+            "output_path": str(output_path),
+            "report_path": str(report_path),
+        }
+        write_json(output_path, payload)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("# Sentaurus preflight\n\nStatus: ready\n", encoding="utf-8")
+        return payload
 
     def fake_sentaurus(tool_request: dict[str, Any]) -> dict[str, Any]:
         calls.append(dict(tool_request))
@@ -757,7 +779,11 @@ def scenario_sentaurus_autonomous_refinement(
             generate_report=False,
             generate_dashboard=False,
         ),
-        runner_registry={"sentaurus_run": fake_sentaurus, "physical_benchmark": fake_benchmark},
+        runner_registry={
+            "sentaurus_preflight": fake_preflight,
+            "sentaurus_run": fake_sentaurus,
+            "physical_benchmark": fake_benchmark,
+        },
     )
     final_state = Path(str(state.final_state_path or state.latest_state_path))
     final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state.exists() else {}
@@ -772,6 +798,9 @@ def scenario_sentaurus_autonomous_refinement(
     step_kinds = [step.kind for step in state.steps]
     assertions = [
         require(state.status == DevsimAgentStatus.COMPLETED, "Sentaurus autonomous contract scenario completed"),
+        require(len(preflight_calls) == 1, "Sentaurus preflight ran before baseline execution"),
+        require(preflight_calls[0].get("project_path") == str(source_project), "Sentaurus preflight used the scenario project"),
+        require(bool(state.checkpoint.get("sentaurus_preflight_ready")), "Sentaurus preflight gate was recorded as ready"),
         require(len(calls) == 3, "baseline, first patch, and refined patch Sentaurus runs executed"),
         require(DevsimAgentActionKind.PLAN_SENTAURUS_PATCH in step_kinds, "Sentaurus patch planner ran"),
         require(DevsimAgentActionKind.PLAN_SENTAURUS_REFINEMENT in step_kinds, "Sentaurus patch refiner ran from curve evidence"),
@@ -785,6 +814,8 @@ def scenario_sentaurus_autonomous_refinement(
         [
             artifact("agent_state", Path(state.agent_dir) / "autonomous_devsim_agent_state.json"),
             artifact("source_project", source_project, kind="directory"),
+            artifact("sentaurus_preflight", state.checkpoint.get("sentaurus_preflight_path")),
+            artifact("sentaurus_preflight_report", state.checkpoint.get("sentaurus_preflight_report_path"), kind="markdown"),
             artifact("final_sentaurus_state", final_state),
             artifact("sentaurus_patch_plan", state.checkpoint.get("sentaurus_patch_plan_path")),
             artifact("sentaurus_refinement_plan", state.checkpoint.get("sentaurus_refinement_plan_path")),
@@ -794,6 +825,7 @@ def scenario_sentaurus_autonomous_refinement(
         {
             "agent_status": state.status,
             "step_kinds": [kind.value for kind in step_kinds],
+            "sentaurus_preflight_count": len(preflight_calls),
             "sentaurus_run_count": len(calls),
             "patch_values": patch_values,
             "lineage_entries": len(lineage.get("entries") or []),

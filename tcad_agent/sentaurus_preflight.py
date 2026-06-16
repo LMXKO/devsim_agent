@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import shlex
 import shutil
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from tcad_agent.sentaurus import SentaurusRuntimeProfile
+from tcad_agent.sentaurus import SentaurusRuntimeProfile, is_remote_execution, normalized_execution_mode, remote_config, remote_shell_command
 from tcad_agent.sentaurus_deck import parse_sentaurus_deck_file
 from tcad_agent.task_spec import PROJECT_ROOT
 
@@ -108,6 +109,8 @@ def resolve_command(raw: str) -> tuple[str | None, str]:
 
 
 def check_commands(profile: SentaurusRuntimeProfile, flow: list[str]) -> list[SentaurusPreflightCheck]:
+    if is_remote_execution(profile):
+        return check_remote_commands(profile, flow)
     checks: list[SentaurusPreflightCheck] = []
     actual_flow = flow or profile.default_flow or ["sdevice"]
     for step in actual_flow:
@@ -117,6 +120,87 @@ def check_commands(profile: SentaurusRuntimeProfile, flow: list[str]) -> list[Se
             checks.append(pass_check("sentaurus_command_resolved", f"Command for `{step}` is resolvable.", {"step": step, "command": raw, "resolved": resolved, "source": source}))
         else:
             checks.append(fail_check("blocked_missing_sentaurus_installation", f"Command for `{step}` is not resolvable.", {"step": step, "command": raw, "lookup": source}))
+    return checks
+
+
+def run_remote_check(profile: SentaurusRuntimeProfile, shell_command: str, *, timeout_seconds: float = 20.0) -> tuple[bool, dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            remote_shell_command(profile, shell_command),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return (
+            completed.returncode == 0,
+            {
+                "returncode": completed.returncode,
+                "stdout_tail": (completed.stdout or "")[-1000:],
+                "stderr_tail": (completed.stderr or "")[-1000:],
+            },
+        )
+    except Exception as exc:
+        return False, {"error": str(exc)}
+
+
+def remote_command_check_shell(raw: str) -> str:
+    parts = shlex.split(raw)
+    if not parts:
+        return "false"
+    executable = parts[0]
+    if Path(executable).is_absolute() or "/" in executable:
+        return f"test -x {shlex.quote(executable)}"
+    return f"command -v {shlex.quote(executable)} >/dev/null"
+
+
+def check_remote_transport(profile: SentaurusRuntimeProfile) -> list[SentaurusPreflightCheck]:
+    checks: list[SentaurusPreflightCheck] = []
+    try:
+        remote = remote_config(profile)
+    except Exception as exc:
+        return [fail_check("blocked_missing_remote_execution_profile", str(exc))]
+    for label, raw in [("ssh", remote.ssh_command), ("rsync", remote.rsync_command)]:
+        resolved, source = resolve_command(raw)
+        if resolved:
+            checks.append(pass_check("remote_transport_command_resolved", f"Local `{label}` transport command is resolvable.", {"transport": label, "resolved": resolved, "source": source}))
+        else:
+            checks.append(fail_check("blocked_missing_remote_transport", f"Local `{label}` transport command is not resolvable.", {"transport": label, "lookup": source}))
+    ok, observed = run_remote_check(profile, f"mkdir -p {shlex.quote(str(remote.remote_run_root))} && test -w {shlex.quote(str(remote.remote_run_root))}")
+    if ok:
+        checks.append(pass_check("remote_run_root_writeable", "Remote run root exists or can be created and is writeable.", {"execution_mode": normalized_execution_mode(profile)}))
+    else:
+        checks.append(fail_check("blocked_remote_run_root_unavailable", "Remote run root is not reachable or writeable.", observed))
+    return checks
+
+
+def check_remote_scheduler(profile: SentaurusRuntimeProfile) -> list[SentaurusPreflightCheck]:
+    if normalized_execution_mode(profile) != "remote_slurm":
+        return []
+    remote = remote_config(profile)
+    checks: list[SentaurusPreflightCheck] = []
+    for command in [remote.slurm_submit_command, remote.slurm_status_command, remote.slurm_cancel_command]:
+        ok, observed = run_remote_check(profile, remote_command_check_shell(command))
+        if ok:
+            checks.append(pass_check("remote_scheduler_command_resolved", "Remote scheduler command is resolvable.", {"command": command}))
+        else:
+            checks.append(fail_check("blocked_missing_remote_scheduler", "Remote scheduler command is not resolvable.", {"command": command, **observed}))
+    return checks
+
+
+def check_remote_commands(profile: SentaurusRuntimeProfile, flow: list[str]) -> list[SentaurusPreflightCheck]:
+    checks = check_remote_transport(profile)
+    if any(check.status == "failed" for check in checks):
+        return checks
+    checks.extend(check_remote_scheduler(profile))
+    actual_flow = flow or profile.default_flow or ["sdevice"]
+    for step in actual_flow:
+        raw = command_display(profile, step)
+        ok, observed = run_remote_check(profile, remote_command_check_shell(raw))
+        if ok:
+            checks.append(pass_check("sentaurus_remote_command_resolved", f"Remote command for `{step}` is resolvable.", {"step": step, "command_name": shlex.split(raw)[0] if shlex.split(raw) else raw}))
+        else:
+            checks.append(fail_check("blocked_missing_sentaurus_installation", f"Remote command for `{step}` is not resolvable.", {"step": step, "command_name": shlex.split(raw)[0] if shlex.split(raw) else raw, **observed}))
     return checks
 
 
@@ -175,6 +259,10 @@ def check_curve_contract(profile: SentaurusRuntimeProfile) -> SentaurusPreflight
 
 def blocked_code(checks: list[SentaurusPreflightCheck]) -> str | None:
     for preferred in [
+        "blocked_missing_remote_execution_profile",
+        "blocked_missing_remote_transport",
+        "blocked_remote_run_root_unavailable",
+        "blocked_missing_remote_scheduler",
         "blocked_missing_sentaurus_installation",
         "blocked_missing_sentaurus_profile",
         "blocked_missing_license_configuration",

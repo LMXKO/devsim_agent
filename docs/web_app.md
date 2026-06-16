@@ -8,6 +8,7 @@
 - starting the local queue worker automatically when a mission is sent;
 - pausing, resuming, cancelling, approving, and rejecting queued items;
 - checking the configured OpenAI-compatible LLM endpoint;
+- using a saved local/remote Sentaurus project/profile when a natural-language task asks for Sentaurus;
 - reviewing indexed experiments, physical benchmarks, and quality status.
 
 The layout is intentionally minimal: the top area is a Codex-like execution transcript, and the bottom composer is the task input. The transcript is populated from durable state, not console text, so it survives refreshes and process restarts.
@@ -41,6 +42,8 @@ The transcript shows:
 The transcript follows the latest visible event only while the user is already near the bottom. Scrolling upward pauses auto-follow so earlier TCAD output can be inspected without being pulled back down; mission submission and the compact `最新` button force the view back to the newest event.
 
 The composer intentionally has no example picker or mode panel. The user describes the TCAD task in natural language, and the backend router selects the device template, runner, queue item, and capability gates.
+
+The same settings dialog can store an optional Sentaurus project path, external profile path, and deck-file list. These settings stay under `runs/` and are ignored by git. When the mission text mentions Sentaurus/SDevice/SProcess-style work, the page still submits a normal `agent_soak` item, but the backend injects the saved Sentaurus workspace into the nested autonomous request. The agent then runs `sentaurus_preflight` before any baseline execution; blocked preflight reports pause the queue item for user action.
 
 Run:
 

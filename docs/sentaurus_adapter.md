@@ -38,6 +38,41 @@ Save profiles outside git, for example `~/.actsoft/sentaurus_profile.json`.
 
 `runtime_profile` in `sentaurus_state.json` records only a safe summary: profile id, configured command names, allowed roots, default flow, glob lists, and environment variable keys.
 
+## Remote Runner Profile
+
+When Sentaurus lives on a workstation or cluster, keep the same profile outside git and set `execution_mode` to `remote_ssh` or `remote_slurm`.
+
+```json
+{
+  "profile_id": "cluster_sentaurus",
+  "execution_mode": "remote_slurm",
+  "commands": {
+    "sdevice": "/apps/synopsys/sentaurus/bin/sdevice"
+  },
+  "allowed_project_roots": ["/Users/me/tcad_projects"],
+  "run_root": "/Users/me/tcad_runs/actsoft_sentaurus",
+  "env": {
+    "LM_LICENSE_FILE": "configured-outside-git"
+  },
+  "default_flow": ["sdevice"],
+  "curve_globs": ["*.csv", "*_extract.csv", "*_iv.csv"],
+  "artifact_globs": ["*.log", "*.out", "*.plt", "*.tdr", "*.csv"],
+  "remote": {
+    "host": "sentaurus-login",
+    "remote_run_root": "/scratch/me/actsoft_sentaurus",
+    "ssh_command": "ssh",
+    "rsync_command": "rsync",
+    "slurm_submit_command": "sbatch",
+    "slurm_status_command": "squeue",
+    "slurm_cancel_command": "scancel"
+  }
+}
+```
+
+The remote runner still starts from a local user-owned project path: it copies the project into the local run directory, applies verified semantic patches locally, syncs the patched copy to `remote.remote_run_root`, runs the configured command remotely, then pulls CSV/log/artifacts back into the local run directory for curve diagnostics, benchmark, lineage, and reporting. `remote_ssh` runs commands directly through SSH; `remote_slurm` writes small per-step Slurm scripts, submits them, polls with `squeue`, cancels with `scancel` when the local cancel token appears, and pulls the completed workspace back.
+
+State files redact sensitive runtime values: they keep env key names and transport capability flags, not license values. Keep `host`, license strings, PDK roots, project paths, and site wrappers in the external profile or local environment, not in git.
+
 ## State Contract
 
 Each run writes:

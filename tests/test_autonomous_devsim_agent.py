@@ -211,6 +211,117 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertTrue(decision["queued_plan_enforced"])
         self.assertEqual(decision["llm_requested_action"]["kind"], "run_physical_benchmark")
 
+    def test_sentaurus_goal_preflights_before_baseline_run(self) -> None:
+        project = self.root / "sentaurus_preflight_project"
+        project.mkdir()
+        (project / "device.cmd").write_text("set LIFETIME_SCALE 1.0\n", encoding="utf-8")
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_sentaurus_preflight",
+            agent_dir=str(self.root / "agents" / "agent_sentaurus_preflight"),
+            goal_text="Use Sentaurus to reduce leakage.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            checkpoint={"public_evidence_gate_done": True},
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=False,
+            sentaurus_project_path=project,
+            sentaurus_profile_path=self.root / "remote_profile.json",
+            sentaurus_request={"deck_files": ["device.cmd"], "flow": ["sdevice"]},
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        action = deterministic_action(state, request)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.RUN_TOOL)
+        self.assertEqual(action.tool_name, "sentaurus_preflight")
+        self.assertEqual(action.request["project_path"], str(project))
+        self.assertEqual(action.request["profile_path"], str(self.root / "remote_profile.json"))
+        self.assertEqual(action.request["deck_files"], ["device.cmd"])
+
+    def test_sentaurus_blocked_preflight_pauses_instead_of_running(self) -> None:
+        project = self.root / "sentaurus_blocked_project"
+        project.mkdir()
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_sentaurus_blocked",
+            agent_dir=str(self.root / "agents" / "agent_sentaurus_blocked"),
+            goal_text="Use Sentaurus to reduce leakage.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            checkpoint={
+                "sentaurus_preflight_done": True,
+                "sentaurus_preflight_ready": False,
+                "sentaurus_preflight_status": "blocked",
+                "sentaurus_preflight_blocked_code": "blocked_missing_sentaurus_installation",
+            },
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=False,
+            sentaurus_project_path=project,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+
+        action = deterministic_action(state, request)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.ASK_USER)
+        self.assertEqual(action.request["gate"], "sentaurus_preflight")
+        self.assertEqual(action.request["blocked_code"], "blocked_missing_sentaurus_installation")
+
+    def test_execute_sentaurus_preflight_records_checkpoint_without_latest_state(self) -> None:
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_sentaurus_preflight_exec",
+            agent_dir=str(self.root / "agents" / "agent_sentaurus_preflight_exec"),
+            goal_text="Use Sentaurus.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            checkpoint={},
+        )
+        request = AutonomousDevsimRequest(goal_text=state.goal_text, execute=True, use_llm=False)
+
+        def fake_preflight(payload: dict) -> dict:
+            self.assertIn("output_path", payload)
+            self.assertIn("report_path", payload)
+            return {
+                "tool_name": "sentaurus_preflight",
+                "status": "ready",
+                "ready_to_execute_real_sentaurus": True,
+                "output_path": payload["output_path"],
+                "report_path": payload["report_path"],
+            }
+
+        result, result_state_path = execute_action(
+            state,
+            request,
+            agent_mod.DevsimAgentAction(
+                kind=DevsimAgentActionKind.RUN_TOOL,
+                tool_name="sentaurus_preflight",
+                reason="preflight",
+                request={"project_path": str(self.root / "project")},
+            ),
+            runner_registry={"sentaurus_preflight": fake_preflight},
+        )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertIsNone(result_state_path)
+        self.assertTrue(state.checkpoint["sentaurus_preflight_done"])
+        self.assertTrue(state.checkpoint["sentaurus_preflight_ready"])
+        self.assertEqual(state.checkpoint["sentaurus_preflight_status"], "ready")
+
     def test_sentaurus_schema_extension_policy_after_patch_planner_exhausted(self) -> None:
         project = self.root / "sentaurus_schema_project"
         project.mkdir()

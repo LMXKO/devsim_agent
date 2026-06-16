@@ -33,6 +33,8 @@ from tcad_agent.web_app import (
     reject_item_confirmation,
     resolve_artifact_path,
     save_llm_settings_from_payload,
+    save_sentaurus_settings_from_payload,
+    sentaurus_settings_response,
 )
 
 
@@ -140,6 +142,9 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
         if method == "GET" and path == "/api/settings/llm":
             await send_json(send, llm_settings_response())
             return
+        if method == "GET" and path == "/api/settings/sentaurus":
+            await send_json(send, sentaurus_settings_response(settings_path=CONFIG.sentaurus_settings_path))
+            return
         if method == "GET" and path == "/api/worker/status":
             await send_json(send, WORKER.status())
             return
@@ -197,6 +202,9 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
         if path == "/api/settings/llm":
             LAST_LLM_STATUS = None
             await send_json(send, save_llm_settings_from_payload(payload))
+            return
+        if path == "/api/settings/sentaurus":
+            await send_json(send, save_sentaurus_settings_from_payload(payload, settings_path=CONFIG.sentaurus_settings_path))
             return
         item_action = match_item_action(path)
         if item_action:

@@ -30,6 +30,63 @@ class SentaurusRunnerTest(unittest.TestCase):
         path.write_text(body, encoding="utf-8")
         return path
 
+    def write_fake_remote_transport(self) -> tuple[Path, Path, Path]:
+        remote_root = self.root / "fake_remote"
+        remote_root.mkdir()
+        remote_prefix = "/remote/actsoft"
+        fake_ssh = self.write_fake_script(
+            "fake_ssh.py",
+            f"""
+import pathlib
+import subprocess
+import sys
+
+remote_root = pathlib.Path({str(remote_root)!r})
+remote_prefix = {remote_prefix!r}
+command = sys.argv[-1].replace(remote_prefix, str(remote_root))
+completed = subprocess.run(command, shell=True, executable="/bin/bash", capture_output=True, text=True)
+sys.stdout.write(completed.stdout or "")
+sys.stderr.write(completed.stderr or "")
+raise SystemExit(completed.returncode)
+""".lstrip(),
+        )
+        fake_rsync = self.write_fake_script(
+            "fake_rsync.py",
+            f"""
+import pathlib
+import shutil
+import sys
+
+remote_root = pathlib.Path({str(remote_root)!r})
+remote_prefix = {remote_prefix!r}
+args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+source, destination = args[-2], args[-1]
+
+def map_path(raw):
+    raw = raw.rstrip("/")
+    if ":" in raw:
+        _, path = raw.split(":", 1)
+        if path.startswith(remote_prefix):
+            path = path[len(remote_prefix):].lstrip("/")
+        return remote_root / path
+    return pathlib.Path(raw)
+
+src = map_path(source)
+dst = map_path(destination)
+if dst.exists():
+    if dst.is_dir():
+        shutil.rmtree(dst)
+    else:
+        dst.unlink()
+dst.parent.mkdir(parents=True, exist_ok=True)
+if src.is_dir():
+    shutil.copytree(src, dst, symlinks=True)
+else:
+    shutil.copy2(src, dst)
+""".lstrip(),
+        )
+        return fake_ssh, fake_rsync, remote_root
+
     def write_project(self) -> Path:
         project = self.root / "project"
         project.mkdir()
@@ -190,6 +247,169 @@ print("finished")
         self.assertIn("sentaurus_curve_extracted", codes)
         self.assertIn("sentaurus_patches_verified", codes)
 
+    def test_sentaurus_runner_executes_remote_ssh_profile_and_redacts_env_values(self) -> None:
+        project = self.write_project()
+        (project / "fake_remote_sdevice.py").write_text(
+            """
+import pathlib
+import sys
+
+deck = pathlib.Path("device.cmd").read_text(encoding="utf-8")
+if "3e15" not in deck:
+    print("patch missing", file=sys.stderr)
+    raise SystemExit(7)
+pathlib.Path("remote_des.log").write_text("remote Sentaurus wrapper finished\\n", encoding="utf-8")
+pathlib.Path(sys.argv[1]).write_text(
+    "voltage_v,current_a,electric_field_v_per_cm\\n"
+    "0,2e-12,1e4\\n"
+    "-5,2e-9,3e5\\n"
+    "-15,2e-6,9e5\\n",
+    encoding="utf-8",
+)
+print("remote finished")
+""".lstrip(),
+            encoding="utf-8",
+        )
+        fake_ssh, fake_rsync, remote_root = self.write_fake_remote_transport()
+        secret_license = "27000@unit-license-host"
+        profile = SentaurusRuntimeProfile(
+            profile_id="unit_remote_ssh",
+            execution_mode="remote_ssh",
+            commands={"sdevice": sys.executable},
+            allowed_project_roots=[self.root],
+            run_root=self.root / "runs",
+            env={"LM_LICENSE_FILE": secret_license},
+            remote={
+                "host": "fakehost",
+                "remote_run_root": "/remote/actsoft",
+                "ssh_command": f"{sys.executable} {fake_ssh}",
+                "rsync_command": f"{sys.executable} {fake_rsync}",
+            },
+        )
+
+        state = run_sentaurus(
+            SentaurusRunRequest(
+                goal_text="通过远端 SSH profile 跑 Sentaurus，并回拉 CSV 曲线",
+                project_path=project,
+                profile=profile,
+                run_id="remote_ssh_unit",
+                command_args={"sdevice": ["fake_remote_sdevice.py", "sentaurus_extract.csv"]},
+                patches=[
+                    {
+                        "file": "device.cmd",
+                        "pattern": "set DRIFT_DOPING 1e15",
+                        "replacement": "set DRIFT_DOPING 3e15",
+                    }
+                ],
+                timeout_seconds=10,
+            )
+        )
+
+        self.assertEqual(state.status, "completed")
+        metrics = state.quality_report["metrics"]
+        self.assertTrue(metrics["remote_execution"])
+        self.assertEqual(metrics["remote_execution_mode"], "remote_ssh")
+        self.assertEqual(metrics["sentaurus_steps"], 1)
+        self.assertEqual(metrics["curve_points"], 3)
+        self.assertIn("sentaurus_curve_csv", state.artifacts)
+        self.assertTrue((remote_root / "remote_ssh_unit" / "project" / "sentaurus_extract.csv").exists())
+        state_text = Path(state.state_path).read_text(encoding="utf-8")
+        self.assertNotIn(secret_license, state_text)
+        self.assertIn("<redacted>", state_text)
+        self.assertTrue(state.runtime_profile["remote"]["host_configured"])
+
+    def test_sentaurus_runner_executes_remote_slurm_profile(self) -> None:
+        project = self.write_project()
+        fake_ssh, fake_rsync, remote_root = self.write_fake_remote_transport()
+        (project / "fake_remote_sdevice.py").write_text(
+            """
+import pathlib
+import sys
+
+deck = pathlib.Path("device.cmd").read_text(encoding="utf-8")
+if "4e15" not in deck:
+    print("patch missing", file=sys.stderr)
+    raise SystemExit(8)
+pathlib.Path("slurm_des.log").write_text("slurm Sentaurus wrapper finished\\n", encoding="utf-8")
+pathlib.Path(sys.argv[1]).write_text(
+    "voltage_v,current_a,electric_field_v_per_cm\\n"
+    "0,3e-12,1e4\\n"
+    "-8,3e-9,4e5\\n"
+    "-18,3e-6,1e6\\n",
+    encoding="utf-8",
+)
+""".lstrip(),
+            encoding="utf-8",
+        )
+        (project / "fake_sbatch.py").write_text(
+            f"""
+#!/usr/bin/env python3
+import os
+import pathlib
+import subprocess
+import sys
+
+remote_root = pathlib.Path({str(remote_root)!r})
+script = pathlib.Path(sys.argv[-1])
+patched = script.with_suffix(script.suffix + ".local")
+patched.write_text(script.read_text(encoding="utf-8").replace("/remote/actsoft", str(remote_root)), encoding="utf-8")
+os.chmod(patched, 0o755)
+completed = subprocess.run(["bash", str(patched)], capture_output=True, text=True)
+sys.stderr.write(completed.stderr or "")
+print("12345")
+raise SystemExit(0)
+""".lstrip(),
+            encoding="utf-8",
+        )
+        (project / "fake_squeue.py").write_text("#!/usr/bin/env python3\nraise SystemExit(0)\n", encoding="utf-8")
+        (project / "fake_scancel.py").write_text("#!/usr/bin/env python3\nraise SystemExit(0)\n", encoding="utf-8")
+        for name in ["fake_sbatch.py", "fake_squeue.py", "fake_scancel.py"]:
+            (project / name).chmod(0o755)
+        profile = SentaurusRuntimeProfile(
+            profile_id="unit_remote_slurm",
+            execution_mode="remote_slurm",
+            commands={"sdevice": sys.executable},
+            allowed_project_roots=[self.root],
+            run_root=self.root / "runs",
+            remote={
+                "host": "fakehost",
+                "remote_run_root": "/remote/actsoft",
+                "ssh_command": f"{sys.executable} {fake_ssh}",
+                "rsync_command": f"{sys.executable} {fake_rsync}",
+                "slurm_submit_command": "./fake_sbatch.py",
+                "slurm_status_command": "./fake_squeue.py",
+                "slurm_cancel_command": "./fake_scancel.py",
+                "slurm_poll_interval_seconds": 0.01,
+            },
+        )
+
+        state = run_sentaurus(
+            SentaurusRunRequest(
+                goal_text="通过远端 Slurm profile 跑 Sentaurus，并回拉 CSV 曲线",
+                project_path=project,
+                profile=profile,
+                run_id="remote_slurm_unit",
+                command_args={"sdevice": ["fake_remote_sdevice.py", "sentaurus_extract.csv"]},
+                patches=[
+                    {
+                        "file": "device.cmd",
+                        "pattern": "set DRIFT_DOPING 1e15",
+                        "replacement": "set DRIFT_DOPING 4e15",
+                    }
+                ],
+                timeout_seconds=10,
+            )
+        )
+
+        self.assertEqual(state.status, "completed")
+        metrics = state.quality_report["metrics"]
+        self.assertTrue(metrics["remote_execution"])
+        self.assertEqual(metrics["remote_execution_mode"], "remote_slurm")
+        self.assertEqual(metrics["remote_scheduler"], "slurm")
+        self.assertEqual(metrics["sentaurus_steps"], 1)
+        self.assertEqual(metrics["curve_points"], 3)
+        self.assertIn("sentaurus_curve_csv", state.artifacts)
+
     def test_sentaurus_runner_applies_semantic_deck_patches_and_writes_ir(self) -> None:
         project = self.write_structured_project()
         script = self.write_fake_script(
@@ -347,6 +567,17 @@ pathlib.Path("sentaurus_extract.csv").write_text(
         project = self.write_project()
         state_path = self.root / "fake_sentaurus" / "sentaurus_state.json"
         calls: list[dict] = []
+        preflight_calls: list[dict] = []
+
+        def fake_preflight(request: dict) -> dict:
+            preflight_calls.append(request)
+            return {
+                "tool_name": "sentaurus_preflight",
+                "status": "ready",
+                "ready_to_execute_real_sentaurus": True,
+                "output_path": str(self.root / "preflight.json"),
+                "report_path": str(self.root / "preflight.md"),
+            }
 
         def fake_sentaurus(request: dict) -> dict:
             calls.append(request)
@@ -387,7 +618,7 @@ pathlib.Path("sentaurus_extract.csv").write_text(
             agent_root=self.root / "agents",
             execute=True,
             use_llm=False,
-            max_steps=3,
+            max_steps=4,
             sentaurus_project_path=project,
             sentaurus_profile_path=self.root / "sentaurus_profile.json",
             sentaurus_request={"flow": ["sdevice"], "deck_files": ["device.cmd"]},
@@ -398,6 +629,7 @@ pathlib.Path("sentaurus_extract.csv").write_text(
         state = run_autonomous_devsim_agent(
             request,
             runner_registry={
+                "sentaurus_preflight": fake_preflight,
                 "sentaurus_run": fake_sentaurus,
                 "physical_benchmark": fake_benchmark,
             },
@@ -405,11 +637,16 @@ pathlib.Path("sentaurus_extract.csv").write_text(
 
         self.assertEqual(state.status, DevsimAgentStatus.COMPLETED)
         self.assertEqual(state.steps[0].kind, DevsimAgentActionKind.RUN_TOOL)
-        self.assertEqual(state.steps[0].action["tool_name"], "sentaurus_run")
+        self.assertEqual(state.steps[0].action["tool_name"], "sentaurus_preflight")
+        self.assertEqual(state.steps[1].action["tool_name"], "sentaurus_run")
+        self.assertEqual(preflight_calls[0]["project_path"], str(project))
+        self.assertEqual(preflight_calls[0]["profile_path"], str(self.root / "sentaurus_profile.json"))
+        self.assertEqual(preflight_calls[0]["deck_files"], ["device.cmd"])
         self.assertEqual(calls[0]["goal_text"], request.goal_text)
         self.assertEqual(calls[0]["project_path"], str(project))
         self.assertEqual(calls[0]["profile_path"], str(self.root / "sentaurus_profile.json"))
         self.assertEqual(calls[0]["deck_files"], ["device.cmd"])
+        self.assertTrue(state.checkpoint["sentaurus_preflight_ready"])
         self.assertTrue(state.checkpoint["sentaurus_initial_run_done"])
 
 

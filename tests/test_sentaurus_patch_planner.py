@@ -166,7 +166,18 @@ Math {
             encoding="utf-8",
         )
         calls: list[dict] = []
+        preflight_calls: list[dict] = []
         benchmark_sources: list[str] = []
+
+        def fake_preflight(request: dict) -> dict:
+            preflight_calls.append(request)
+            return {
+                "tool_name": "sentaurus_preflight",
+                "status": "ready",
+                "ready_to_execute_real_sentaurus": True,
+                "output_path": str(self.root / "preflight.json"),
+                "report_path": str(self.root / "preflight.md"),
+            }
 
         def fake_sentaurus(request: dict) -> dict:
             calls.append(request)
@@ -219,7 +230,7 @@ Math {
             agent_root=self.root / "agents",
             execute=True,
             use_llm=False,
-            max_steps=5,
+            max_steps=6,
             sentaurus_project_path=project,
             sentaurus_request={"flow": ["sdevice"], "deck_files": ["device.cmd"]},
             enable_experiment_design=True,
@@ -231,6 +242,7 @@ Math {
         state = run_autonomous_devsim_agent(
             request,
             runner_registry={
+                "sentaurus_preflight": fake_preflight,
                 "sentaurus_run": fake_sentaurus,
                 "physical_benchmark": fake_benchmark,
             },
@@ -238,6 +250,7 @@ Math {
 
         self.assertEqual(state.status, DevsimAgentStatus.COMPLETED)
         self.assertIn(DevsimAgentActionKind.PLAN_SENTAURUS_PATCH, [step.kind for step in state.steps])
+        self.assertEqual(preflight_calls[0]["project_path"], str(project))
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1]["sentaurus_patch_candidate_id"], "device.cmd:lifetime:LIFETIME_SCALE")
         self.assertEqual(calls[1]["patches"][0]["operation"], "sentaurus_set_variable")

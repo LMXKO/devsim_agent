@@ -1025,6 +1025,23 @@ def sentaurus_tool_request(request: AutonomousDevsimRequest) -> dict[str, Any]:
     return payload
 
 
+def sentaurus_preflight_request(request: AutonomousDevsimRequest) -> dict[str, Any]:
+    if not request.sentaurus_project_path:
+        raise ValueError("sentaurus_project_path is required for Sentaurus preflight")
+    payload: dict[str, Any] = {
+        "project_path": str(request.sentaurus_project_path),
+    }
+    if request.sentaurus_profile_path:
+        payload["profile_path"] = str(request.sentaurus_profile_path)
+    flow = request.sentaurus_request.get("flow") if isinstance(request.sentaurus_request.get("flow"), list) else None
+    deck_files = request.sentaurus_request.get("deck_files") if isinstance(request.sentaurus_request.get("deck_files"), list) else None
+    if flow:
+        payload["flow"] = flow
+    if deck_files:
+        payload["deck_files"] = deck_files
+    return payload
+
+
 def live_evidence_lookup_gap(state: AutonomousDevsimAgentState) -> dict[str, Any] | None:
     lookup = state.checkpoint.get("public_evidence_lookup")
     if not isinstance(lookup, dict) or not lookup.get("live"):
@@ -1091,6 +1108,33 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             },
             reason="Semantic deck patch did not verify every requested edit against an existing deck binding.",
         )
+    if (
+        request.initial_tool_name == "sentaurus_run"
+        and request.sentaurus_project_path
+        and not state.checkpoint.get("sentaurus_initial_run_done")
+    ):
+        sentaurus_preflight = state.checkpoint.get("sentaurus_preflight")
+        if not state.checkpoint.get("sentaurus_preflight_done"):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.RUN_TOOL,
+                tool_name="sentaurus_preflight",
+                request=sentaurus_preflight_request(request),
+                reason="Preflight the configured local or remote Sentaurus runtime before running the requested Sentaurus initial tool.",
+            )
+        if not bool(state.checkpoint.get("sentaurus_preflight_ready")):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.ASK_USER,
+                request={
+                    "gate": "sentaurus_preflight",
+                    "question": "Sentaurus preflight is blocked. Fix the local/remote profile, license hint, project, deck, or curve extraction contract before the agent runs Sentaurus.",
+                    "preflight_status": state.checkpoint.get("sentaurus_preflight_status"),
+                    "blocked_code": state.checkpoint.get("sentaurus_preflight_blocked_code"),
+                    "preflight_path": state.checkpoint.get("sentaurus_preflight_path"),
+                    "preflight_report_path": state.checkpoint.get("sentaurus_preflight_report_path"),
+                    "preflight": sentaurus_preflight if isinstance(sentaurus_preflight, dict) else {},
+                },
+                reason="Sentaurus preflight failed; pause instead of running an unverified local or remote TCAD environment.",
+            )
     if request.initial_tool_name and not state.checkpoint.get("initial_tool_done"):
         tool_request = dict(request.initial_request)
         if request.initial_tool_name == "sentaurus_run" and request.sentaurus_project_path:
@@ -1105,6 +1149,29 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
             request=tool_request,
             reason="Run the requested initial DEVSIM tool after any deck ingest or semantic patch setup.",
         )
+    sentaurus_preflight = state.checkpoint.get("sentaurus_preflight")
+    if request.sentaurus_project_path and not state.checkpoint.get("sentaurus_initial_run_done"):
+        if not state.checkpoint.get("sentaurus_preflight_done"):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.RUN_TOOL,
+                tool_name="sentaurus_preflight",
+                request=sentaurus_preflight_request(request),
+                reason="Preflight the configured local or remote Sentaurus runtime before running a user-owned project.",
+            )
+        if not bool(state.checkpoint.get("sentaurus_preflight_ready")):
+            return DevsimAgentAction(
+                kind=DevsimAgentActionKind.ASK_USER,
+                request={
+                    "gate": "sentaurus_preflight",
+                    "question": "Sentaurus preflight is blocked. Fix the local/remote profile, license hint, project, deck, or curve extraction contract before the agent runs Sentaurus.",
+                    "preflight_status": state.checkpoint.get("sentaurus_preflight_status"),
+                    "blocked_code": state.checkpoint.get("sentaurus_preflight_blocked_code"),
+                    "preflight_path": state.checkpoint.get("sentaurus_preflight_path"),
+                    "preflight_report_path": state.checkpoint.get("sentaurus_preflight_report_path"),
+                    "preflight": sentaurus_preflight if isinstance(sentaurus_preflight, dict) else {},
+                },
+                reason="Sentaurus preflight failed; pause instead of running an unverified local or remote TCAD environment.",
+            )
     if request.sentaurus_project_path and not state.checkpoint.get("sentaurus_initial_run_done"):
         return DevsimAgentAction(
             kind=DevsimAgentActionKind.RUN_TOOL,
@@ -1564,6 +1631,28 @@ def queued_llm_plan_context(
             "decision_source": "mandatory_agent_policy",
             "reason": "Execute the configured initial tool before later agent planning.",
             "evidence_used": ["initial_tool_request"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.RUN_TOOL
+        and action.tool_name == "sentaurus_preflight"
+        and request.sentaurus_project_path
+        and not state.checkpoint.get("sentaurus_preflight_done")
+    ):
+        return {
+            "source": "sentaurus_preflight_gate",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Preflight the configured local or remote Sentaurus runtime before running the user-owned project.",
+            "evidence_used": ["sentaurus_project_path", "sentaurus_profile_path", "sentaurus_request"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.ASK_USER
+        and action.request.get("gate") == "sentaurus_preflight"
+    ):
+        return {
+            "source": "sentaurus_preflight_blocked",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Sentaurus preflight is blocked, so the agent must pause instead of running an unverified TCAD environment.",
+            "evidence_used": ["sentaurus_preflight"],
         }
     if (
         action.kind == DevsimAgentActionKind.RUN_TOOL
@@ -2261,11 +2350,24 @@ def execute_action(
         if runner is None:
             raise ValueError(f"runner is not registered: {action.tool_name}")
         tool_request = dict(action.request)
+        if action.tool_name == "sentaurus_preflight":
+            preflight_dir = Path(state.agent_dir) / "sentaurus_preflight"
+            tool_request.setdefault("output_path", str(preflight_dir / "sentaurus_preflight.json"))
+            tool_request.setdefault("report_path", str(preflight_dir / "sentaurus_preflight.md"))
         if state.cancel_file:
             tool_request.setdefault("cancel_file", state.cancel_file)
         with temporary_cancel_env(state.cancel_file):
             result = runner(tool_request)
         result_state_path = infer_result_state_path(result)
+        if action.tool_name == "sentaurus_preflight":
+            state.checkpoint["sentaurus_preflight_done"] = True
+            state.checkpoint["sentaurus_preflight_status"] = result.get("status")
+            state.checkpoint["sentaurus_preflight_ready"] = bool(result.get("ready_to_execute_real_sentaurus"))
+            state.checkpoint["sentaurus_preflight_blocked_code"] = result.get("blocked_code")
+            state.checkpoint["sentaurus_preflight_path"] = result.get("output_path")
+            state.checkpoint["sentaurus_preflight_report_path"] = result.get("report_path")
+            state.checkpoint["sentaurus_preflight"] = result
+            return result, None
         if tool_request.get("agent_experiment_candidate_id"):
             pending = state.checkpoint.get("pending_agent_experiment_candidate")
             if isinstance(pending, dict):

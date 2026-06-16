@@ -92,6 +92,8 @@ Useful options:
 - `--require-capability-audit`: record executable/fidelity/signoff coverage before running, including a `runner_promotion_plan` for industrial or surrogate routes;
 - `--resume --agent-id ...`: resume an existing agent state.
 
+For Sentaurus requests with `--sentaurus-project-path`, the first required action is `sentaurus_preflight`. The preflight output is stored as a gate artifact in the agent checkpoint, not as the latest TCAD state. If the local or remote profile is blocked, the agent pauses for user action instead of running the baseline.
+
 ## Queue Integration
 
 The run queue registers `autonomous_devsim_agent`, so a long job can be enqueued:
@@ -109,6 +111,7 @@ The runtime is agent-first, but not unrestricted:
 - one action per step;
 - no shell commands from the model;
 - unsupported tool names are rejected;
+- Sentaurus baseline runs require a passed local/remote preflight gate;
 - high-risk geometry/process/model edits pause unless confirmation is allowed;
 - semantic deck patch results record verified and unverified patches; fallback appends are warnings, not proof that the user deck uses the value;
 - curve-guided mutation refinement respects the same confirmation gate for geometry/process/model changes;

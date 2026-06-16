@@ -234,6 +234,8 @@ python3.11 -m tcad_agent.autonomous_devsim_agent \
 
 The adapter can copy a project into a controlled run workspace, apply verified semantic patches, run configured local commands, parse logs, ingest CSV curves, compare baseline vs mutation, build patch lineage, and return state to the autonomous agent.
 
+Autonomous Sentaurus runs are preflight-gated. The agent checks the local or remote profile before baseline execution and pauses with a blocked code instead of running against an unverified environment.
+
 Preflight a real local/remote Sentaurus profile before execution:
 
 ```bash
@@ -285,6 +287,8 @@ python3.11 -m tcad_agent.sentaurus_contract \
 ```
 
 The fake backend is interface validation only. It is not a Sentaurus physics substitute.
+
+For a cluster or remote workstation, keep a profile outside git with `execution_mode` set to `remote_ssh` or `remote_slurm`. The adapter copies the patched project to the remote run root, executes the configured Sentaurus/site-wrapper commands, pulls CSV/log/artifacts back, and records only a safe profile summary.
 
 ## Tests
 

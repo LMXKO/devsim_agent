@@ -44,6 +44,27 @@ Solve {
         )
         return project
 
+    def write_fake_ssh(self) -> Path:
+        remote_root = self.root / "fake_remote"
+        remote_root.mkdir()
+        path = self.root / "fake_ssh.py"
+        path.write_text(
+            f"""
+import pathlib
+import subprocess
+import sys
+
+remote_root = pathlib.Path({str(remote_root)!r})
+command = sys.argv[-1].replace("/remote/actsoft", str(remote_root))
+completed = subprocess.run(command, shell=True, executable="/bin/bash", capture_output=True, text=True)
+sys.stdout.write(completed.stdout or "")
+sys.stderr.write(completed.stderr or "")
+raise SystemExit(completed.returncode)
+""".lstrip(),
+            encoding="utf-8",
+        )
+        return path
+
     def write_sentaurus_state(self, name: str, *, leakage: float, field: float, baseline: Path | None = None) -> Path:
         run_dir = self.root / name
         curve = run_dir / "curve.csv"
@@ -133,6 +154,43 @@ Solve {
         self.assertIn("sentaurus_command_resolved", codes)
         self.assertIn("sentaurus_deck_ir_parseable", codes)
         self.assertIn("sentaurus_license_env_hint_present", codes)
+
+    def test_preflight_ready_for_remote_ssh_profile_without_leaking_env_values(self) -> None:
+        project = self.write_project()
+        fake_ssh = self.write_fake_ssh()
+        secret_license = "27000@unit-preflight-license-host"
+        result = run_sentaurus_preflight(
+            SentaurusPreflightRequest(
+                project_path=project,
+                profile={
+                    "profile_id": "unit_remote_preflight",
+                    "execution_mode": "remote_ssh",
+                    "commands": {"sdevice": sys.executable},
+                    "allowed_project_roots": [str(self.root)],
+                    "env": {"LM_LICENSE_FILE": secret_license},
+                    "curve_globs": ["*.csv"],
+                    "remote": {
+                        "host": "fakehost",
+                        "remote_run_root": "/remote/actsoft",
+                        "ssh_command": f"{sys.executable} {fake_ssh}",
+                        "rsync_command": sys.executable,
+                    },
+                },
+                deck_files=["device.cmd"],
+                require_license_hint=True,
+            )
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertTrue(result.ready_to_execute_real_sentaurus)
+        codes = {check.code for check in result.checks}
+        self.assertIn("remote_transport_command_resolved", codes)
+        self.assertIn("remote_run_root_writeable", codes)
+        self.assertIn("sentaurus_remote_command_resolved", codes)
+        payload = result.model_dump_json()
+        self.assertNotIn(secret_license, payload)
+        self.assertNotIn("fakehost", payload)
+        self.assertTrue(result.runtime_profile["remote"]["host_configured"])
 
     def test_replay_consumes_existing_sentaurus_states_without_running_solver(self) -> None:
         baseline = self.write_sentaurus_state("baseline", leakage=1e-9, field=8e5)

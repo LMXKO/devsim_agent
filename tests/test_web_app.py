@@ -29,6 +29,8 @@ from tcad_agent.web_app import (
     reject_item_confirmation,
     render_app_html,
     save_llm_settings_from_payload,
+    save_sentaurus_settings_from_payload,
+    sentaurus_settings_response,
     soak_request_from_payload,
 )
 
@@ -147,6 +149,67 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(item["tool_name"], "mission_agent")
         self.assertEqual(item["request"]["max_cycles"], 2)
 
+    def test_sentaurus_settings_inject_remote_profile_for_sentaurus_goal_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_path = root / "sentaurus_settings.json"
+            save_sentaurus_settings_from_payload(
+                {
+                    "project_path": "/user/projects/ldmos",
+                    "profile_path": "/user/.actsoft/remote_sentaurus_profile.json",
+                    "deck_files_text": "device.cmd\nextract.cmd",
+                },
+                settings_path=settings_path,
+            )
+            config = WebAppConfig(
+                root=root,
+                queue_db_path=root / "queue.sqlite",
+                sentaurus_settings_path=settings_path,
+                worker_stop_file=root / "worker.stop",
+            )
+
+            sentaurus_item = enqueue_mission_from_payload(
+                config,
+                {
+                    "goal_text": "用 Sentaurus 远端集群跑 LDMOS BV 并分析曲线",
+                    "execute": False,
+                    "max_cycles": 3,
+                },
+            )
+            devsim_item = enqueue_mission_from_payload(
+                config,
+                {
+                    "goal_text": "用 DEVSIM 跑 PN IV",
+                    "execute": False,
+                    "max_cycles": 3,
+                },
+            )
+
+        nested = sentaurus_item["request"]["autonomous_request"]
+        self.assertEqual(nested["sentaurus_project_path"], "/user/projects/ldmos")
+        self.assertEqual(nested["sentaurus_profile_path"], "/user/.actsoft/remote_sentaurus_profile.json")
+        self.assertEqual(nested["sentaurus_request"]["deck_files"], ["device.cmd", "extract.cmd"])
+        self.assertNotIn("sentaurus_project_path", devsim_item["request"]["autonomous_request"])
+
+    def test_sentaurus_settings_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "sentaurus_settings.json"
+
+            response = save_sentaurus_settings_from_payload(
+                {
+                    "project_path": "/user/projects/ldmos",
+                    "profile_path": "~/.actsoft/sentaurus_profile.json",
+                    "deck_files_text": "device.cmd, inspect.cmd",
+                },
+                settings_path=settings_path,
+            )
+            loaded = sentaurus_settings_response(settings_path=settings_path)
+
+        self.assertEqual(response["status"], "configured")
+        self.assertEqual(loaded["deck_files"], ["device.cmd", "inspect.cmd"])
+        self.assertTrue(loaded["profile_configured"])
+        self.assertTrue(loaded["project_configured"])
+
     def test_render_app_html_contains_workbench_api_hooks(self) -> None:
         html = render_app_html()
 
@@ -162,9 +225,12 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="settingsBtn"', html)
         self.assertIn('id="settingsModal"', html)
         self.assertIn("/api/settings/llm", html)
+        self.assertIn("/api/settings/sentaurus", html)
         self.assertIn("function openSettings", html)
         self.assertIn("function saveSettings", html)
         self.assertIn("留空保存为空", html)
+        self.assertIn('id="sentaurusProjectPath"', html)
+        self.assertIn('id="sentaurusProfilePath"', html)
         self.assertNotIn('id="runOnceBtn"', html)
         self.assertNotIn('id="startWorkerBtn"', html)
         self.assertNotIn('id="stopWorkerBtn"', html)

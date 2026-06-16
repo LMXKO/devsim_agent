@@ -37,6 +37,7 @@ class WebAppConfig:
     root: Path = PROJECT_ROOT / "runs"
     queue_db_path: Path = default_queue_db_path()
     index_db_path: Path | None = None
+    sentaurus_settings_path: Path = PROJECT_ROOT / "runs" / "sentaurus_settings.json"
     host: str = "127.0.0.1"
     port: int = 8765
     rebuild_index: bool = False
@@ -79,6 +80,87 @@ def save_llm_settings_from_payload(payload: dict[str, Any], *, settings_path: Pa
         allow_empty=True,
     )
     return llm_settings_response(settings_path=settings_path)
+
+
+def load_sentaurus_settings(settings_path: Path | None = None) -> dict[str, Any]:
+    path = settings_path or (PROJECT_ROOT / "runs" / "sentaurus_settings.json")
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def parse_deck_files(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not value:
+        return []
+    return [item.strip() for item in re.split(r"[\n,]+", str(value)) if item.strip()]
+
+
+def sentaurus_settings_response(*, settings_path: Path | None = None) -> dict[str, Any]:
+    settings = load_sentaurus_settings(settings_path)
+    deck_files = parse_deck_files(settings.get("deck_files"))
+    project_path = str(settings.get("project_path") or "")
+    profile_path = str(settings.get("profile_path") or "")
+    return {
+        "status": "configured" if project_path and profile_path else "unconfigured",
+        "project_path": project_path,
+        "profile_path": profile_path,
+        "deck_files": deck_files,
+        "deck_files_text": "\n".join(deck_files),
+        "profile_configured": bool(profile_path),
+        "project_configured": bool(project_path),
+    }
+
+
+def save_sentaurus_settings_from_payload(payload: dict[str, Any], *, settings_path: Path | None = None) -> dict[str, Any]:
+    path = settings_path or (PROJECT_ROOT / "runs" / "sentaurus_settings.json")
+    data = {
+        "project_path": str(payload.get("project_path") or payload.get("sentaurus_project_path") or "").strip(),
+        "profile_path": str(payload.get("profile_path") or payload.get("sentaurus_profile_path") or "").strip(),
+        "deck_files": parse_deck_files(payload.get("deck_files") or payload.get("deck_files_text")),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return sentaurus_settings_response(settings_path=path)
+
+
+def goal_requests_sentaurus(goal_text: str) -> bool:
+    lowered = goal_text.lower()
+    tokens = [
+        "sentaurus",
+        "sdevice",
+        "sprocess",
+        "svisual",
+        "inspect",
+        ".cmd",
+        ".tdr",
+        "synopsys",
+        "远端",
+        "集群",
+        "商用tcad",
+        "商用 tcad",
+    ]
+    return any(token in lowered for token in tokens)
+
+
+def apply_sentaurus_settings_to_request(request: dict[str, Any], settings: dict[str, Any]) -> None:
+    project_path = str(settings.get("project_path") or "").strip()
+    profile_path = str(settings.get("profile_path") or "").strip()
+    if project_path and not request.get("sentaurus_project_path"):
+        request["sentaurus_project_path"] = project_path
+    if profile_path and not request.get("sentaurus_profile_path"):
+        request["sentaurus_profile_path"] = profile_path
+    deck_files = parse_deck_files(settings.get("deck_files"))
+    if deck_files:
+        sentaurus_request = request.get("sentaurus_request") if isinstance(request.get("sentaurus_request"), dict) else {}
+        sentaurus_request = dict(sentaurus_request)
+        sentaurus_request.setdefault("deck_files", deck_files)
+        request["sentaurus_request"] = sentaurus_request
 
 
 def utc_timestamp() -> str:
@@ -245,16 +327,25 @@ def soak_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def enqueue_mission_from_payload(config: WebAppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     requested_tool = str(payload.get("tool_name") or payload.get("tool") or "").strip()
+    goal_text = str(payload.get("goal_text") or payload.get("goal") or "").strip()
+    sentaurus_settings = sentaurus_settings_response(settings_path=config.sentaurus_settings_path)
     if requested_tool == "mission_agent":
         request = mission_request_from_payload(payload)
         tool_name = "mission_agent"
         default_tags = ["web", "mission"]
     elif requested_tool == "autonomous_devsim_agent":
         request = autonomous_request_from_payload(payload)
+        if goal_requests_sentaurus(goal_text):
+            apply_sentaurus_settings_to_request(request, sentaurus_settings)
         tool_name = "autonomous_devsim_agent"
         default_tags = ["web", "autonomous"]
     else:
         request = soak_request_from_payload(payload)
+        if goal_requests_sentaurus(goal_text):
+            nested = request.get("autonomous_request") if isinstance(request.get("autonomous_request"), dict) else {}
+            nested = dict(nested)
+            apply_sentaurus_settings_to_request(nested, sentaurus_settings)
+            request["autonomous_request"] = nested
         tool_name = "agent_soak"
         default_tags = ["web", "agent_soak", "autonomous"]
     tags = payload.get("tags") or default_tags
@@ -2396,7 +2487,7 @@ def render_app_html() -> str:
   <div class="modal-backdrop" id="settingsModal" hidden>
     <div class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <div class="settings-head">
-        <div class="settings-title" id="settingsTitle">大模型设置</div>
+        <div class="settings-title" id="settingsTitle">设置</div>
         <button class="settings-close" id="settingsCloseBtn" type="button" aria-label="关闭">×</button>
       </div>
       <form class="settings-form" id="settingsForm">
@@ -2411,6 +2502,18 @@ def render_app_html() -> str:
         <label class="settings-field">
           API Key
           <input id="llmApiKey" name="api_key" type="password" autocomplete="off" placeholder="留空保存为空">
+        </label>
+        <label class="settings-field">
+          Sentaurus 项目
+          <input id="sentaurusProjectPath" name="sentaurus_project_path" type="text" autocomplete="off" placeholder="/path/to/project">
+        </label>
+        <label class="settings-field">
+          Sentaurus Profile
+          <input id="sentaurusProfilePath" name="sentaurus_profile_path" type="text" autocomplete="off" placeholder="~/.actsoft/sentaurus_profile.json">
+        </label>
+        <label class="settings-field">
+          Deck files
+          <input id="sentaurusDeckFiles" name="sentaurus_deck_files" type="text" autocomplete="off" placeholder="device.cmd">
         </label>
         <div class="settings-note" id="settingsNote"></div>
         <div class="settings-actions">
@@ -2439,6 +2542,9 @@ def render_app_html() -> str:
     const llmBaseUrlInput = document.getElementById('llmBaseUrl');
     const llmModelInput = document.getElementById('llmModelName');
     const llmApiKeyInput = document.getElementById('llmApiKey');
+    const sentaurusProjectInput = document.getElementById('sentaurusProjectPath');
+    const sentaurusProfileInput = document.getElementById('sentaurusProfilePath');
+    const sentaurusDeckFilesInput = document.getElementById('sentaurusDeckFiles');
 
     function esc(value) {
       if (value === null || value === undefined) return '';
@@ -2585,11 +2691,21 @@ def render_app_html() -> str:
       settingsModal.hidden = false;
       setSettingsNote('读取中...');
       try {
-        const settings = await api('/api/settings/llm');
+        const [settings, sentaurus] = await Promise.all([
+          api('/api/settings/llm'),
+          api('/api/settings/sentaurus'),
+        ]);
         llmBaseUrlInput.value = settings.base_url || '';
         llmModelInput.value = settings.model || '';
         llmApiKeyInput.value = '';
-        setSettingsNote(settings.api_key_set ? `API Key 已保存：${settings.api_key_preview || '******'}` : 'API Key 当前为空');
+        sentaurusProjectInput.value = sentaurus.project_path || '';
+        sentaurusProfileInput.value = sentaurus.profile_path || '';
+        sentaurusDeckFilesInput.value = sentaurus.deck_files_text || '';
+        const notes = [
+          settings.api_key_set ? `API Key 已保存：${settings.api_key_preview || '******'}` : 'API Key 当前为空',
+          sentaurus.status === 'configured' ? 'Sentaurus 已配置' : 'Sentaurus 未配置',
+        ];
+        setSettingsNote(notes.join(' · '));
         llmBaseUrlInput.focus();
       } catch (error) {
         setSettingsNote(error.message, 'failed');
@@ -2605,7 +2721,15 @@ def render_app_html() -> str:
           model: llmModelInput.value.trim(),
           api_key: llmApiKeyInput.value.trim(),
         };
-        const settings = await api('/api/settings/llm', {method: 'POST', body: JSON.stringify(payload)});
+        const sentaurusPayload = {
+          project_path: sentaurusProjectInput.value.trim(),
+          profile_path: sentaurusProfileInput.value.trim(),
+          deck_files_text: sentaurusDeckFilesInput.value.trim(),
+        };
+        const [settings] = await Promise.all([
+          api('/api/settings/llm', {method: 'POST', body: JSON.stringify(payload)}),
+          api('/api/settings/sentaurus', {method: 'POST', body: JSON.stringify(sentaurusPayload)}),
+        ]);
         setSettingsNote(settings.api_key_set ? '已保存' : '已保存，API Key 为空', 'passed');
         setTimeout(closeSettings, 220);
         await refresh();
