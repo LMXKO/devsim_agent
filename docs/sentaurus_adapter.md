@@ -221,6 +221,16 @@ python3.11 -m tcad_agent.mutation_schema_agent \
 
 The package contains a proposed vocabulary entry, public-evidence gate, local deck variable binding, fixture deck, and semantic patch validation records. It never edits `tcad_agent.mutation_vocabulary` directly and never runs the solver. The autonomous agent can invoke the same action after `sentaurus_patch_planner` returns no actionable candidates for the current state.
 
+Before promoting a package into the static vocabulary, run:
+
+```bash
+python3.11 -m tcad_agent.mutation_schema_promotion \
+  --schema-extension /tmp/mutation_schema_extension/mutation_schema_extension.json \
+  --output-dir /tmp/mutation_schema_promotion
+```
+
+The promotion gate checks the public-evidence gate, local deck validation, fixture validation, schema validity, and duplicate `class_id`. It writes a reviewable `mutation_vocabulary.py` diff and generated test file. Source-code application is blocked unless the operator explicitly runs with `--apply --confirmed`.
+
 ## Mutation Effect Analyzer
 
 Use the analyzer directly to compare a baseline run against a patched run:

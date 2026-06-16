@@ -143,6 +143,8 @@ Each autonomous run also writes `checkpoint.public_evidence_dossier` before plan
 
 If the Sentaurus patch planner exhausts existing mutation classes for the current state, the agent can run `plan_mutation_schema_extension`. That action writes a package under `mutation_schema_extensions/` with a proposed vocabulary entry, public-evidence gate, local deck variable binding, fixture deck, and semantic patch validation record. It is intentionally review-only: it does not edit `mutation_vocabulary.py`, does not run Sentaurus, and does not authorize an unverified new patch.
 
+The next guarded step is `plan_mutation_schema_promotion`, which converts that package into a static vocabulary diff and generated test artifact. The autonomous loop stops for source-code review after this dry run; applying the diff requires an explicit operator action outside the normal TCAD run.
+
 If automatic experiment execution is enabled, a selected low/medium-risk candidate becomes the next `sentaurus_run` request with its patches attached. After that run, `sentaurus_mutation_effect_analyzer` compares the baseline and patched states and writes `sentaurus_mutation_effect_analysis` into the patched state plus `checkpoint.latest_sentaurus_mutation_effect_analysis`. The analysis includes an engineer-style curve review for leakage-window, BV-bracket, knee, and field-peak movement, plus a machine-readable Pareto decision. The same state also receives `sentaurus_lineage_archive.json`, which compactly records the multi-run patch trail, key metrics, Pareto front, and best entry.
 
 The next decision consumes that analysis:

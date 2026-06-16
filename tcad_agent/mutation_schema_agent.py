@@ -183,7 +183,7 @@ def contexts_from_request(
 
 
 def relevant_target_tokens(request: MutationSchemaExtensionRequest) -> set[str]:
-    source = " ".join([request.goal_text, request.proposed_target or ""])
+    source = request.proposed_target or request.goal_text
     stop = {
         "THE",
         "AND",
@@ -426,6 +426,10 @@ def build_schema_candidate(
 ) -> MutationSchemaCandidate:
     tags, primary, tradeoff, expected, stops = metrics_from_goal(request.goal_text)
     next_value = scaled_value_text(binding.value, request.goal_text) or binding.value
+    binding_token_group = [token for token in token_words(binding.variable) if not token.isdigit()]
+    seed_token_groups = seed["variable_name_tokens"]
+    if binding_token_group and not any(set(group).issubset(set(binding_token_group)) for group in seed_token_groups):
+        seed_token_groups = [binding_token_group]
     patch = {
         "file": binding.file,
         "operation": "sentaurus_set_variable",
@@ -463,7 +467,7 @@ def build_schema_candidate(
         "target_kind": seed["target_kind"],
         "default_risk_level": seed["default_risk_level"],
         "requires_user_confirmation": seed["requires_user_confirmation"],
-        "variable_name_tokens": seed["variable_name_tokens"],
+        "variable_name_tokens": seed_token_groups,
         "goal_tags": tags,
         "primary_metrics": primary,
         "tradeoff_metrics": tradeoff,
@@ -483,7 +487,7 @@ def build_schema_candidate(
         target_kind=seed["target_kind"],
         default_risk_level=seed["default_risk_level"],
         requires_user_confirmation=bool(seed["requires_user_confirmation"]),
-        variable_name_tokens=seed["variable_name_tokens"],
+        variable_name_tokens=seed_token_groups,
         goal_tags=tags,
         primary_metrics=primary,
         tradeoff_metrics=tradeoff,

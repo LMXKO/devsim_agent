@@ -339,6 +339,27 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertTrue(Path(state.checkpoint["mutation_schema_extension_path"]).exists())
         self.assertTrue(state.checkpoint["pending_mutation_schema_extension_candidate"]["ready_for_review"])
 
+        state.checkpoint["sentaurus_initial_run_done"] = True
+        next_action = deterministic_action(state, request)
+        self.assertEqual(next_action.kind, DevsimAgentActionKind.PLAN_MUTATION_SCHEMA_PROMOTION)
+
+        promotion_result, promotion_state_path = execute_action(
+            state,
+            request,
+            next_action,
+            runner_registry={},
+        )
+
+        self.assertEqual(promotion_result["status"], "ready_for_confirmation")
+        self.assertEqual(promotion_state_path, str(state_path))
+        self.assertEqual(state.checkpoint["mutation_schema_promotion_runs"], 1)
+        self.assertTrue(Path(state.checkpoint["mutation_schema_promotion_path"]).exists())
+        self.assertTrue(Path(state.checkpoint["latest_mutation_schema_promotion"]["artifacts"]["mutation_vocabulary_patch"]).exists())
+
+        review_action = deterministic_action(state, request)
+        self.assertEqual(review_action.kind, DevsimAgentActionKind.ASK_USER)
+        self.assertIn("Mutation schema promotion is ready", review_action.request["question"])
+
     def test_plan_only_records_next_tool_action(self) -> None:
         request = AutonomousDevsimRequest(
             goal_text="Run PN IV autonomously",

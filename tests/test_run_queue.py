@@ -241,6 +241,18 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(result["status"], "no_deck_context")
         self.assertTrue((self.root / "schema_agent" / "mutation_schema_extension.json").exists())
 
+    def test_default_mutation_schema_promotion_runner_is_registered(self) -> None:
+        result = default_runner_registry()["mutation_schema_promotion"](
+            {
+                "schema_extension_path": str(self.root / "missing_extension.json"),
+                "output_dir": str(self.root / "schema_promotion"),
+            }
+        )
+
+        self.assertEqual(result["tool_name"], "mutation_schema_promotion")
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue((self.root / "schema_promotion" / "mutation_schema_promotion.json").exists())
+
     def test_worker_pauses_autonomous_agent_waiting_for_user(self) -> None:
         enqueue_run(
             self.db,

@@ -267,6 +267,15 @@ python3.11 -m tcad_agent.mutation_schema_agent \
 
 The schema agent writes public-evidence, deck-binding, fixture, and semantic-patch validation artifacts. It does not modify `mutation_vocabulary.py` or execute a solver.
 
+Gate a schema package before static vocabulary promotion:
+
+```bash
+python3.11 -m tcad_agent.mutation_schema_promotion \
+  --schema-extension runs/mutation_schema_extensions/mutation_schema_extension.json
+```
+
+This writes a reviewable `mutation_vocabulary.py` diff plus a generated test artifact. Applying it requires explicit `--apply --confirmed`.
+
 When Sentaurus is not installed, validate only the agent-side contract:
 
 ```bash
