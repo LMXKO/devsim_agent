@@ -160,6 +160,31 @@ The first autonomous action becomes `sentaurus_run`. With `--enable-experiment-d
 
 After that patched run, `sentaurus_mutation_effect_analyzer` compares baseline vs patched state and writes its decision back into the patched state. If experiment budget remains, `sentaurus_patch_refiner` consumes that decision: useful directions become smaller verified follow-up patches, failed directions switch to a different verified target, and Pareto tradeoffs pause for review. Every patched Sentaurus state also writes `sentaurus_lineage_archive.json` with the multi-run patch/effect/metric trail, Pareto front, and best entry. High-risk geometry/process/model classes and tradeoff regressions remain confirmation-gated.
 
+## Real-Ready Preflight
+
+Before running a real user-owned Sentaurus project, gate it explicitly:
+
+```bash
+python3.11 -m tcad_agent.sentaurus_preflight \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --profile ~/.actsoft/sentaurus_profile.json \
+  --deck-file device.cmd \
+  --output /tmp/sentaurus_preflight.json \
+  --report /tmp/sentaurus_preflight.md
+```
+
+The preflight checks that the external profile loads, flow commands resolve, project paths stay inside allowed roots, deck files parse through the conservative IR, license-related environment hints are present, and CSV extraction globs are configured. It records only safe profile summaries and environment key names, never license values.
+
+When the machine is not ready, use the real-project long-run gate:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id real_sentaurus_live_llm_project_soak
+```
+
+This produces a blocked JSON/report such as `blocked_missing_sentaurus_installation`, rather than pretending to run Sentaurus.
+
 ## Patch Planner
 
 Use the patch planner directly when Sentaurus is unavailable or when you want a reviewable work package before running:
@@ -229,6 +254,21 @@ python3.11 -m tcad_agent.sentaurus_lineage \
 ```
 
 The archive follows `repair_context.baseline_state_path`, records compact metrics, candidate patches, analyzer decisions, overlays, Pareto front membership, and the current best entry.
+
+## Replay Harness
+
+When Sentaurus is not installed but you have exported adapter states, logs, and CSV curves from another machine, replay them without running a solver:
+
+```bash
+python3.11 -m tcad_agent.sentaurus_replay \
+  --baseline /runs/sentaurus_base/sentaurus_state.json \
+  --mutation /runs/sentaurus_patch/sentaurus_state.json \
+  --goal "降低漏电，同时不要牺牲 BV/Ron/field peak" \
+  --candidate-json '{"candidate_id":"device.cmd:lifetime:LIFETIME_SCALE"}' \
+  --output-dir /tmp/sentaurus_replay
+```
+
+Replay validates the state contract, checks curve availability, runs mutation-effect analysis when baseline and mutation states are provided, and builds a lineage archive. It sets `sentaurus_replay_only=true` and `tcad_solver_invoked=false` in its own summary so replay evidence cannot be confused with a fresh Sentaurus execution.
 
 ## Test Boundary
 

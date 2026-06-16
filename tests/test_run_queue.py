@@ -216,6 +216,19 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(runner.call_args.args[0].goal_text, "长时间自主跑 PN IV，失败时继续修复并给结论")
         self.assertIn("runner_registry", runner.call_args.kwargs)
 
+    def test_default_sentaurus_preflight_and_replay_runners_are_registered(self) -> None:
+        registry = default_runner_registry()
+
+        preflight = registry["sentaurus_preflight"]({"output_path": str(self.root / "preflight.json")})
+        replay = registry["sentaurus_replay"]({"output_dir": str(self.root / "replay")})
+
+        self.assertEqual(preflight["status"], "blocked")
+        self.assertEqual(preflight["tool_name"], "sentaurus_preflight")
+        self.assertFalse(preflight["ready_to_execute_real_sentaurus"])
+        self.assertEqual(replay["status"], "failed")
+        self.assertEqual(replay["tool_name"], "sentaurus_replay")
+        self.assertTrue((self.root / "replay" / "sentaurus_replay_state.json").exists())
+
     def test_worker_pauses_autonomous_agent_waiting_for_user(self) -> None:
         enqueue_run(
             self.db,

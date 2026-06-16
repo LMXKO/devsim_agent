@@ -40,6 +40,7 @@ from tcad_agent.run_queue import (
     run_queue_worker,
 )
 from tcad_agent.sentaurus_deck import apply_sentaurus_semantic_patch_text
+from tcad_agent.sentaurus_preflight import SentaurusPreflightRequest, run_sentaurus_preflight
 from tcad_agent.task_spec import PROJECT_ROOT
 
 
@@ -973,6 +974,144 @@ def scenario_public_sentaurus_live_llm_contract_soak(
             "lineage_entries": len(lineage.get("entries") or []),
             "mutation_effect_decision": mutation_effect.get("decision"),
             "benchmark_source_state_path": benchmark_payload.get("source_state_path"),
+        },
+    )
+
+
+def real_sentaurus_project_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
+    raw = request.real_agent_request.get("real_sentaurus_live_llm_project_soak")
+    options = raw if isinstance(raw, dict) else {}
+    return {
+        "duration_hours": float(options.get("duration_hours", 0.0)),
+        "max_steps": max(6, int(options.get("max_steps", max(request.agent_max_steps, 6)))),
+        "step_slice": max(1, int(options.get("step_slice", 2))),
+        "project_path": options.get("project_path"),
+        "profile_path": options.get("profile_path"),
+        "profile": options.get("profile") if isinstance(options.get("profile"), dict) else None,
+        "sentaurus_request": options.get("sentaurus_request") if isinstance(options.get("sentaurus_request"), dict) else {},
+        "deck_files": options.get("deck_files") if isinstance(options.get("deck_files"), list) else None,
+        "flow": options.get("flow") if isinstance(options.get("flow"), list) else None,
+        "require_license_hint": bool(options.get("require_license_hint", True)),
+    }
+
+
+def scenario_real_sentaurus_live_llm_project_soak(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    options = real_sentaurus_project_soak_options(request)
+    for stale_dir in ["preflight", "soak"]:
+        target = scenario_dir / stale_dir
+        if target.exists():
+            shutil.rmtree(target)
+    sentaurus_request = dict(options["sentaurus_request"])
+    deck_files = options["deck_files"] or sentaurus_request.get("deck_files") or []
+    flow = options["flow"] or sentaurus_request.get("flow") or ["sdevice"]
+    project_path = Path(str(options["project_path"])).expanduser() if options["project_path"] else None
+    profile_path = Path(str(options["profile_path"])).expanduser() if options["profile_path"] else None
+    preflight_output = scenario_dir / "preflight" / "sentaurus_preflight.json"
+    preflight_report = scenario_dir / "preflight" / "sentaurus_preflight.md"
+    preflight = run_sentaurus_preflight(
+        SentaurusPreflightRequest(
+            project_path=project_path,
+            profile_path=profile_path,
+            profile=options["profile"],
+            flow=[str(item) for item in flow],
+            deck_files=[str(item) for item in deck_files],
+            require_license_hint=options["require_license_hint"],
+            output_path=preflight_output,
+            report_path=preflight_report,
+        )
+    )
+    if preflight.status == "blocked":
+        assertions = [
+            require(preflight.status == "blocked", "real Sentaurus project soak fails loud when installation/profile/project is missing"),
+            require(not preflight.ready_to_execute_real_sentaurus, "preflight did not mark real Sentaurus ready"),
+            require(bool(preflight.blocked_code), "preflight emitted a machine-readable blocked code"),
+            require(path_exists(preflight.output_path), "preflight JSON artifact exists"),
+            require(path_exists(preflight.report_path), "preflight markdown report exists"),
+        ]
+        return (
+            assertions,
+            [
+                artifact("sentaurus_preflight", preflight.output_path),
+                artifact("sentaurus_preflight_report", preflight.report_path, kind="markdown"),
+            ],
+            {
+                "preflight_status": preflight.status,
+                "blocked_code": preflight.blocked_code,
+                "ready_to_execute_real_sentaurus": preflight.ready_to_execute_real_sentaurus,
+                "check_codes": [check.code for check in preflight.checks],
+                "next_action": preflight.next_action,
+            },
+        )
+
+    live_llm_config_or_raise()
+    sentaurus_request.setdefault("flow", flow)
+    sentaurus_request.setdefault("deck_files", deck_files)
+    sentaurus_request.setdefault("timeout_seconds", 3600.0)
+    sentaurus_request.setdefault("run_root", str(scenario_dir / "real_sentaurus_runs"))
+    soak_id = "real_sentaurus_live_llm_project_soak"
+    soak_state = run_agent_soak(
+        AgentSoakRequest(
+            goal_text=(
+                "Live LLM must operate the real user-owned Sentaurus project: preflight passed, "
+                "run baseline, plan verified semantic patches, execute patched runs, compare real curves/logs, archive lineage, benchmark, and stop."
+            ),
+            soak_id=soak_id,
+            soak_root=scenario_dir / "soak",
+            execute=True,
+            duration_hours=options["duration_hours"],
+            max_steps=options["max_steps"],
+            step_slice=options["step_slice"],
+            poll_interval_seconds=0.0,
+            memory_path=scenario_dir / "agent_memory.jsonl",
+            compile_mission_spec=False,
+            enable_recovery=False,
+            enable_curve_guidance=False,
+            auto_execute_curve_guidance=False,
+            autonomous_request={
+                "sentaurus_project_path": str(project_path) if project_path else None,
+                "sentaurus_profile_path": str(profile_path) if profile_path else None,
+                "sentaurus_request": sentaurus_request,
+                "use_llm": True,
+                "allow_llm_fallback": False,
+                "allow_user_confirmation_actions": True,
+                "enable_experiment_design": True,
+                "max_experiment_design_rounds": 1,
+                "auto_execute_experiment_design": True,
+                "generate_report": False,
+                "generate_dashboard": False,
+            },
+        )
+    )
+    final_state = Path(str(soak_state.final_state_path)) if soak_state.final_state_path else None
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
+    final_metrics = ((final_payload.get("quality_report") or {}).get("metrics") or {}) if isinstance(final_payload.get("quality_report"), dict) else {}
+    assertions = [
+        require(soak_state.status == AgentSoakStatus.COMPLETED, "real Sentaurus project soak completed after preflight"),
+        require(soak_state.fallback_decisions == 0, "real Sentaurus project soak used no deterministic fallback"),
+        require(final_payload.get("tool_name") == "sentaurus_run", "final state is a real Sentaurus adapter state"),
+        require(bool(final_metrics.get("tcad_solver_invoked")), "final state records real TCAD solver invocation"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("sentaurus_preflight", preflight.output_path),
+            artifact("sentaurus_preflight_report", preflight.report_path, kind="markdown"),
+            artifact("soak_state", soak_state.state_path),
+            artifact("agent_state", soak_state.agent_state_path),
+            artifact("final_sentaurus_state", final_state),
+        ],
+        {
+            "preflight_status": preflight.status,
+            "soak_status": soak_state.status,
+            "completed_steps": soak_state.completed_steps,
+            "model_decisions": soak_state.model_decisions,
+            "fallback_decisions": soak_state.fallback_decisions,
+            "final_state_path": str(final_state) if final_state else None,
         },
     )
 
@@ -2307,6 +2446,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "public_sentaurus_live_llm_contract_soak": (
         "A real configured LLM drives agent_soak through the public Sentaurus adapter contract",
         scenario_public_sentaurus_live_llm_contract_soak,
+    ),
+    "real_sentaurus_live_llm_project_soak": (
+        "Preflight-gated live LLM soak for a user-owned real Sentaurus project",
+        scenario_real_sentaurus_live_llm_project_soak,
     ),
     "natural_language_power_marathon": (
         "Natural-language goal drives Power MOSFET DEVSIM, signoff, cockpit, resume, and cancel",

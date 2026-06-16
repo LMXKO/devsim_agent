@@ -22,12 +22,14 @@ class LongRunValidationTest(unittest.TestCase):
         self.assertIn("public_curve_decision_live_llm_agent_loop", SCENARIO_REGISTRY)
         self.assertIn("public_curve_decision_live_llm_devsim_soak", SCENARIO_REGISTRY)
         self.assertIn("public_sentaurus_live_llm_contract_soak", SCENARIO_REGISTRY)
+        self.assertIn("real_sentaurus_live_llm_project_soak", SCENARIO_REGISTRY)
         self.assertNotIn("public_user_deck_live_llm_acceptance", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_user_deck_live_llm_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_curve_decision_live_llm_eval", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_curve_decision_live_llm_agent_loop", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_curve_decision_live_llm_devsim_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
         self.assertNotIn("public_sentaurus_live_llm_contract_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
+        self.assertNotIn("real_sentaurus_live_llm_project_soak", DEFAULT_AUTONOMOUS_E2E_SCENARIOS)
 
     def test_runs_queue_daemon_benchmarks_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

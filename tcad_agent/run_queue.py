@@ -667,6 +667,8 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.sentaurus_mutation_effect import SentaurusMutationEffectRequest, analyze_sentaurus_mutation_effect
     from tcad_agent.sentaurus_patch_planner import SentaurusPatchPlannerRequest, plan_sentaurus_patches
     from tcad_agent.sentaurus_patch_refiner import SentaurusPatchRefinerRequest, build_sentaurus_patch_refinement_plan
+    from tcad_agent.sentaurus_preflight import SentaurusPreflightRequest, run_sentaurus_preflight
+    from tcad_agent.sentaurus_replay import SentaurusReplayRequest, run_sentaurus_replay
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
     from tcad_agent.task_spec import TaskSpec, load_task_spec
@@ -880,6 +882,12 @@ def default_runner_registry() -> dict[str, Runner]:
         "experiment_conclusion": experiment_conclusion_runner,
         "sentaurus_run": lambda request: result_to_dict(
             run_sentaurus(SentaurusRunRequest.model_validate(request))
+        ),
+        "sentaurus_preflight": lambda request: result_to_dict(
+            run_sentaurus_preflight(SentaurusPreflightRequest.model_validate(request))
+        ),
+        "sentaurus_replay": lambda request: result_to_dict(
+            run_sentaurus_replay(SentaurusReplayRequest.model_validate(request))
         ),
         "sentaurus_mutation_effect_analyzer": lambda request: result_to_dict(
             analyze_sentaurus_mutation_effect(SentaurusMutationEffectRequest.model_validate(request))

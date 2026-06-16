@@ -154,6 +154,17 @@ python3.11 -m tcad_agent.long_run_validation \
 
 This scenario uses the public Sentaurus fixture corpus and the real local adapter path with an interface-only fake backend. It verifies that a live LLM can drive `agent_soak` through baseline execution, verified semantic patch planning, patched adapter execution, mutation-effect analysis, lineage archive generation, benchmark, and stop without committing proprietary software, licenses, PDKs, or commercial decks.
 
+Run the real Sentaurus project gate:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id real_sentaurus_live_llm_project_soak \
+  --validation-id real_sentaurus_live_llm_project_soak
+```
+
+Without a real Sentaurus installation/profile/project, this scenario completes as a fail-loud preflight gate with `blocked_missing_sentaurus_installation` or another machine-readable blocked code. With a real external profile and project supplied through `--real-agent-request-json`, the same scenario proceeds into live-LLM `agent_soak` execution.
+
 Run the sliced live-LLM soak scenario:
 
 ```bash

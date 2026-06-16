@@ -234,6 +234,27 @@ python3.11 -m tcad_agent.autonomous_devsim_agent \
 
 The adapter can copy a project into a controlled run workspace, apply verified semantic patches, run configured local commands, parse logs, ingest CSV curves, compare baseline vs mutation, build patch lineage, and return state to the autonomous agent.
 
+Preflight a real local/remote Sentaurus profile before execution:
+
+```bash
+python3.11 -m tcad_agent.sentaurus_preflight \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --profile ~/.actsoft/sentaurus_profile.json \
+  --deck-file device.cmd
+```
+
+When Sentaurus is not installed, the real-project soak fails loud with a blocked preflight report:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id real_sentaurus_live_llm_project_soak
+```
+
+Replay existing Sentaurus states/logs/curves without running Sentaurus:
+
+```bash
+python3.11 -m tcad_agent.sentaurus_replay --baseline path/to/baseline/sentaurus_state.json --mutation path/to/mutation/sentaurus_state.json
+```
+
 When Sentaurus is not installed, validate only the agent-side contract:
 
 ```bash
