@@ -143,8 +143,72 @@ class AutonomousDevsimAgentTest(unittest.TestCase):
         self.assertEqual(action.kind, DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK)
         self.assertEqual(action.source_state_path, str(latest_state))
         self.assertFalse(decision["fallback_used"])
-        self.assertEqual(decision["source_state_guardrail"]["original_source_state_path"], str(old_state))
-        self.assertEqual(decision["source_state_guardrail"]["latest_state_path"], str(latest_state))
+        self.assertEqual(decision["decision_source"], "mandatory_agent_policy")
+        self.assertEqual(decision["guarded_action_source"], "physical_benchmark_gate")
+        self.assertEqual(decision["llm_requested_action"]["source_state_path"], str(old_state))
+
+    def test_sentaurus_patch_plan_policy_overrides_premature_benchmark(self) -> None:
+        project = self.root / "sentaurus_project"
+        project.mkdir()
+        (project / "device.cmd").write_text("set LIFETIME_SCALE 1.0\n", encoding="utf-8")
+        state_path = self.root / "sentaurus" / "sentaurus_state.json"
+        write_json(
+            state_path,
+            {
+                "tool_name": "sentaurus_run",
+                "status": "completed",
+                "run_id": "sentaurus_baseline",
+                "project_copy_path": str(project),
+                "request": {"deck_files": ["device.cmd"]},
+                "quality_report": {
+                    "status": "passed",
+                    "metrics": {"solver_backend": "sentaurus", "tcad_solver_invoked": True, "curve_points": 3},
+                },
+                "final_summary": {"artifacts": {"project_copy": str(project)}, "metrics": {"solver_backend": "sentaurus"}},
+            },
+        )
+        state = AutonomousDevsimAgentState(
+            status=DevsimAgentStatus.RUNNING,
+            agent_id="agent_sentaurus_policy",
+            agent_dir=str(self.root / "agents" / "agent_sentaurus_policy"),
+            goal_text="Reduce Sentaurus reverse leakage with a verified lifetime patch.",
+            created_at="2026-06-15T00:00:00Z",
+            updated_at="2026-06-15T00:00:00Z",
+            execute=True,
+            max_steps=4,
+            latest_state_path=str(state_path),
+            checkpoint={"sentaurus_initial_run_done": True, "public_evidence_gate_done": True},
+        )
+        request = AutonomousDevsimRequest(
+            goal_text=state.goal_text,
+            execute=True,
+            use_llm=True,
+            allow_llm_fallback=False,
+            sentaurus_project_path=project,
+            sentaurus_request={"deck_files": ["device.cmd"]},
+            enable_experiment_design=True,
+            max_experiment_design_rounds=1,
+            generate_report=False,
+            generate_dashboard=False,
+        )
+        client = FakeAgentClient(
+            json.dumps(
+                {
+                    "kind": "run_physical_benchmark",
+                    "reason": "Try to benchmark before patch planning.",
+                    "source_state_path": str(state_path),
+                }
+            )
+        )
+
+        action, decision = decide_next_action(state, request, llm_client=client)
+
+        self.assertEqual(action.kind, DevsimAgentActionKind.PLAN_SENTAURUS_PATCH)
+        self.assertFalse(decision["fallback_used"])
+        self.assertEqual(decision["decision_source"], "mandatory_agent_policy")
+        self.assertEqual(decision["guarded_action_source"], "sentaurus_patch_plan")
+        self.assertTrue(decision["queued_plan_enforced"])
+        self.assertEqual(decision["llm_requested_action"]["kind"], "run_physical_benchmark")
 
     def test_plan_only_records_next_tool_action(self) -> None:
         request = AutonomousDevsimRequest(

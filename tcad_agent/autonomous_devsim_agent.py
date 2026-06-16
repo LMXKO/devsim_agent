@@ -1435,11 +1435,16 @@ def parse_agent_decision_json(raw: str) -> dict[str, Any] | None:
     return parsed
 
 
-def queued_llm_plan_context(state: AutonomousDevsimAgentState, action: DevsimAgentAction) -> dict[str, Any] | None:
+def queued_llm_plan_context(
+    state: AutonomousDevsimAgentState,
+    request: AutonomousDevsimRequest,
+    action: DevsimAgentAction,
+) -> dict[str, Any] | None:
     pending_curve = state.checkpoint.get("pending_curve_decision_plan")
     if isinstance(pending_curve, dict) and action.request.get("curve_decision_plan_id"):
         return {
             "source": "pending_curve_decision_plan",
+            "decision_source": "queued_llm_plan",
             "reason": "Execute the queued action selected by the prior LLM curve-decision plan.",
             "model": pending_curve.get("model"),
             "raw_response": pending_curve.get("raw_response"),
@@ -1452,11 +1457,74 @@ def queued_llm_plan_context(state: AutonomousDevsimAgentState, action: DevsimAge
         latest_curve_plan = latest_curve_plan if isinstance(latest_curve_plan, dict) else {}
         return {
             "source": "pending_guidance_patch",
+            "decision_source": "queued_llm_plan",
             "reason": "Execute the runnable patch request produced from the prior LLM curve-decision plan.",
             "model": latest_curve_plan.get("model"),
             "raw_response": latest_curve_plan.get("raw_response"),
             "queued_plan": pending_guidance,
             "evidence_used": latest_curve_plan.get("evidence_used") or ["pending_guidance_patch"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.RUN_TOOL
+        and request.initial_tool_name
+        and action.tool_name == request.initial_tool_name
+        and not state.checkpoint.get("initial_tool_done")
+    ):
+        return {
+            "source": "initial_tool_request",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Execute the configured initial tool before later agent planning.",
+            "evidence_used": ["initial_tool_request"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.RUN_TOOL
+        and action.tool_name == "sentaurus_run"
+        and request.sentaurus_project_path
+        and not state.checkpoint.get("sentaurus_initial_run_done")
+    ):
+        return {
+            "source": "sentaurus_initial_run",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Run the user-owned Sentaurus project baseline before patch planning or benchmark conclusions.",
+            "evidence_used": ["sentaurus_project_path", "sentaurus_request"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.PLAN_SENTAURUS_PATCH
+        and request.sentaurus_project_path
+        and state.latest_state_path
+        and state.checkpoint.get("sentaurus_patch_plan_source_path") != state.latest_state_path
+    ):
+        return {
+            "source": "sentaurus_patch_plan",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Plan verified Sentaurus semantic patches before benchmark conclusions.",
+            "evidence_used": ["sentaurus_state", "sentaurus_deck_ir", "public_evidence_dossier"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.RUN_TOOL
+        and action.tool_name == "sentaurus_run"
+        and request.sentaurus_project_path
+        and action.request.get("sentaurus_patch_candidate_id")
+    ):
+        return {
+            "source": "pending_sentaurus_patch_candidate",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Execute the selected verified Sentaurus patch candidate before later conclusions.",
+            "evidence_used": ["pending_sentaurus_patch_candidate"],
+        }
+    if action.kind == DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK and state.latest_state_path and not state.checkpoint.get("physical_benchmark_done"):
+        return {
+            "source": "physical_benchmark_gate",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Benchmark the latest produced TCAD state before stopping.",
+            "evidence_used": ["latest_state_path"],
+        }
+    if action.kind == DevsimAgentActionKind.STOP_SUCCESS and state.checkpoint.get("physical_benchmark_done"):
+        return {
+            "source": "completion_gate",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Stop after the required benchmark and requested artifacts are complete.",
+            "evidence_used": ["physical_benchmark_done"],
         }
     return None
 
@@ -1477,8 +1545,9 @@ def enforce_queued_llm_plan_decision(
         "schema_version": "actsoft.tcad.autonomous_devsim_agent_decision.v1",
         "status": "completed",
         "fallback_used": False,
-        "decision_source": "queued_llm_plan",
+        "decision_source": queued_context.get("decision_source") or "queued_llm_plan",
         "queued_plan_source": queued_context.get("source"),
+        "guarded_action_source": queued_context.get("source"),
         "queued_plan_enforced": requested_dump != queued_dump,
         "model": getattr(getattr(chat_client, "config", None), "model", None) or queued_context.get("model"),
         "raw_response": raw_response or queued_context.get("raw_response"),
@@ -1544,7 +1613,7 @@ def decide_next_action(
     if not request.use_llm:
         return fallback, decision
     chat_client = llm_client or LLMClient()
-    queued_context = queued_llm_plan_context(state, fallback)
+    queued_context = queued_llm_plan_context(state, request, fallback)
     specs = tool_specs or build_agent_tool_specs()
     context = build_agent_context(state, request, tool_specs=specs)
     system, user = build_agent_messages(context)
@@ -1618,6 +1687,7 @@ def decide_next_action(
         if request.allow_llm_fallback:
             return fallback, decision
         raise ValueError(safety_failure)
+    llm_requested_action = action
     action, source_guardrail = bind_action_to_latest_state(action, state)
     if queued_context:
         return fallback, enforce_queued_llm_plan_decision(
@@ -1626,7 +1696,7 @@ def decide_next_action(
             chat_client=chat_client,
             raw_response=raw,
             parsed_response=parsed,
-            requested_action=action,
+            requested_action=llm_requested_action,
         )
     decision.update(
         {

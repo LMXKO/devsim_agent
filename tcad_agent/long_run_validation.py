@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import time
 from datetime import datetime
 from enum import Enum
@@ -796,6 +797,182 @@ def scenario_sentaurus_autonomous_refinement(
             "patch_values": patch_values,
             "lineage_entries": len(lineage.get("entries") or []),
             "best_lineage_entry": (lineage.get("best_entry") or {}).get("lineage_id"),
+        },
+    )
+
+
+def live_llm_sentaurus_contract_soak_options(request: LongRunValidationRequest) -> dict[str, Any]:
+    raw = request.real_agent_request.get("public_sentaurus_live_llm_contract_soak")
+    options = raw if isinstance(raw, dict) else {}
+    return {
+        "duration_hours": float(options.get("duration_hours", 0.0)),
+        "max_steps": max(6, int(options.get("max_steps", max(request.agent_max_steps, 6)))),
+        "step_slice": max(1, int(options.get("step_slice", 2))),
+    }
+
+
+def sentaurus_contract_fake_profile(*, source_project: Path, run_root: Path) -> dict[str, Any]:
+    return {
+        "profile_id": "public_sentaurus_contract_fake_backend",
+        "commands": {"sdevice": sys.executable},
+        "allowed_project_roots": [str(source_project.parent.resolve())],
+        "run_root": str(run_root.resolve()),
+        "env": {"PYTHONPATH": str(PROJECT_ROOT)},
+        "default_flow": ["sdevice"],
+        "curve_globs": ["*.csv", "*_extract.csv", "*_iv.csv"],
+        "artifact_globs": ["*.log", "*_des.log", "*.plt", "*_des.plt", "*.csv", "*.cmd"],
+    }
+
+
+def scenario_public_sentaurus_live_llm_contract_soak(
+    scenario_dir: Path,
+    request: LongRunValidationRequest,
+    queue_db: Path,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    del queue_db
+    live_llm_config_or_raise()
+    options = live_llm_sentaurus_contract_soak_options(request)
+    for stale_dir in ["source_project", "sentaurus_adapter_runs", "soak"]:
+        target = scenario_dir / stale_dir
+        if target.exists():
+            shutil.rmtree(target)
+    fixture = PROJECT_ROOT / "tcad_agent" / "examples" / "sentaurus_fixtures" / "power_diode_bv"
+    source_project = scenario_dir / "source_project"
+    shutil.copytree(fixture, source_project)
+    adapter_run_root = scenario_dir / "sentaurus_adapter_runs"
+    sentaurus_request = {
+        "flow": ["sdevice"],
+        "deck_files": ["device.cmd"],
+        "profile": sentaurus_contract_fake_profile(source_project=source_project, run_root=adapter_run_root),
+        "command_args": {"sdevice": ["-m", "tcad_agent.sentaurus_contract", "--fake-backend"]},
+        "run_root": str(adapter_run_root),
+        "breakdown_current_threshold_a": 1.0e-6,
+        "timeout_seconds": 30.0,
+    }
+    soak_id = "public_sentaurus_live_llm_contract_soak"
+    goal_text = (
+        "Use the Sentaurus adapter contract to reduce reverse leakage by increasing carrier lifetime "
+        "while preserving breakdown voltage, Ron, and electric-field peak. "
+        "Run the public-syntax baseline, plan a verified semantic patch such as LIFETIME_SCALE, "
+        "execute the patched adapter run, compare curves, archive lineage, benchmark, and stop. "
+        "The fake backend is interface-only and must not be treated as calibrated Sentaurus physics."
+    )
+    soak_state = run_agent_soak(
+        AgentSoakRequest(
+            goal_text=goal_text,
+            soak_id=soak_id,
+            soak_root=scenario_dir / "soak",
+            execute=True,
+            duration_hours=options["duration_hours"],
+            max_steps=options["max_steps"],
+            step_slice=options["step_slice"],
+            poll_interval_seconds=0.0,
+            memory_path=scenario_dir / "agent_memory.jsonl",
+            compile_mission_spec=False,
+            enable_recovery=False,
+            enable_curve_guidance=False,
+            auto_execute_curve_guidance=False,
+            autonomous_request={
+                "sentaurus_project_path": str(source_project),
+                "sentaurus_request": sentaurus_request,
+                "use_llm": True,
+                "allow_llm_fallback": False,
+                "allow_user_confirmation_actions": True,
+                "enable_experiment_design": True,
+                "max_experiment_design_rounds": 1,
+                "auto_execute_experiment_design": True,
+                "generate_report": False,
+                "generate_dashboard": False,
+            },
+        )
+    )
+
+    agent_state_path = Path(str(soak_state.agent_state_path)) if soak_state.agent_state_path else None
+    agent_state = json.loads(agent_state_path.read_text(encoding="utf-8")) if agent_state_path and agent_state_path.exists() else {}
+    agent_steps = agent_state.get("steps") if isinstance(agent_state.get("steps"), list) else []
+    step_kinds = [str((step.get("kind") if isinstance(step, dict) else "")) for step in agent_steps]
+    sentaurus_tool_steps = [
+        step
+        for step in agent_steps
+        if isinstance(step, dict)
+        and step.get("kind") == DevsimAgentActionKind.RUN_TOOL.value
+        and ((step.get("action") or {}).get("tool_name") == "sentaurus_run")
+    ]
+    patch_tool_steps = [
+        step
+        for step in sentaurus_tool_steps
+        if isinstance(((step.get("action") or {}).get("request") or {}), dict)
+        and ((step.get("action") or {}).get("request") or {}).get("sentaurus_patch_candidate_id")
+    ]
+    checkpoint = agent_state.get("checkpoint") if isinstance(agent_state.get("checkpoint"), dict) else {}
+    final_state = Path(str(soak_state.final_state_path)) if soak_state.final_state_path else None
+    final_payload = json.loads(final_state.read_text(encoding="utf-8")) if final_state and final_state.exists() else {}
+    final_runtime_profile = final_payload.get("runtime_profile") if isinstance(final_payload.get("runtime_profile"), dict) else {}
+    final_quality = final_payload.get("quality_report") if isinstance(final_payload.get("quality_report"), dict) else {}
+    final_metrics = final_quality.get("metrics") if isinstance(final_quality.get("metrics"), dict) else {}
+    final_summary = final_payload.get("final_summary") if isinstance(final_payload.get("final_summary"), dict) else {}
+    final_artifacts = final_summary.get("artifacts") if isinstance(final_summary.get("artifacts"), dict) else {}
+    final_provenance = final_summary.get("data_provenance") if isinstance(final_summary.get("data_provenance"), dict) else {}
+    mutation_effect = final_payload.get("sentaurus_mutation_effect_analysis") if isinstance(final_payload.get("sentaurus_mutation_effect_analysis"), dict) else {}
+    lineage = final_payload.get("sentaurus_lineage_archive") if isinstance(final_payload.get("sentaurus_lineage_archive"), dict) else {}
+    benchmark_path = checkpoint.get("physical_benchmark_path")
+    benchmark_payload = json.loads(Path(str(benchmark_path)).read_text(encoding="utf-8")) if benchmark_path and Path(str(benchmark_path)).exists() else {}
+    cycle_statuses = [cycle.status for cycle in soak_state.cycles]
+
+    assertions = [
+        require(soak_state.status == AgentSoakStatus.COMPLETED, f"live LLM Sentaurus contract soak completed (status={soak_state.status}, failure_reason={soak_state.failure_reason})"),
+        require(len(soak_state.cycles) >= 2, "Sentaurus contract soak crossed at least one resume/slice boundary"),
+        require("slice_exhausted" in cycle_statuses, "Sentaurus contract soak recorded a slice_exhausted boundary"),
+        require(soak_state.fallback_decisions == 0, "Sentaurus contract soak used no deterministic fallback"),
+        require(soak_state.model_decisions >= 5, "Sentaurus contract soak recorded model/guarded-agent decisions across the loop"),
+        require(step_kinds.count(DevsimAgentActionKind.RUN_TOOL.value) >= 2, "Sentaurus baseline and patched adapter runs executed"),
+        require(DevsimAgentActionKind.PLAN_SENTAURUS_PATCH.value in step_kinds, "Sentaurus semantic patch planner ran"),
+        require(DevsimAgentActionKind.RUN_PHYSICAL_BENCHMARK.value in step_kinds, "Sentaurus patched state was benchmarked"),
+        require(DevsimAgentActionKind.STOP_SUCCESS.value in step_kinds, "Sentaurus contract soak stopped after benchmark evidence"),
+        require(len(sentaurus_tool_steps) >= 2, "at least two sentaurus_run tool calls were recorded"),
+        require(bool(patch_tool_steps), "patched sentaurus_run carried a selected patch candidate id"),
+        require(final_payload.get("tool_name") == "sentaurus_run", "final state is a Sentaurus adapter state"),
+        require(final_payload.get("status") == "completed", "final Sentaurus adapter run completed"),
+        require(final_runtime_profile.get("profile_id") == "public_sentaurus_contract_fake_backend", "final run used the explicit public contract fake backend profile"),
+        require(bool(final_metrics.get("tcad_solver_invoked")), "final Sentaurus contract state records TCAD solver invocation"),
+        require(final_metrics.get("solver_backend") == "sentaurus", "final Sentaurus contract state records Sentaurus backend"),
+        require(bool(final_metrics.get("curve_path")), "final Sentaurus contract state extracted a curve CSV"),
+        require(bool(final_provenance.get("fake_commands_only_validate_agent_io")), "final state marks fake backend as interface-only"),
+        require(int(final_metrics.get("sentaurus_patches_verified") or 0) >= 1, "final Sentaurus adapter run verified at least one semantic patch"),
+        require(bool(mutation_effect), "final Sentaurus state includes mutation-effect analysis"),
+        require(bool(final_artifacts.get("sentaurus_baseline_mutation_overlay")), "final Sentaurus state links baseline/mutation overlay"),
+        require(bool(final_artifacts.get("sentaurus_lineage_archive")), "final Sentaurus state links lineage archive"),
+        require(len(lineage.get("entries") or []) >= 2, "Sentaurus lineage includes baseline and patched run"),
+        require(benchmark_payload.get("source_state_path") == str(final_state), "benchmark ran against the final patched Sentaurus state"),
+    ]
+    return (
+        assertions,
+        [
+            artifact("soak_state", soak_state.state_path),
+            artifact("agent_state", soak_state.agent_state_path),
+            artifact("source_project", source_project, kind="directory"),
+            artifact("final_sentaurus_state", final_state),
+            artifact("sentaurus_patch_plan", checkpoint.get("sentaurus_patch_plan_path")),
+            artifact("sentaurus_lineage_archive", final_artifacts.get("sentaurus_lineage_archive")),
+            artifact("sentaurus_overlay", final_artifacts.get("sentaurus_baseline_mutation_overlay"), kind="svg"),
+            artifact("sentaurus_benchmark", benchmark_path),
+            artifact("soak_cockpit", soak_state.latest_cockpit_path, kind="html"),
+        ],
+        {
+            "soak_status": soak_state.status,
+            "cycle_statuses": cycle_statuses,
+            "completed_steps": soak_state.completed_steps,
+            "model_decisions": soak_state.model_decisions,
+            "fallback_decisions": soak_state.fallback_decisions,
+            "step_kinds": step_kinds,
+            "sentaurus_run_steps": len(sentaurus_tool_steps),
+            "patched_sentaurus_run_steps": len(patch_tool_steps),
+            "final_run_id": final_payload.get("run_id"),
+            "final_solver_backend": final_metrics.get("solver_backend"),
+            "final_fake_backend_interface_only": final_provenance.get("fake_commands_only_validate_agent_io"),
+            "lineage_entries": len(lineage.get("entries") or []),
+            "mutation_effect_decision": mutation_effect.get("decision"),
+            "benchmark_source_state_path": benchmark_payload.get("source_state_path"),
         },
     )
 
@@ -2127,6 +2304,10 @@ SCENARIO_REGISTRY: dict[str, tuple[str, ScenarioRunner]] = {
     "agent_repair_report": ("Agent repairs suspicious curve and writes report", scenario_agent_repair_report),
     "mutation_refinement_multiround": ("Agent performs multi-round mutation refinement", scenario_mutation_refinement_multiround),
     "sentaurus_autonomous_refinement": ("Agent performs Sentaurus patch/effect/refinement lineage loop", scenario_sentaurus_autonomous_refinement),
+    "public_sentaurus_live_llm_contract_soak": (
+        "A real configured LLM drives agent_soak through the public Sentaurus adapter contract",
+        scenario_public_sentaurus_live_llm_contract_soak,
+    ),
     "natural_language_power_marathon": (
         "Natural-language goal drives Power MOSFET DEVSIM, signoff, cockpit, resume, and cancel",
         scenario_natural_language_power_marathon,

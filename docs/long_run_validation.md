@@ -141,6 +141,19 @@ python3.11 -m tcad_agent.long_run_validation \
 
 This scenario seeds real `extended_device_sweep` DEVSIM 2D baseline/mutation states, adds a real mutation-effect overlay, then runs `agent_soak` across resume slices so the live LLM can choose and execute the next patch through the real runner.
 
+Run the live-LLM Sentaurus adapter contract soak:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation \
+  --suite autonomous_e2e \
+  --scenario-id public_sentaurus_live_llm_contract_soak \
+  --validation-id public_sentaurus_live_llm_contract_soak \
+  --use-llm \
+  --no-llm-fallback
+```
+
+This scenario uses the public Sentaurus fixture corpus and the real local adapter path with an interface-only fake backend. It verifies that a live LLM can drive `agent_soak` through baseline execution, verified semantic patch planning, patched adapter execution, mutation-effect analysis, lineage archive generation, benchmark, and stop without committing proprietary software, licenses, PDKs, or commercial decks.
+
 Run the sliced live-LLM soak scenario:
 
 ```bash

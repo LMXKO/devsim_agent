@@ -179,6 +179,12 @@ Validate live-LLM DEVSIM soak:
 python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_curve_decision_live_llm_devsim_soak --use-llm --no-llm-fallback
 ```
 
+Validate live-LLM Sentaurus adapter contract soak:
+
+```bash
+python3.11 -m tcad_agent.long_run_validation --suite autonomous_e2e --scenario-id public_sentaurus_live_llm_contract_soak --use-llm --no-llm-fallback
+```
+
 Validate the sliced live-LLM soak path:
 
 ```bash
