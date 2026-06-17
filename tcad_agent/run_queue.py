@@ -670,6 +670,7 @@ def default_runner_registry() -> dict[str, Runner]:
     from tcad_agent.sentaurus_patch_planner import SentaurusPatchPlannerRequest, plan_sentaurus_patches
     from tcad_agent.sentaurus_patch_refiner import SentaurusPatchRefinerRequest, build_sentaurus_patch_refinement_plan
     from tcad_agent.sentaurus_preflight import SentaurusPreflightRequest, run_sentaurus_preflight
+    from tcad_agent.sentaurus_profile_onboarding import SentaurusProfileOnboardingRequest, run_sentaurus_profile_onboarding
     from tcad_agent.sentaurus_replay import SentaurusReplayRequest, run_sentaurus_replay
     from tcad_agent.golden_curve import GoldenCurveComparisonRequest, run_golden_curve_comparison
     from tcad_agent.supervisor import run_supervisor
@@ -887,6 +888,9 @@ def default_runner_registry() -> dict[str, Runner]:
         ),
         "sentaurus_preflight": lambda request: result_to_dict(
             run_sentaurus_preflight(SentaurusPreflightRequest.model_validate(request))
+        ),
+        "sentaurus_profile_onboarding": lambda request: result_to_dict(
+            run_sentaurus_profile_onboarding(SentaurusProfileOnboardingRequest.model_validate(request))
         ),
         "sentaurus_replay": lambda request: result_to_dict(
             run_sentaurus_replay(SentaurusReplayRequest.model_validate(request))

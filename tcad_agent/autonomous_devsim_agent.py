@@ -240,9 +240,52 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+SENSITIVE_FIELD_TOKENS = ("api_key", "apikey", "secret", "token", "password", "license")
+SENSITIVE_FIELD_NAMES = {"LM_LICENSE_FILE", "SNPSLMD_LICENSE_FILE", "ACTSOFT_LLM_API_KEY", "OPENAI_API_KEY"}
+
+
+def looks_like_sentaurus_profile(value: dict[str, Any]) -> bool:
+    return (
+        ("execution_mode" in value or "profile_id" in value)
+        and ("remote" in value or "env" in value)
+        and ("commands" in value or "default_flow" in value)
+    )
+
+
+def redact_sensitive_agent_data(value: Any, *, parent_key: str = "") -> Any:
+    if isinstance(value, dict):
+        if looks_like_sentaurus_profile(value):
+            try:
+                from tcad_agent.sentaurus import SentaurusRuntimeProfile
+
+                summary = SentaurusRuntimeProfile.model_validate(value).safe_summary()
+                summary["profile_redacted"] = True
+                return summary
+            except Exception:
+                pass
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if key_text in SENSITIVE_FIELD_NAMES or any(token in lowered for token in SENSITIVE_FIELD_TOKENS):
+                redacted[key_text] = "<redacted>"
+            elif lowered == "env" and isinstance(item, dict):
+                redacted[key_text] = {str(env_key): "<redacted>" for env_key in item}
+            else:
+                redacted[key_text] = redact_sensitive_agent_data(item, parent_key=key_text)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive_agent_data(item, parent_key=parent_key) for item in value]
+    return value
+
+
+def redacted_action(action: DevsimAgentAction) -> dict[str, Any]:
+    return redact_sensitive_agent_data(action.model_dump(mode="json"))
+
+
 def write_state(state: AutonomousDevsimAgentState, path: Path) -> None:
     state.updated_at = utc_timestamp()
-    write_json(path, state.model_dump(mode="json"))
+    write_json(path, redact_sensitive_agent_data(state.model_dump(mode="json")))
 
 
 def load_state(path: Path) -> AutonomousDevsimAgentState:
@@ -276,7 +319,7 @@ def write_heartbeat(
         "updated_at": utc_timestamp(),
         "pid": os.getpid(),
         "step_index": step_index,
-        "active_action": active_action.model_dump(mode="json") if active_action else None,
+        "active_action": redacted_action(active_action) if active_action else None,
         "latest_state_path": state.latest_state_path,
         "note": note,
     }
@@ -1033,6 +1076,66 @@ def sentaurus_preflight_request(request: AutonomousDevsimRequest) -> dict[str, A
     }
     if request.sentaurus_profile_path:
         payload["profile_path"] = str(request.sentaurus_profile_path)
+    if isinstance(request.sentaurus_request.get("profile"), dict):
+        payload["profile"] = request.sentaurus_request["profile"]
+    flow = request.sentaurus_request.get("flow") if isinstance(request.sentaurus_request.get("flow"), list) else None
+    deck_files = request.sentaurus_request.get("deck_files") if isinstance(request.sentaurus_request.get("deck_files"), list) else None
+    if flow:
+        payload["flow"] = flow
+    if deck_files:
+        payload["deck_files"] = deck_files
+    return payload
+
+
+def goal_requests_remote_sentaurus(goal_text: str) -> bool:
+    lowered = goal_text.lower()
+    sentaurus_tokens = ["sentaurus", "sdevice", "sprocess", "svisual", "synopsys", ".cmd", ".tdr"]
+    remote_tokens = [
+        "remote",
+        "ssh",
+        "slurm",
+        "sbatch",
+        "squeue",
+        "cluster",
+        "workstation",
+        "server",
+        "远端",
+        "远程",
+        "集群",
+        "服务器",
+        "工作站",
+        "调度",
+        "队列",
+    ]
+    return any(token in lowered for token in sentaurus_tokens) and any(token in lowered for token in remote_tokens)
+
+
+def sentaurus_profile_onboarding_needed(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> bool:
+    if state.checkpoint.get("sentaurus_profile_onboarding_done"):
+        return False
+    if request.sentaurus_profile_path:
+        return False
+    if isinstance(request.sentaurus_request.get("profile"), dict):
+        return False
+    return goal_requests_remote_sentaurus(request.goal_text)
+
+
+def sentaurus_profile_onboarding_request(state: AutonomousDevsimAgentState, request: AutonomousDevsimRequest) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "goal_text": request.goal_text,
+        "output_dir": str(Path(state.agent_dir) / "sentaurus_profile_onboarding"),
+    }
+    if request.sentaurus_project_path:
+        payload["project_path"] = str(request.sentaurus_project_path)
+    if request.sentaurus_profile_path:
+        payload["profile_path"] = str(request.sentaurus_profile_path)
+    for key in ["execution_mode", "remote_host", "remote_run_root", "require_license_hint"]:
+        if key in request.sentaurus_request:
+            payload[key] = request.sentaurus_request[key]
+    if isinstance(request.sentaurus_request.get("commands"), dict):
+        payload["sentaurus_commands"] = request.sentaurus_request["commands"]
+    if isinstance(request.sentaurus_request.get("sentaurus_commands"), dict):
+        payload["sentaurus_commands"] = request.sentaurus_request["sentaurus_commands"]
     flow = request.sentaurus_request.get("flow") if isinstance(request.sentaurus_request.get("flow"), list) else None
     deck_files = request.sentaurus_request.get("deck_files") if isinstance(request.sentaurus_request.get("deck_files"), list) else None
     if flow:
@@ -1107,6 +1210,34 @@ def deterministic_action(state: AutonomousDevsimAgentState, request: AutonomousD
                 "unverified_patches": state.checkpoint.get("deck_patch_unverified") or [],
             },
             reason="Semantic deck patch did not verify every requested edit against an existing deck binding.",
+        )
+    if sentaurus_profile_onboarding_needed(state, request):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.RUN_TOOL,
+            tool_name="sentaurus_profile_onboarding",
+            request=sentaurus_profile_onboarding_request(state, request),
+            reason="A remote or cluster Sentaurus workflow was requested without an external runtime profile; generate and preflight a safe profile onboarding package first.",
+        )
+    sentaurus_onboarding = state.checkpoint.get("sentaurus_profile_onboarding")
+    if (
+        state.checkpoint.get("sentaurus_profile_onboarding_done")
+        and not state.checkpoint.get("sentaurus_profile_onboarding_ready")
+        and not request.sentaurus_profile_path
+        and goal_requests_remote_sentaurus(request.goal_text)
+    ):
+        return DevsimAgentAction(
+            kind=DevsimAgentActionKind.ASK_USER,
+            request={
+                "gate": "sentaurus_profile_onboarding",
+                "question": "Remote Sentaurus profile onboarding is blocked. Fill the generated external profile template, keep secrets outside git, then rerun onboarding or provide sentaurus_profile_path.",
+                "blocked_code": state.checkpoint.get("sentaurus_profile_onboarding_blocked_code"),
+                "missing_inputs": state.checkpoint.get("sentaurus_profile_onboarding_missing_inputs") or [],
+                "profile_template_path": state.checkpoint.get("sentaurus_profile_template_path"),
+                "preflight_path": state.checkpoint.get("sentaurus_profile_onboarding_preflight_path"),
+                "report_path": state.checkpoint.get("sentaurus_profile_onboarding_report_path"),
+                "onboarding": sentaurus_onboarding if isinstance(sentaurus_onboarding, dict) else {},
+            },
+            reason="Remote Sentaurus profile onboarding is blocked; pause for user-owned configuration instead of fabricating a commercial TCAD environment.",
         )
     if (
         request.initial_tool_name == "sentaurus_run"
@@ -1634,6 +1765,27 @@ def queued_llm_plan_context(
         }
     if (
         action.kind == DevsimAgentActionKind.RUN_TOOL
+        and action.tool_name == "sentaurus_profile_onboarding"
+        and not state.checkpoint.get("sentaurus_profile_onboarding_done")
+    ):
+        return {
+            "source": "sentaurus_profile_onboarding_gate",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Generate and preflight a remote Sentaurus profile template before asking the user to run a commercial TCAD environment.",
+            "evidence_used": ["goal_text", "sentaurus_request", "sentaurus_project_path"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.ASK_USER
+        and action.request.get("gate") == "sentaurus_profile_onboarding"
+    ):
+        return {
+            "source": "sentaurus_profile_onboarding_blocked",
+            "decision_source": "mandatory_agent_policy",
+            "reason": "Remote Sentaurus profile onboarding is blocked, so the agent must pause instead of inventing host/license/project configuration.",
+            "evidence_used": ["sentaurus_profile_onboarding"],
+        }
+    if (
+        action.kind == DevsimAgentActionKind.RUN_TOOL
         and action.tool_name == "sentaurus_preflight"
         and request.sentaurus_project_path
         and not state.checkpoint.get("sentaurus_preflight_done")
@@ -1740,8 +1892,8 @@ def enforce_queued_llm_plan_decision(
     requested_action: DevsimAgentAction | None = None,
     failure_reason: str | None = None,
 ) -> dict[str, Any]:
-    queued_dump = queued_action.model_dump(mode="json")
-    requested_dump = requested_action.model_dump(mode="json") if requested_action else None
+    queued_dump = redacted_action(queued_action)
+    requested_dump = redacted_action(requested_action) if requested_action else None
     return {
         "schema_version": "actsoft.tcad.autonomous_devsim_agent_decision.v1",
         "status": "completed",
@@ -1808,7 +1960,7 @@ def decide_next_action(
         "schema_version": "actsoft.tcad.autonomous_devsim_agent_decision.v1",
         "status": "fallback",
         "fallback_used": True,
-        "deterministic_action": fallback.model_dump(mode="json"),
+        "deterministic_action": redacted_action(fallback),
     }
     if fallback.kind == DevsimAgentActionKind.ASK_USER and fallback.request.get("gate") == "public_evidence_lookup":
         decision["status"] = "hard_public_evidence_gate"
@@ -1906,7 +2058,7 @@ def decide_next_action(
             "status": "completed",
             "fallback_used": False,
             "model": getattr(chat_client.config, "model", None),
-            "action": action.model_dump(mode="json"),
+            "action": redacted_action(action),
             "observation_summary": parsed.get("observation_summary"),
             "hypothesis_zh": parsed.get("hypothesis_zh"),
             "hypothesis_tree_update": parsed.get("hypothesis_tree_update") if isinstance(parsed.get("hypothesis_tree_update"), dict) else None,
@@ -2354,11 +2506,29 @@ def execute_action(
             preflight_dir = Path(state.agent_dir) / "sentaurus_preflight"
             tool_request.setdefault("output_path", str(preflight_dir / "sentaurus_preflight.json"))
             tool_request.setdefault("report_path", str(preflight_dir / "sentaurus_preflight.md"))
+        if action.tool_name == "sentaurus_profile_onboarding":
+            onboarding_dir = Path(state.agent_dir) / "sentaurus_profile_onboarding"
+            tool_request.setdefault("output_dir", str(onboarding_dir))
+            tool_request.setdefault("output_path", str(onboarding_dir / "sentaurus_profile_onboarding.json"))
+            tool_request.setdefault("report_path", str(onboarding_dir / "sentaurus_profile_onboarding.md"))
         if state.cancel_file:
             tool_request.setdefault("cancel_file", state.cancel_file)
         with temporary_cancel_env(state.cancel_file):
             result = runner(tool_request)
         result_state_path = infer_result_state_path(result)
+        if action.tool_name == "sentaurus_profile_onboarding":
+            state.checkpoint["sentaurus_profile_onboarding_done"] = True
+            state.checkpoint["sentaurus_profile_onboarding_status"] = result.get("status")
+            state.checkpoint["sentaurus_profile_onboarding_ready"] = bool(result.get("ready_to_execute_real_sentaurus"))
+            state.checkpoint["sentaurus_profile_onboarding_blocked_code"] = result.get("blocked_code")
+            state.checkpoint["sentaurus_profile_onboarding_missing_inputs"] = result.get("missing_inputs") or []
+            state.checkpoint["sentaurus_profile_template_path"] = result.get("profile_template_path")
+            state.checkpoint["sentaurus_profile_onboarding_path"] = result.get("output_path")
+            state.checkpoint["sentaurus_profile_onboarding_report_path"] = result.get("report_path")
+            state.checkpoint["sentaurus_profile_onboarding_preflight_path"] = result.get("preflight_path")
+            state.checkpoint["sentaurus_profile_onboarding_preflight_report_path"] = result.get("preflight_report_path")
+            state.checkpoint["sentaurus_profile_onboarding"] = result
+            return result, None
         if action.tool_name == "sentaurus_preflight":
             state.checkpoint["sentaurus_preflight_done"] = True
             state.checkpoint["sentaurus_preflight_status"] = result.get("status")
@@ -2834,10 +3004,10 @@ def append_step(
         status=DevsimAgentStepStatus.RUNNING if state.execute else DevsimAgentStepStatus.PLANNED,
         reason=action.reason,
         started_at=utc_timestamp(),
-        action=action.model_dump(mode="json"),
+        action=redacted_action(action),
         observation={
             "latest_state": observe_state(state.latest_state_path),
-            "agent_decision": decision,
+            "agent_decision": redact_sensitive_agent_data(decision),
         },
     )
     state.steps.append(step)
@@ -2899,7 +3069,8 @@ def run_autonomous_devsim_agent(
             write_state(state, path)
             write_heartbeat(state, note="decision failure")
             return state
-        state.checkpoint["last_agent_decision"] = decision
+        safe_decision = redact_sensitive_agent_data(decision)
+        state.checkpoint["last_agent_decision"] = safe_decision
         ledger = state.checkpoint.get("agent_decision_ledger")
         ledger_items = list(ledger) if isinstance(ledger, list) else []
         ledger_items.append(
@@ -2908,7 +3079,7 @@ def run_autonomous_devsim_agent(
                 "decided_at": utc_timestamp(),
                 "decision_status": decision.get("status"),
                 "fallback_used": bool(decision.get("fallback_used")),
-                "action": action.model_dump(mode="json"),
+                "action": redacted_action(action),
                 "observation_summary": decision.get("observation_summary"),
                 "hypothesis_zh": decision.get("hypothesis_zh"),
             }
@@ -2917,18 +3088,18 @@ def run_autonomous_devsim_agent(
         if action.user_confirmation_required and not request.allow_user_confirmation_actions:
             state.status = DevsimAgentStatus.WAITING_FOR_USER
             state.next_action = "wait for user confirmation before executing autonomous DEVSIM action"
-            state.checkpoint["blocked_action"] = action.model_dump(mode="json")
+            state.checkpoint["blocked_action"] = redacted_action(action)
             write_state(state, path)
             write_heartbeat(state, active_action=action, note="waiting for user confirmation")
             return state
 
         step = append_step(state, action, decision)
-        state.active_process = {"pid": os.getpid(), "step_index": step.index, "action": action.model_dump(mode="json"), "started_at": step.started_at}
+        state.active_process = {"pid": os.getpid(), "step_index": step.index, "action": redacted_action(action), "started_at": step.started_at}
         write_state(state, path)
         write_heartbeat(state, active_action=action, step_index=step.index, note="step started")
         if not request.execute:
             state.status = DevsimAgentStatus.PLANNED
-            state.checkpoint["planned_action"] = action.model_dump(mode="json")
+            state.checkpoint["planned_action"] = redacted_action(action)
             update_agent_hypothesis_tree(state, step, decision, result=None, result_state_path=state.latest_state_path)
             state.active_process = None
             write_state(state, path)
@@ -3119,7 +3290,7 @@ def request_from_args(args: argparse.Namespace) -> AutonomousDevsimRequest:
 def main() -> None:
     try:
         state = run_autonomous_devsim_agent(request_from_args(parse_args()))
-        print(json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False))
+        print(json.dumps(redact_sensitive_agent_data(state.model_dump(mode="json")), indent=2, ensure_ascii=False))
         raise SystemExit(0 if state.status != DevsimAgentStatus.FAILED else 1)
     except Exception as exc:
         print(

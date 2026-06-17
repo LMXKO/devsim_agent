@@ -271,7 +271,7 @@ print("remote finished")
             encoding="utf-8",
         )
         fake_ssh, fake_rsync, remote_root = self.write_fake_remote_transport()
-        secret_license = "27000@unit-license-host"
+        secret_license = "unit-license-secret-value"
         profile = SentaurusRuntimeProfile(
             profile_id="unit_remote_ssh",
             execution_mode="remote_ssh",

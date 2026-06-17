@@ -236,6 +236,17 @@ The adapter can copy a project into a controlled run workspace, apply verified s
 
 Autonomous Sentaurus runs are preflight-gated. The agent checks the local or remote profile before baseline execution and pauses with a blocked code instead of running against an unverified environment.
 
+Generate a remote profile onboarding package from a natural-language cluster/workstation request:
+
+```bash
+python3.11 -m tcad_agent.sentaurus_profile_onboarding \
+  --goal "Use the remote Slurm cluster to run Sentaurus for this diode deck" \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --deck-file device.cmd
+```
+
+The onboarding tool writes a profile template under `runs/`, checks local SSH/rsync readiness, runs the same preflight gate when enough remote details exist, and reports missing host, remote run root, scheduler, license hint, project, deck, or command inputs without storing secrets in git.
+
 Preflight a real local/remote Sentaurus profile before execution:
 
 ```bash

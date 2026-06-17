@@ -73,6 +73,19 @@ The remote runner still starts from a local user-owned project path: it copies t
 
 State files redact sensitive runtime values: they keep env key names and transport capability flags, not license values. Keep `host`, license strings, PDK roots, project paths, and site wrappers in the external profile or local environment, not in git.
 
+## Remote Profile Onboarding
+
+When the user asks in natural language to use a remote workstation or cluster but has not provided a runtime profile, the autonomous agent first runs `sentaurus_profile_onboarding`. The tool generates a JSON profile template under `runs/`, checks local SSH/rsync availability, runs `sentaurus_preflight` when enough remote details exist, and returns a blocked code plus missing inputs instead of inventing host, license, PDK, deck, or scheduler configuration.
+
+```bash
+python3.11 -m tcad_agent.sentaurus_profile_onboarding \
+  --goal "Use remote Slurm Sentaurus on the cluster for this diode deck" \
+  --project /Users/me/tcad_projects/ldmos_case \
+  --deck-file device.cmd
+```
+
+Once the user supplies a real external profile, the queue path is `agent_soak -> autonomous_devsim_agent -> sentaurus_preflight -> sentaurus_run -> patch/refine -> physical_benchmark -> report`. The Sentaurus adapter syncs patched projects to the remote run root, pulls CSV/log/artifacts back, and the agent uses the returned curves for lineage, Pareto, and next-patch decisions.
+
 ## State Contract
 
 Each run writes:

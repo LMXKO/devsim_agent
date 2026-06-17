@@ -94,6 +94,8 @@ Useful options:
 
 For Sentaurus requests with `--sentaurus-project-path`, the first required action is `sentaurus_preflight`. The preflight output is stored as a gate artifact in the agent checkpoint, not as the latest TCAD state. If the local or remote profile is blocked, the agent pauses for user action instead of running the baseline.
 
+If the goal explicitly asks for remote/cluster Sentaurus but no external profile is configured, the first action becomes `sentaurus_profile_onboarding`. It writes a profile template, runs safe transport/preflight checks, records missing inputs, and pauses until the user supplies a real profile outside git.
+
 ## Queue Integration
 
 The run queue registers `autonomous_devsim_agent`, so a long job can be enqueued:

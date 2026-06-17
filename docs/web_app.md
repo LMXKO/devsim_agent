@@ -43,7 +43,7 @@ The transcript follows the latest visible event only while the user is already n
 
 The composer intentionally has no example picker or mode panel. The user describes the TCAD task in natural language, and the backend router selects the device template, runner, queue item, and capability gates.
 
-The same settings dialog can store an optional Sentaurus project path, external profile path, and deck-file list. These settings stay under `runs/` and are ignored by git. When the mission text mentions Sentaurus/SDevice/SProcess-style work, the page still submits a normal `agent_soak` item, but the backend injects the saved Sentaurus workspace into the nested autonomous request. The agent then runs `sentaurus_preflight` before any baseline execution; blocked preflight reports pause the queue item for user action.
+The same settings dialog can store an optional Sentaurus project path, external profile path, and deck-file list. These settings stay under `runs/` and are ignored by git. When the mission text mentions Sentaurus/SDevice/SProcess-style work, the page still submits a normal `agent_soak` item, but the backend injects the saved Sentaurus workspace into the nested autonomous request. The agent then runs `sentaurus_preflight` before any baseline execution; blocked preflight reports pause the queue item for user action. If the text asks for a remote/cluster Sentaurus run and no profile is configured, the agent first generates a `sentaurus_profile_onboarding` package and reports the missing host/root/license/deck/scheduler inputs.
 
 Run:
 

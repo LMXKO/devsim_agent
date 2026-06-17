@@ -158,7 +158,7 @@ raise SystemExit(completed.returncode)
     def test_preflight_ready_for_remote_ssh_profile_without_leaking_env_values(self) -> None:
         project = self.write_project()
         fake_ssh = self.write_fake_ssh()
-        secret_license = "27000@unit-preflight-license-host"
+        secret_license = "unit-preflight-license-secret-value"
         result = run_sentaurus_preflight(
             SentaurusPreflightRequest(
                 project_path=project,
